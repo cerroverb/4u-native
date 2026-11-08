@@ -157,7 +157,9 @@ Probe ProbePhysicalDevice(VkPhysicalDevice device, u32 index, VkSurfaceKHR surfa
         vkGetPhysicalDeviceFeatures2(device, &features2);
         probe.features = features2.features;
     }
-    caps.timeline = timeline.timelineSemaphore != VK_FALSE;
+    // (Vulkan 1.2 and newer only, from the probe on: every copy of the caps agrees, as MH4N_RHI_MASK=timeline does; plume
+    // enables timelines as core, so a 1.1 driver has no vkGetSemaphoreCounterValue / vkWaitSemaphores: 4u-native #1, #6)
+    caps.timeline = timeline.timelineSemaphore != VK_FALSE && api >= MakeApi(1, 2);
     caps.interlock = interlock.fragmentShaderPixelInterlock != VK_FALSE;
     caps.index_uint8 = uint8.indexTypeUint8 != VK_FALSE;
     caps.custom_border_color = border.customBorderColors != VK_FALSE;

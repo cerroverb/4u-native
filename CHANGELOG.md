@@ -2,6 +2,11 @@
 
 [Español más abajo](#español)
 
+## 0.1.3
+
+- **Fixed the crash at start that 0.1.2 still had on some phones whose graphics driver is Vulkan 1.1** (for example
+  Mali-G57 phones with a Unisoc chip). Your code library stays valid.
+
 ## 0.1.2
 
 - **Fixed a crash right after start on phones whose graphics driver is Vulkan 1.1** (for example some Adreno 730 phones):
@@ -57,6 +62,11 @@ MH4U for Android is free. Only the links khorne-hub gives are official: if you g
 came with ads, it isn't the official one. Check the APK's SHA-256 against the release's `.sha256` file.
 
 ## Español
+
+## 0.1.3
+
+- **Arreglado el cierre al iniciar que la 0.1.2 todavía tenía en algunos teléfonos con driver gráfico Vulkan 1.1** (por
+  ejemplo teléfonos con Mali-G57 y chip Unisoc). Tu librería de código sigue sirviendo.
 
 ## 0.1.2
 
