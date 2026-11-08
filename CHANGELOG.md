@@ -2,6 +2,11 @@
 
 [Español más abajo](#español)
 
+## 0.1.1
+
+- **Fixed a black screen on start on Adreno 7xx phones** (for example the Snapdragon 8+ Gen 1's Adreno 730): their
+  graphics driver was refused at start. Your code library stays valid: no need to build it again.
+
 ## 0.1.0
 
 The first public version: Monster Hunter 4 Ultimate (USA, 1.3.0) recompiled to native code for Android, with your own
@@ -45,6 +50,11 @@ MH4U for Android is free. Only the links khorne-hub gives are official: if you g
 came with ads, it isn't the official one. Check the APK's SHA-256 against the release's `.sha256` file.
 
 ## Español
+
+## 0.1.1
+
+- **Arreglada la pantalla negra al iniciar en teléfonos con Adreno 7xx** (por ejemplo el Adreno 730 del Snapdragon 8+ Gen
+  1): su driver gráfico se rechazaba al iniciar. Tu librería de código sigue sirviendo: no hace falta armarla de nuevo.
 
 ## 0.1.0
 

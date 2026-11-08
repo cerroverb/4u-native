@@ -69,6 +69,10 @@ Result<CapabilityMask> CombineMasks(const char* environment_text, CapabilityMask
 // patch of the vendored queue). The bit values are Vulkan's: graphics 1, compute 2, transfer 4.
 inline constexpr u32 kQueueGraphicsBit = 1, kQueueComputeBit = 2, kQueueTransferBit = 4;
 constexpr bool IsDirectQueueFamily(u32 queue_flags) {
+    // (transfer is implied by graphics or compute, as plume's pick takes it: patch 21; Adreno 7xx drivers don't set it)
+    if ((queue_flags & (kQueueGraphicsBit | kQueueComputeBit)) != 0) {
+        queue_flags |= kQueueTransferBit;
+    }
     constexpr u32 wanted = kQueueGraphicsBit | kQueueComputeBit | kQueueTransferBit;
     return (queue_flags & wanted) == wanted;
 }

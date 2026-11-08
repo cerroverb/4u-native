@@ -242,7 +242,7 @@ El panel de rendimiento de Samsung solo aparece en las apps que reconoce como ju
 Para tenerlo, instala el APK una vez desde una PC con [adb](https://developer.android.com/tools/adb):
 
 ```
-adb install -r -i com.mh4u.native MH4U-0.1.0.apk
+adb install -r -i com.mh4u.native MH4U-<version>.apk
 ```
 
 Usa el nombre del APK que descargaste. Es opcional: el juego anda igual sin esto.

@@ -231,7 +231,7 @@ Samsung's performance panel only shows for apps it recognizes as games, and an A
 it, install the APK once from a PC with [adb](https://developer.android.com/tools/adb):
 
 ```
-adb install -r -i com.mh4u.native MH4U-0.1.0.apk
+adb install -r -i com.mh4u.native MH4U-<version>.apk
 ```
 
 Use the name of the APK you downloaded. It's optional: the game runs the same without it.

@@ -4395,8 +4395,14 @@ namespace plume {
             for (uint32_t i = 0; i < queueFamilyCount; i++) {
                 const VkQueueFamilyProperties &props = queueFamilyProperties[i];
 
-                // The family queue flags must contain all the flags required by the command list type.
-                if ((props.queueFlags & flags) != flags) {
+                // The family queue flags must contain all the flags required by the command list type. A graphics or
+                // compute family supports transfers whether it says so or not (the Vulkan spec); Adreno 7xx drivers leave
+                // VK_QUEUE_TRANSFER_BIT out of their only family, which left no family at all.
+                VkQueueFlags familyFlags = props.queueFlags;
+                if ((familyFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) != 0) {
+                    familyFlags |= VK_QUEUE_TRANSFER_BIT;
+                }
+                if ((familyFlags & flags) != flags) {
                     continue;
                 }
 
