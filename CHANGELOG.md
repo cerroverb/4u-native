@@ -2,6 +2,13 @@
 
 [Español más abajo](#español)
 
+## 0.1.2
+
+- **Fixed a crash right after start on phones whose graphics driver is Vulkan 1.1** (for example some Adreno 730 phones):
+  0.1.1 got past the black screen, then stopped at the first frame. Your code library stays valid.
+- **Fixed the game stopping on the first start on some Android 14 phones** (for example a Moto g55): it couldn't make its
+  save folders.
+
 ## 0.1.1
 
 - **Fixed a black screen on start on Adreno 7xx phones** (for example the Snapdragon 8+ Gen 1's Adreno 730): their
@@ -50,6 +57,13 @@ MH4U for Android is free. Only the links khorne-hub gives are official: if you g
 came with ads, it isn't the official one. Check the APK's SHA-256 against the release's `.sha256` file.
 
 ## Español
+
+## 0.1.2
+
+- **Arreglado el cierre justo después de iniciar en teléfonos cuyo driver gráfico es Vulkan 1.1** (por ejemplo algunos
+  Adreno 730): la 0.1.1 pasaba la pantalla negra y se cerraba en el primer cuadro. Tu librería de código sigue sirviendo.
+- **Arreglado el cierre del juego en el primer inicio en algunos teléfonos con Android 14** (por ejemplo un Moto g55): no
+  podía crear sus carpetas de partidas.
 
 ## 0.1.1
 

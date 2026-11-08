@@ -481,7 +481,9 @@ Result<std::shared_ptr<Backend>> CreateBackend(std::shared_ptr<Instance> instanc
         extensions.push_back(VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME);
     }
     extras.optionalExtensions = extensions;
-    extras.timelineSemaphore = !mask.Has(Cap::Timeline);
+    // (timeline semaphores only on Vulkan 1.2: plume enables them as core, without VK_KHR_timeline_semaphore, so on a 1.1
+    // driver vkGetSemaphoreCounterValue was null, a crash at the first frame on an Adreno 730 (4u-native issue #1); 1.1 uses fences)
+    extras.timelineSemaphore = !mask.Has(Cap::Timeline) && probe.caps.api_version >= MakeApi(1, 2);
     // The allocator's blocks (plume patch 18): 32 MiB, not VMA's 256. A memory type's blocks then grow by 4, 8, 16 and
     // 32 MiB, not 32, 64, 128 and 256, and a phone holds a block whole however little of it is used (the Moto at 3x held
     // 256 MB of blocks for 120 MB of allocations). MH4N_VMA_BLOCK_MB=<n> another size, 0 VMA's own.

@@ -178,11 +178,19 @@ bool CreateFullPath(const std::string& path) {
         return true;
     }
     bool too_deep = false;
+    // An ancestor the app may not look at or make (Android 14's /storage/emulated/ on a Moto g55, 4u-native issue) is
+    // passed over: only a directory that still can't be made once all before it were tried is an error.
+    std::string failed;
     for (const std::string& prefix : DirectoryPrefixes(path, kPlatformSeparators, &too_deep)) {
-        if (!IsDirectory(prefix) && !CreateDir(prefix)) {
-            MH4N_LOG(Error, kLog, "cannot create the directory {}", prefix);
-            return false;
+        if (IsDirectory(prefix) || CreateDir(prefix)) {
+            failed.clear();
+            continue;
         }
+        failed = prefix;
+    }
+    if (!failed.empty()) {
+        MH4N_LOG(Error, kLog, "cannot create the directory {}", failed);
+        return false;
     }
     if (too_deep) {
         MH4N_LOG(Error, kLog, "the directory structure of {} is too deep", path);
