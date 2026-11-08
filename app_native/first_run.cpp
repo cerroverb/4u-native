@@ -186,3 +186,5 @@ void first_run_fill(const std::string& ini_path) {
     for (const std::string& line : lines) out << line << '\n';
     std::fprintf(stderr, "[Info] App: mh4u.ini lacked %s (the settings' defaults): added\n", added.c_str());
 }
+
+std::string first_run_gpu_name() { return VulkanGpuName(); }

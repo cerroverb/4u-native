@@ -549,6 +549,12 @@ int main(int argc, char* argv[]) {
         }
         args.push_back("--render-thread");
         args.push_back(render_thread);
+        // PowerVR's shader compiler crashes building the ubershader (libusc.so, a GE8300): no background builds there, a
+        // missing pipeline is built when it is first drawn (tested with --no-ubershader on a Mali: the same picture)
+        if (first_run_gpu_name().find("PowerVR") != std::string::npos) {
+            args.push_back("--no-ubershader");
+            Logf("PowerVR: pipelines built when first drawn, no ubershader");
+        }
         // the renderer's thread joins the performance-hint session as the game's does (it carries the frame as much;
         // PERF_SUBMIT would join only after reporting frame after frame)
         mh4n::gpu::queue::SetRendererThreadStartHook([] { perf_hint_thread(PERF_GAME); });

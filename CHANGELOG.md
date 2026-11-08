@@ -2,6 +2,12 @@
 
 [Español más abajo](#español)
 
+## 0.1.4
+
+- **PowerVR GPUs** (for example the GE8300 of the Helio A22): the game stopped a few seconds after start, when the GPU's
+  own shader compiler crashed on the app's largest shader. That shader is no longer built there; each picture's shaders
+  are built when first needed, so a new effect may hitch once. Untested on a PowerVR phone: please report how it goes.
+
 ## 0.1.3
 
 - **Fixed the crash at start that 0.1.2 still had on some phones whose graphics driver is Vulkan 1.1** (for example
@@ -62,6 +68,13 @@ MH4U for Android is free. Only the links khorne-hub gives are official: if you g
 came with ads, it isn't the official one. Check the APK's SHA-256 against the release's `.sha256` file.
 
 ## Español
+
+## 0.1.4
+
+- **GPU PowerVR** (por ejemplo la GE8300 del Helio A22): el juego se cerraba a los pocos segundos de iniciar, cuando el
+  propio compilador de shaders de la GPU fallaba con el shader más grande de la app. Ahí ya no se arma ese shader; cada
+  shader se arma la primera vez que hace falta, así que un efecto nuevo puede dar un tirón una vez. Sin probar en un
+  teléfono PowerVR: cuéntanos cómo te va.
 
 ## 0.1.3
 

@@ -34,3 +34,6 @@ void first_run_write(const std::string& ini_path, const FirstRunDevice& device);
 // mh4u.ini with the app's default, so that the panel shows what runs. Only a file the app wrote (its first line says so):
 // the PC port's mh4u.ini or a test's is left as it is, and a key that is there is never changed.
 void first_run_fill(const std::string& ini_path);
+
+// The first Vulkan GPU's name ("" when none), from an instance made for it alone: PowerVR runs without the ubershader
+std::string first_run_gpu_name();
