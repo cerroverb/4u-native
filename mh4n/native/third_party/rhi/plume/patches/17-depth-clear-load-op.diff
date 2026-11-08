@@ -1,0 +1,89 @@
+A render pass that clears its depth-stencil attachment on load: VulkanFramebuffer::renderPassClearDepth (the same
+attachments, the depth-stencil load ops CLEAR; compatible with renderPass) and VulkanCommandList::pendingDepthClear
+with its values, used by the next render pass the command list begins and forgotten by setFramebuffer. A pass whose
+first command would clear the whole depth attachment begins with it instead: a tile-based GPU then neither reads the
+old depth nor clears it with a draw.
+
+diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
+index 98bf173..a0dcf7c 100644
+--- a/plume_vulkan.cpp
++++ b/plume_vulkan.cpp
+@@ -2768,6 +2768,16 @@ namespace plume {
+             return;
+         }
+         
++        // mh4n (patch 17): the variant that clears the depth-stencil attachment on load.
++        if ((desc.depthAttachment != nullptr || desc.depthAttachmentView != nullptr) && !desc.depthAttachmentReadOnly) {
++            depthAttachmentIndex = uint32_t(attachments.size() - 1);
++            attachments[depthAttachmentIndex].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
++            attachments[depthAttachmentIndex].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
++            if (vkCreateRenderPass(device->vk, &passInfo, nullptr, &renderPassClearDepth) != VK_SUCCESS) {
++                renderPassClearDepth = VK_NULL_HANDLE;
++            }
++        }
++
+         VkFramebufferCreateInfo fbInfo = {};
+         fbInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+         fbInfo.renderPass = renderPass;
+@@ -2792,6 +2802,10 @@ namespace plume {
+         if (renderPass != VK_NULL_HANDLE) {
+             vkDestroyRenderPass(device->vk, renderPass, nullptr);
+         }
++
++        if (renderPassClearDepth != VK_NULL_HANDLE) {
++            vkDestroyRenderPass(device->vk, renderPassClearDepth, nullptr);
++        }
+     }
+ 
+     uint32_t VulkanFramebuffer::getWidth() const {
+@@ -3236,6 +3250,7 @@ namespace plume {
+     void VulkanCommandList::setFramebuffer(const RenderFramebuffer *framebuffer) {
+         endActiveRenderPass();
+         renderArea = {};
++        pendingDepthClear = false;
+ 
+         if (framebuffer != nullptr) {
+             const VulkanFramebuffer *interfaceFramebuffer = static_cast<const VulkanFramebuffer *>(framebuffer);
+@@ -3662,6 +3677,15 @@ namespace plume {
+             if ((renderArea.extent.width != 0) && (renderArea.extent.height != 0)) {
+                 beginInfo.renderArea = renderArea;
+             }
++            thread_local std::vector<VkClearValue> clearValues;
++            if (pendingDepthClear && (targetFramebuffer->renderPassClearDepth != VK_NULL_HANDLE)) {
++                clearValues.assign(targetFramebuffer->depthAttachmentIndex + 1, VkClearValue{});
++                clearValues[targetFramebuffer->depthAttachmentIndex].depthStencil = pendingDepthClearValue;
++                beginInfo.renderPass = targetFramebuffer->renderPassClearDepth;
++                beginInfo.clearValueCount = uint32_t(clearValues.size());
++                beginInfo.pClearValues = clearValues.data();
++            }
++            pendingDepthClear = false;
+             vkCmdBeginRenderPass(vk, &beginInfo, VkSubpassContents::VK_SUBPASS_CONTENTS_INLINE);
+             activeRenderPass = targetFramebuffer->renderPass;
+         }
+diff --git a/plume_vulkan.h b/plume_vulkan.h
+index c8d3d69..8c9e69e 100644
+--- a/plume_vulkan.h
++++ b/plume_vulkan.h
+@@ -330,6 +330,10 @@ namespace plume {
+         VulkanDevice *device = nullptr;
+         VkFramebuffer vk = VK_NULL_HANDLE;
+         VkRenderPass renderPass = VK_NULL_HANDLE;
++        // mh4n (patch 17): the same render pass with the depth-stencil attachment's load op CLEAR (compatible with
++        // renderPass: load ops do not count), for a command list's pendingDepthClear. Null without a depth attachment.
++        VkRenderPass renderPassClearDepth = VK_NULL_HANDLE;
++        uint32_t depthAttachmentIndex = 0;
+         std::vector<const VulkanTexture *> colorAttachments;
+         const VulkanTexture *depthAttachment = nullptr;
+         std::unique_ptr<VulkanTextureView> depthAttachmentView = nullptr;
+@@ -370,6 +374,11 @@ namespace plume {
+         // only there); an empty extent, the default and what setFramebuffer leaves, is the whole framebuffer, as before.
+         VkRect2D renderArea = {};
+ 
++        // mh4n (patch 17): the render pass the command list begins next clears its depth-stencil attachment as its load
++        // op (in the render area) to these values instead of loading it; setFramebuffer forgets it.
++        bool pendingDepthClear = false;
++        VkClearDepthStencilValue pendingDepthClearValue = {};
++
+         VulkanCommandList(VulkanCommandQueue *queue);
+         ~VulkanCommandList() override;
+         void begin() override;

@@ -1,0 +1,546 @@
+#include "ui/ui.h"
+
+#include <algorithm>
+#include <cmath>
+#include <imgui.h>
+
+#include "app_window.h"
+#include "config.h"
+#include "input.h"
+#include "runtime.h"
+#include "ui/fps_counter.h"
+#include "ui/hint.h"
+#include "ui/key_guides.h"
+#include "ui/keyboard.h"
+#include "ui/layer.h"
+#include "ui/menu.h"
+#include "util/log.h"
+
+namespace App::Ui {
+
+namespace {
+
+std::atomic<Layer*> instance{nullptr};
+
+constexpr u32 BACK_HELD = 1, START_HELD = 2;
+
+/// The menu's look: dark, translucent, an amber accent; sizes for a 13-pixel font, scaled with
+/// the font (UpdateScale).
+void SetStyle(ImGuiStyle& s) {
+    ImGui::StyleColorsDark(&s);
+    s.WindowPadding = ImVec2(14, 12);
+    s.FramePadding = ImVec2(8, 5);
+    s.CellPadding = ImVec2(6, 4);
+    s.ItemSpacing = ImVec2(10, 7);
+    s.ItemInnerSpacing = ImVec2(7, 5);
+    s.ScrollbarSize = 12;
+    s.GrabMinSize = 12;
+    s.WindowRounding = 8;
+    s.ChildRounding = 6;
+    s.FrameRounding = 5;
+    s.PopupRounding = 6;
+    s.GrabRounding = 4;
+    s.TabRounding = 5;
+    s.ScrollbarRounding = 6;
+    s.WindowBorderSize = 1;
+    s.PopupBorderSize = 1;
+    s.WindowTitleAlign = ImVec2(0.5f, 0.5f);
+
+    const ImVec4 amber(0.92f, 0.63f, 0.20f, 1.00f);
+    const auto mix = [](float r, float g, float b, float a = 1.0f) { return ImVec4(r, g, b, a); };
+    ImVec4* c = s.Colors;
+    c[ImGuiCol_Text] = mix(0.93f, 0.92f, 0.89f);
+    c[ImGuiCol_TextDisabled] = mix(0.58f, 0.56f, 0.52f);
+    c[ImGuiCol_WindowBg] = mix(0.07f, 0.07f, 0.08f, 0.95f);
+    c[ImGuiCol_ChildBg] = mix(0.0f, 0.0f, 0.0f, 0.0f);
+    c[ImGuiCol_PopupBg] = mix(0.09f, 0.09f, 0.10f, 0.98f);
+    c[ImGuiCol_Border] = mix(0.92f, 0.63f, 0.20f, 0.30f);
+    c[ImGuiCol_FrameBg] = mix(0.16f, 0.16f, 0.17f);
+    c[ImGuiCol_FrameBgHovered] = mix(0.27f, 0.22f, 0.15f);
+    c[ImGuiCol_FrameBgActive] = mix(0.36f, 0.28f, 0.15f);
+    c[ImGuiCol_TitleBg] = mix(0.10f, 0.09f, 0.08f);
+    c[ImGuiCol_TitleBgActive] = mix(0.20f, 0.15f, 0.09f);
+    c[ImGuiCol_CheckMark] = amber;
+    c[ImGuiCol_SliderGrab] = amber;
+    c[ImGuiCol_SliderGrabActive] = mix(1.00f, 0.76f, 0.36f);
+    c[ImGuiCol_Button] = mix(0.21f, 0.19f, 0.17f);
+    c[ImGuiCol_ButtonHovered] = mix(0.46f, 0.33f, 0.15f);
+    c[ImGuiCol_ButtonActive] = mix(0.62f, 0.43f, 0.15f);
+    c[ImGuiCol_Header] = mix(0.31f, 0.24f, 0.14f);
+    c[ImGuiCol_HeaderHovered] = mix(0.46f, 0.33f, 0.15f);
+    c[ImGuiCol_HeaderActive] = mix(0.62f, 0.43f, 0.15f);
+    c[ImGuiCol_Separator] = mix(0.92f, 0.63f, 0.20f, 0.25f);
+    c[ImGuiCol_Tab] = mix(0.15f, 0.14f, 0.13f);
+    c[ImGuiCol_TabHovered] = mix(0.52f, 0.37f, 0.15f);
+    c[ImGuiCol_TabSelected] = mix(0.40f, 0.29f, 0.13f);
+    c[ImGuiCol_TabSelectedOverline] = amber;
+    c[ImGuiCol_TableRowBgAlt] = mix(1.0f, 1.0f, 1.0f, 0.03f);
+    c[ImGuiCol_TextSelectedBg] = mix(0.92f, 0.63f, 0.20f, 0.35f);
+    c[ImGuiCol_NavCursor] = amber;
+    c[ImGuiCol_ModalWindowDimBg] = mix(0.0f, 0.0f, 0.0f, 0.45f);
+    c[ImGuiCol_SeparatorHovered] = mix(0.92f, 0.63f, 0.20f, 0.78f);
+    c[ImGuiCol_SeparatorActive] = amber;
+    c[ImGuiCol_ResizeGrip] = mix(0.92f, 0.63f, 0.20f, 0.20f);
+    c[ImGuiCol_ResizeGripHovered] = mix(0.92f, 0.63f, 0.20f, 0.67f);
+    c[ImGuiCol_ResizeGripActive] = mix(0.92f, 0.63f, 0.20f, 0.95f);
+    c[ImGuiCol_TextLink] = amber;
+    // the ones the dark style works out from its own (blue) colours, from these instead
+    const auto lerp = [](const ImVec4& a, const ImVec4& b, float t) {
+        return ImVec4(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, a.z + (b.z - a.z) * t,
+                      a.w + (b.w - a.w) * t);
+    };
+    c[ImGuiCol_CheckboxSelectedBg] = lerp(c[ImGuiCol_FrameBg], c[ImGuiCol_FrameBgHovered], 0.65f);
+    c[ImGuiCol_TabDimmed] = lerp(c[ImGuiCol_Tab], c[ImGuiCol_TitleBg], 0.80f);
+    c[ImGuiCol_TabDimmedSelected] = lerp(c[ImGuiCol_TabSelected], c[ImGuiCol_TitleBg], 0.40f);
+}
+
+} // namespace
+
+// ── The draw-data copy ──
+
+DrawCopy::~DrawCopy() {
+    for (ImDrawList* list : lists) {
+        IM_DELETE(list);
+    }
+}
+
+void DrawCopy::CopyFrom(const ImDrawData& source) {
+    // the lists are kept from frame to frame, so a frame like the last one allocates nothing
+    while (lists.Size < source.CmdLists.Size) {
+        lists.push_back(IM_NEW(ImDrawList)(ImGui::GetDrawListSharedData()));
+    }
+    data.Clear();
+    for (int i = 0; i < source.CmdLists.Size; ++i) {
+        const ImDrawList* from = source.CmdLists[i];
+        ImDrawList* to = lists[i];
+        to->CmdBuffer = from->CmdBuffer;
+        to->IdxBuffer = from->IdxBuffer;
+        to->VtxBuffer = from->VtxBuffer;
+        to->Flags = from->Flags;
+        data.CmdLists.push_back(to);
+    }
+    data.Valid = true;
+    data.FrameCount = source.FrameCount;
+    data.TotalIdxCount = source.TotalIdxCount;
+    data.TotalVtxCount = source.TotalVtxCount;
+    data.DisplayPos = source.DisplayPos;
+    data.DisplaySize = source.DisplaySize;
+    data.FramebufferScale = source.FramebufferScale;
+    data.Textures = source.Textures; // the context's: the renderer uploads what changed
+}
+
+void DrawCopy::Clear() {
+    data.Clear();
+    for (ImDrawList* list : lists) {
+        IM_DELETE(list);
+    }
+    lists.clear();
+}
+
+// ── The layer ──
+
+Layer::Layer(IWindow& window_, Config& config_) : window{window_}, config{config_} {
+    IMGUI_CHECKVERSION();
+    context = ImGui::CreateContext();
+    ImGui::SetCurrentContext(context);
+    ImGuiIO& io = ImGui::GetIO();
+    io.IniFilename = nullptr; // nothing of the menu's is kept between runs but the settings
+    io.LogFilename = nullptr;
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad;
+    // the window shows and hides the cursor itself (hidden after a while in full screen)
+    io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
+    // a font that scales: drawn at the size the window's height asks for (UpdateScale)
+    io.Fonts->AddFontDefaultVector();
+    SetStyle(ImGui::GetStyle());
+    base_style = ImGui::GetStyle();
+    window.ImGuiInit(); // the window's platform backend, every controller driving the navigation
+
+    menu = std::make_unique<Menu>(*this);
+    keyboard = std::make_shared<Keyboard>();
+    Runtime().SetSoftwareKeyboard(keyboard);
+#ifdef ENABLE_VULKAN
+    RegisterVulkanOverlay(*this);
+#endif
+    APP_LOG_INFO("in-game menu: Esc, or a controller's Guide or Back+Start");
+}
+
+Layer::~Layer() {
+#ifdef ENABLE_VULKAN
+    UnregisterVulkanOverlay();
+#endif
+    if (menu_open) {
+        menu->Closed(); // the window closed with the menu up: its changes are kept all the same
+    }
+    SetCapture(false);
+    menu.reset();
+    std::scoped_lock lock{mutex};
+    MakeCurrent();
+    copy.Clear();
+    window.ImGuiShutdown();
+    ImGui::DestroyContext(context);
+}
+
+void Layer::MakeCurrent() {
+    ImGui::SetCurrentContext(context);
+}
+
+void Layer::Post(std::function<void()> action) {
+    posted.push_back(std::move(action));
+}
+
+void Layer::Help(const char* text) {
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled) || ImGui::IsItemFocused()) {
+        help = text;
+    }
+}
+
+void Layer::Open() {
+    if (menu_open) {
+        return;
+    }
+    menu_open = true;
+    menu->Opened();
+    SetCapture(true);
+}
+
+void Layer::Close() {
+    if (!menu_open) {
+        return;
+    }
+    menu_open = false;
+    key_capture = false;
+    menu->Closed();
+    keyboard->Refocus();
+    SetCapture(keyboard->Active());
+}
+
+void Layer::SetCapture(bool on) {
+    if (on == capturing) {
+        return;
+    }
+    capturing = on;
+    Input::SetMuted(on);
+    if (on) {
+        // what the game had held is let go: the menu has the keys and the mouse now
+        Runtime().ReleaseAllKeys();
+        window.ReleaseTouch();
+        fresh_input = true;
+        Host::ShowCursor(true);
+    }
+}
+
+bool Layer::OnEvent(const InputEvent& event) {
+    using Type = InputEvent::Type;
+    // the menu's toggle: Esc, a controller's Guide, or its Back and Start together (Guide is
+    // often Steam's or the Game Bar's)
+    switch (event.type) {
+    case Type::KeyDown:
+        if (!event.repeat && event.scancode == Scancode::Escape && !key_capture) {
+            if (!menu_open) {
+                // a moment later, unless a controller's button came with it: Steam Input's
+                // desktop layouts (a Steam Deck's, say) send Esc for B while the game sees the
+                // controller too, and B would open the menu (Frame decides)
+                escape_at = std::max<u32>(Host::Ticks(), 1);
+                return true;
+            }
+            escape_pressed = true; // the frame decides: a list or a text field takes it first
+        }
+        break;
+    case Type::PadButton: {
+        if (event.down) {
+            pad_button_at = std::max<u32>(Host::Ticks(), 1);
+        }
+        if (event.button == PadButton::Guide) {
+            if (event.down) {
+                menu_open ? Close() : Open();
+            }
+            return true;
+        }
+        const u32 bit = event.button == PadButton::Back    ? BACK_HELD
+                        : event.button == PadButton::Start ? START_HELD
+                                                           : 0;
+        if (bit) {
+            const u32 before = controller_buttons;
+            controller_buttons = event.down ? controller_buttons | bit : controller_buttons & ~bit;
+            if (event.down && before != controller_buttons &&
+                controller_buttons == (BACK_HELD | START_HELD)) {
+                menu_open ? Close() : Open();
+                return true;
+            }
+        }
+        break;
+    }
+    case Type::PadAdded:
+    case Type::PadRemoved: {
+        // the menu's list of controllers, kept whether it is up or not (and the window's)
+        if (event.type == Type::PadRemoved) {
+            controller_buttons = 0;
+        }
+        std::scoped_lock lock{mutex};
+        MakeCurrent();
+        window.ImGuiForwardCurrentEvent();
+        return false;
+    }
+    default:
+        break;
+    }
+
+    if (!capturing) {
+        return false;
+    }
+    // Controls: the next key pressed is the one to bind (Dear ImGui still sees keys let go, the
+    // one that started the capture among them)
+    if (key_capture && event.type == Type::KeyDown) {
+        if (!event.repeat) {
+            menu->OnCapturedKey(event.scancode);
+        }
+        return true;
+    }
+    // (and a mouse button or the wheel: Mouse Right, Wheel Up, ...)
+    if (key_capture && event.type == Type::MouseButton && event.down && !event.from_touch) {
+        menu->OnCapturedKey(Input::MOUSE_KEY + event.button);
+        return true;
+    }
+    if (key_capture && event.type == Type::Wheel && event.wheel_y != 0) {
+        menu->OnCapturedKey(event.wheel_y > 0 ? Input::WHEEL_UP : Input::WHEEL_DOWN);
+        return true;
+    }
+    {
+        std::scoped_lock lock{mutex};
+        MakeCurrent();
+        window.ImGuiForwardCurrentEvent();
+    }
+    switch (event.type) {
+    case Type::KeyDown:
+    case Type::KeyUp: {
+        // full screen stays the window's (F11, Alt+Enter)
+        const bool alt_enter = event.scancode == Scancode::Return && (event.mods & Mod::Alt);
+        return !(alt_enter || event.scancode == Input::KeyCode(config.fullscreen_key));
+    }
+    case Type::Text:
+    case Type::TextEditing:
+    case Type::MouseMotion:
+    case Type::MouseButton:
+    case Type::Wheel:
+    case Type::Touch:
+    case Type::PadButton:
+    case Type::PadAxis:
+        return true;
+    default:
+        return false; // the window's too: resizing, focus, controllers coming and going, quitting
+    }
+}
+
+void Layer::UpdateScale(float display_height) {
+    // a font about 1/34 of the window's height: 21 pixels at 720p, 32 at 1080p, 64 at 4K
+    const float size = std::clamp(std::round(display_height / 34.0f), 14.0f, 96.0f);
+    if (size == font_size) {
+        return;
+    }
+    font_size = size;
+    ImGuiStyle& style = ImGui::GetStyle();
+    style = base_style;
+    style.ScaleAllSizes(size / 13.0f);
+    style.FontSizeBase = size;
+}
+
+void Layer::ToggleFpsCounter() {
+    if (FpsCounterOn(config.fps_counter)) {
+        last_fps_corner = config.fps_counter;
+        config.fps_counter = "off";
+    } else {
+        config.fps_counter = last_fps_corner;
+    }
+    // the file's settings with this one changed: not the command line's
+    Config file = App::Load();
+    file.fps_counter = config.fps_counter;
+    App::Save(file);
+    APP_LOG_INFO("frame-rate counter: {}", config.fps_counter);
+}
+
+void Layer::ToggleKeyGuides() {
+    if (FpsCounterOn(config.key_guides)) {
+        last_guides_corner = config.key_guides;
+        config.key_guides = "off";
+    } else {
+        config.key_guides = last_guides_corner;
+    }
+    Config file = App::Load();
+    file.key_guides = config.key_guides;
+    App::Save(file);
+    APP_LOG_INFO("key guides: {}", config.key_guides);
+}
+
+void Layer::Frame() {
+    if (escape_at != 0) {
+        constexpr u32 ECHO_MS = 150;
+        const u32 now = Host::Ticks();
+        const bool echo = pad_button_at != 0 && (pad_button_at >= escape_at ? pad_button_at - escape_at
+                                                                              : escape_at - pad_button_at) < ECHO_MS;
+        if (echo) {
+            escape_at = 0;
+            if (!echo_logged) {
+                echo_logged = true;
+                APP_LOG_INFO("an Esc that came with a controller's button didn't open the menu (Steam "
+                                   "Input sends keys for a controller's buttons in its desktop layouts)");
+            }
+        } else if (now - escape_at >= 80) {
+            escape_at = 0;
+            Open();
+        }
+    }
+    if (escape_pressed) {
+        escape_pressed = false;
+        if (menu_open && !was_busy && !key_capture) {
+            if (menu->EditingLayout()) {
+                menu->CancelLayoutEdit(); // the layout editor's Esc: back to the menu as it was
+            } else {
+                Close();
+            }
+        }
+    }
+    if (close_requested) {
+        close_requested = false;
+        Close();
+    }
+    const bool keyboard_up = keyboard->Active();
+    SetCapture(menu_open || keyboard_up);
+    // a hint over the game (the skip after a quest) while nothing else of the menu's is up
+    const Hint hint = capturing ? Hint{} : CurrentHint(config);
+    const bool fps_counter = FpsCounterOn(config.fps_counter);
+    // the key guides while the keyboard and mouse are in use, under nothing else of the menu's
+    const bool guides = !capturing && window.KeyboardMouseActive() && FpsCounterOn(config.key_guides);
+    const bool draw = capturing || keyboard->HasNotice() || !hint.Empty() || fps_counter || guides;
+    if (!draw || !renderer_ready.load(std::memory_order_acquire)) {
+        if (visible.load(std::memory_order_relaxed)) {
+            std::scoped_lock lock{mutex};
+            draw_ready = false;
+            visible.store(false, std::memory_order_release);
+        }
+        return;
+    }
+
+    std::unique_lock lock{mutex};
+    MakeCurrent();
+    ImGuiIO& io = ImGui::GetIO();
+    if (fresh_input) {
+        // whatever the menu had pressed when it closed is over
+        io.ClearEventsQueue();
+        io.ClearInputKeys();
+        io.ClearInputMouse();
+        const Point mouse = Host::MousePosition();
+        io.AddMousePosEvent(static_cast<float>(mouse.x), static_cast<float>(mouse.y));
+        // and a controller's buttons held now (the backend reads them each frame) count as held,
+        // not as pressed: a frame that takes them in and shows nothing (B held as the menu
+        // opened would close it at once, A would choose its first button)
+        window.ImGuiNewFrame();
+        ImGui::NewFrame();
+        ImGui::EndFrame();
+        fresh_input = false;
+    }
+    window.ImGuiNewFrame();
+    // pixels per window unit as the window counts them (the backend asks OpenGL, which a
+    // Vulkan or software window doesn't have)
+    const WindowSize points = window.SizeInPoints();
+    const WindowSize pixels = window.SizeInPixels();
+    if (points.w > 0 && points.h > 0 && pixels.w > 0 && pixels.h > 0) {
+        io.DisplayFramebufferScale = ImVec2(static_cast<float>(pixels.w) / points.w,
+                                            static_cast<float>(pixels.h) / points.h);
+    }
+    UpdateScale(io.DisplaySize.y);
+    if (capturing) {
+        Host::ShowCursor(true);
+    }
+
+    ImGui::NewFrame();
+    help = nullptr;
+    if (menu_open) {
+        menu->Draw();
+    } else if (keyboard_up) {
+        keyboard->Draw();
+    }
+    if (!keyboard_up && keyboard->HasNotice()) {
+        keyboard->DrawNotice();
+    }
+    if (!hint.Empty()) {
+        DrawHint(hint, hint.flash);
+    }
+    if (fps_counter) {
+        DrawFpsCounter(config.fps_counter);
+    }
+    if (guides) {
+        DrawKeyGuides(config, config.key_guides);
+    }
+    was_busy = ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopup) || ImGui::IsAnyItemActive();
+    ImGui::Render();
+    copy.CopyFrom(*ImGui::GetDrawData());
+    draw_ready = true;
+    visible.store(true, std::memory_order_release);
+    lock.unlock();
+
+    // what the frame asked for, without the lock
+    auto actions = std::move(posted);
+    posted.clear();
+    for (auto& action : actions) {
+        action();
+    }
+}
+
+ImDrawData* Layer::DrawData(u32 width, u32 height) {
+    ImDrawData& data = copy.data;
+    if (!draw_ready || width == 0 || height == 0 || data.DisplaySize.x <= 0.0f ||
+        data.DisplaySize.y <= 0.0f || data.CmdLists.Size == 0) {
+        return nullptr;
+    }
+    // drawn at the size of the target, which can differ from the window's for a frame while it
+    // is resized
+    data.FramebufferScale = ImVec2(static_cast<float>(width) / data.DisplaySize.x,
+                                   static_cast<float>(height) / data.DisplaySize.y);
+    return &data;
+}
+
+Layer* Get() {
+    return instance.load(std::memory_order_acquire);
+}
+
+// ── ui.h ──
+
+void Start(IWindow& window, Config& config) {
+    if (!Get()) {
+        instance.store(new Layer(window, config), std::memory_order_release);
+    }
+}
+
+void Stop() {
+    delete instance.exchange(nullptr);
+}
+
+bool OnEvent(const InputEvent& event) {
+    Layer* layer = Get();
+    return layer && layer->OnEvent(event);
+}
+
+void Frame() {
+    if (Layer* layer = Get()) {
+        layer->Frame();
+    }
+}
+
+bool Visible() {
+    const Layer* layer = Get();
+    return layer && layer->Capturing();
+}
+
+void ToggleFpsCounter() {
+    if (Layer* layer = Get()) {
+        layer->ToggleFpsCounter();
+    }
+}
+
+void ToggleKeyGuides() {
+    if (Layer* layer = Get()) {
+        layer->ToggleKeyGuides();
+    }
+}
+
+} // namespace App::Ui

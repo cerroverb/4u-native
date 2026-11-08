@@ -1,0 +1,35 @@
+The Vulkan loader of the caller's choosing: VulkanInterfaceOptions::getInstanceProcAddr, given to volkInitializeCustom
+instead of volkInitialize (a driver the host opened itself, such as a player's own GPU driver on Android).
+
+diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
+--- a/plume_vulkan.cpp
++++ b/plume_vulkan.cpp
+@@ -4905,7 +4905,13 @@ namespace plume {
+ #else
+     VulkanInterface::VulkanInterface(const VulkanInterfaceOptions &options) {
+ #endif
+-        VkResult res = volkInitialize();
++        VkResult res = VK_SUCCESS;
++        if (options.getInstanceProcAddr != nullptr) {
++            volkInitializeCustom(options.getInstanceProcAddr);
++        }
++        else {
++            res = volkInitialize();
++        }
+         if (res != VK_SUCCESS) {
+             reportFailure(options.error, "volkInitialize failed with error code 0x%X. The Vulkan loader could not be loaded.", res);
+             return;
+diff --git a/plume_vulkan.h b/plume_vulkan.h
+--- a/plume_vulkan.h
++++ b/plume_vulkan.h
+@@ -69,6 +69,10 @@ namespace plume {
+ 
+         // Receives the text of the failure when the creation fails (also printed to stderr as before).
+         std::string *error = nullptr;
++
++        // mh4n (patch 14): the vkGetInstanceProcAddr Vulkan is loaded from (volkInitializeCustom), for a
++        // driver the caller opened itself; null: the system's loader (volkInitialize), as before.
++        PFN_vkGetInstanceProcAddr getInstanceProcAddr = nullptr;
+     };
+ 
+     // mh4n (patch 08): what a caller can ask of the device, passed to VulkanInterface::createDeviceEx.

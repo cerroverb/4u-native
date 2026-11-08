@@ -1,0 +1,30 @@
+A uniform buffer descriptor whose offset is given at bind time (VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC): the
+native renderer keeps one set of uniforms and tables for many draws instead of writing a set per draw.
+
+diff --git a/plume_render_interface_types.h b/plume_render_interface_types.h
+--- a/plume_render_interface_types.h
++++ b/plume_render_interface_types.h
+@@ -381,7 +381,10 @@
+         READ_WRITE_STRUCTURED_BUFFER,
+         BYTE_ADDRESS_BUFFER,
+         READ_WRITE_BYTE_ADDRESS_BUFFER,
+-        ACCELERATION_STRUCTURE
++        ACCELERATION_STRUCTURE,
++        // A uniform buffer whose offset is given when the set is bound (VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC):
++        // one set serves draws whose uniforms sit at different offsets of the same buffer.
++        DYNAMIC_CONSTANT_BUFFER
+     };
+ 
+     enum class RenderRootDescriptorType {
+diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
+--- a/plume_vulkan.cpp
++++ b/plume_vulkan.cpp
+@@ -593,6 +593,8 @@
+             return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+         case RenderDescriptorRangeType::ACCELERATION_STRUCTURE:
+             return VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
++        case RenderDescriptorRangeType::DYNAMIC_CONSTANT_BUFFER:
++            return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+         default:
+             assert(false && "Unknown descriptor range type.");
+             return VK_DESCRIPTOR_TYPE_MAX_ENUM;

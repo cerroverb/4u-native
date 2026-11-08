@@ -1,0 +1,78 @@
+The queues' global priority: VulkanDeviceExtras::queueGlobalPriority, a VkQueueGlobalPriorityKHR value given to every
+queue the device makes (VkDeviceQueueGlobalPriorityCreateInfoKHR) with VK_KHR_global_priority, else VK_EXT_global_priority,
+when the device offers one; 0, the default, asks for none. A priority the system does not permit leaves the device made
+without one.
+
+diff --git a/plume_vulkan.h b/plume_vulkan.h
+index c15dbf3..0052a1b 100644
+--- a/plume_vulkan.h
++++ b/plume_vulkan.h
+@@ -113,6 +113,12 @@ namespace plume {
+         // memory of its own.
+         uint64_t allocatorBlockSize = 0;
+ 
++        // The global priority of every queue the device makes (patch 19): a VkQueueGlobalPriorityKHR value (LOW 128,
++        // MEDIUM 256, HIGH 512, REALTIME 1024), with VK_KHR_global_priority or VK_EXT_global_priority when the device
++        // offers one. 0 (the default) asks for none. A priority the system does not permit (VK_ERROR_NOT_PERMITTED)
++        // leaves the device made without one.
++        int32_t queueGlobalPriority = 0;
++
+         // Receives the text of the failure when the creation fails (also printed to stderr as before).
+         std::string *error = nullptr;
+     };
+diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
+index 11321de..3445d55 100644
+--- a/plume_vulkan.cpp
++++ b/plume_vulkan.cpp
+@@ -4421,6 +4421,31 @@ namespace plume {
+             enabledExtensions.push_back(extension.c_str());
+         }
+ 
++        // mh4n (patch 19): the queues' global priority, when asked and offered.
++        const char *globalPriorityExtension = nullptr;
++        if (extras.queueGlobalPriority != 0) {
++            for (uint32_t i = 0; i < extensionCount && globalPriorityExtension == nullptr; i++) {
++                if (strcmp(availableExtensions[i].extensionName, VK_KHR_GLOBAL_PRIORITY_EXTENSION_NAME) == 0) {
++                    globalPriorityExtension = VK_KHR_GLOBAL_PRIORITY_EXTENSION_NAME;
++                }
++            }
++            for (uint32_t i = 0; i < extensionCount && globalPriorityExtension == nullptr; i++) {
++                if (strcmp(availableExtensions[i].extensionName, VK_EXT_GLOBAL_PRIORITY_EXTENSION_NAME) == 0) {
++                    globalPriorityExtension = VK_EXT_GLOBAL_PRIORITY_EXTENSION_NAME;
++                }
++            }
++        }
++
++        VkDeviceQueueGlobalPriorityCreateInfoKHR globalPriorityInfo = {};
++        globalPriorityInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_GLOBAL_PRIORITY_CREATE_INFO_KHR;
++        globalPriorityInfo.globalPriority = VkQueueGlobalPriorityKHR(extras.queueGlobalPriority);
++        if (globalPriorityExtension != nullptr) {
++            enabledExtensions.push_back(globalPriorityExtension);
++            for (VkDeviceQueueCreateInfo &queueCreateInfo : queueCreateInfos) {
++                queueCreateInfo.pNext = &globalPriorityInfo;
++            }
++        }
++
+         for (const char *extension : enabledExtensions) {
+             enabledExtensionNames.emplace_back(extension);
+         }
+@@ -4435,6 +4460,19 @@ namespace plume {
+         createInfo.pEnabledFeatures = &enabledCoreFeatures;
+ 
+         VkResult res = vkCreateDevice(physicalDevice, &createInfo, nullptr, &vk);
++        if ((res == VK_ERROR_NOT_PERMITTED_KHR) && (globalPriorityExtension != nullptr)) {
++            // mh4n (patch 19): a priority the system does not permit: the device without one.
++            for (VkDeviceQueueCreateInfo &queueCreateInfo : queueCreateInfos) {
++                queueCreateInfo.pNext = nullptr;
++            }
++            enabledExtensions.pop_back();
++            enabledExtensionNames.pop_back();
++            createInfo.ppEnabledExtensionNames = enabledExtensions.data();
++            createInfo.enabledExtensionCount = uint32_t(enabledExtensions.size());
++            globalPriorityExtension = nullptr;
++            res = vkCreateDevice(physicalDevice, &createInfo, nullptr, &vk);
++        }
++
+         if (res != VK_SUCCESS) {
+             reportFailure(extras.error, "vkCreateDevice failed with error code 0x%X.", res);
+             return;

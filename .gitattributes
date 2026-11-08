@@ -1,0 +1,5 @@
+# scripts keep the line ends their shells need, on any checkout
+*.sh text eol=lf
+*.bat text eol=crlf
+android/gradlew text eol=lf
+android/gradlew.bat text eol=crlf

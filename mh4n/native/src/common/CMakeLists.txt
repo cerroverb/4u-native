@@ -1,0 +1,12 @@
+mh4n_module(
+    SOURCES
+        assert.cpp
+        crc32.cpp
+        log.cpp
+        options.cpp
+        registry.cpp
+        utf8.cpp
+    THIRD_PARTY
+        mh4n_fmt
+        Threads::Threads
+)

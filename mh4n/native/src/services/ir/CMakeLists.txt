@@ -1,0 +1,17 @@
+# mh4n_services_ir: ir:USER (N1-16) with the Circle Pad Pro of mh4n_ir_device as device 1 (N3-12). The
+# state (events, the shared memory the game gave, the receive buffer, the device) is included as
+# "services/ir/ir_state.h" by the HID capture.
+mh4n_module(
+    SOURCES
+        ir_buffer.cpp
+        ir_device.cpp
+        ir_user.cpp
+    DEPENDS
+        mh4n_ipc
+        mh4n_ir_device
+        mh4n_kernel
+        mh4n_runtime
+)
+target_include_directories(mh4n_services_ir PUBLIC "${MH4N_SRC_DIR}")
+# The private headers of this directory.
+target_include_directories(mh4n_services_ir PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")

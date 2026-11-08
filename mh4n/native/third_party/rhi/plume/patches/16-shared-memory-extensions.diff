@@ -1,0 +1,19 @@
+Three more optional device extensions a caller can name: VK_ANDROID_external_memory_android_hardware_buffer and
+VK_EXT_queue_family_foreign (images whose memory the system's other graphics read: the Android app shows the screens
+straight from them) and VK_KHR_external_fence_fd (a sync file of a fence, for those readers to wait on).
+
+diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
+--- a/plume_vulkan.cpp
++++ b/plume_vulkan.cpp
+@@ -97,6 +97,11 @@ namespace plume {
+         VK_KHR_PRESENT_ID_EXTENSION_NAME,
+         VK_KHR_PRESENT_WAIT_EXTENSION_NAME,
+         VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME,
++        // mh4n (patch 16): memory shared with the system's other graphics APIs (Android's hardware buffers) and the
++        // sync file of a fence; only when the caller names them.
++        "VK_ANDROID_external_memory_android_hardware_buffer",
++        VK_EXT_QUEUE_FAMILY_FOREIGN_EXTENSION_NAME,
++        VK_KHR_EXTERNAL_FENCE_FD_EXTENSION_NAME,
+         // Vulkan spec requires this to be enabled if supported by the driver.
+         VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME,
+     };

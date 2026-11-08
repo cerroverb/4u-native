@@ -1,0 +1,33 @@
+The size of the blocks the allocator takes from a large heap: VulkanDeviceExtras::allocatorBlockSize, given to VMA as
+preferredLargeHeapBlockSize (0, the default, keeps VMA's 256 MiB). With 256 MiB a memory type's blocks grow by 32, 64,
+128 and then 256 MiB, and a phone holds every byte of a block however little of it is used.
+
+diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
+index a0dcf7c..11321de 100644
+--- a/plume_vulkan.cpp
++++ b/plume_vulkan.cpp
+@@ -4474,6 +4474,7 @@ namespace plume {
+         allocatorInfo.pVulkanFunctions = &vmaFunctions;
+         allocatorInfo.instance = renderInterface->instance;
+         allocatorInfo.vulkanApiVersion = renderInterface->appInfo.apiVersion;
++        allocatorInfo.preferredLargeHeapBlockSize = extras.allocatorBlockSize; // mh4n (patch 18): 0 is VMA's default
+ 
+         res = vmaCreateAllocator(&allocatorInfo, &allocator);
+         if (res != VK_SUCCESS) {
+diff --git a/plume_vulkan.h b/plume_vulkan.h
+index 8c9e69e..c15dbf3 100644
+--- a/plume_vulkan.h
++++ b/plume_vulkan.h
+@@ -107,6 +107,12 @@ namespace plume {
+         // Enable the timeline semaphore feature when the device offers it (patch 09).
+         bool timelineSemaphore = true;
+ 
++        // The size of the memory blocks the allocator takes from a large heap and places allocations in (patch 18):
++        // VmaAllocatorCreateInfo::preferredLargeHeapBlockSize. 0 keeps VMA's default (256 MiB). The first blocks
++        // of each memory type are smaller (an eighth, a quarter, a half); an allocation over half a block gets
++        // memory of its own.
++        uint64_t allocatorBlockSize = 0;
++
+         // Receives the text of the failure when the creation fails (also printed to stderr as before).
+         std::string *error = nullptr;
+     };

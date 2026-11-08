@@ -1,0 +1,52 @@
+MH4U for Android (4u-native): additional terms under section 7 of the GNU GPL, version 3
+
+Copyright (C) 2026 khorne-hub
+Official project page: https://github.com/khorne-hub/4u-native
+
+The material khorne-hub added to this work is licensed under the GNU General Public License, version 3 or (at your option)
+any later version (LICENSE), with the additional terms below, as section 7 of that license permits. That material is the
+app (app_native/ and android/) and the changes made to the runtime in mh4n/ for this port. The terms don't apply to code
+by others, which keeps its own license (THIRD_PARTY_NOTICES).
+
+a) Author attribution (section 7 b). Whoever conveys this work or a work based on it, in source or binary form, modified or
+   not, must keep these notices as they are:
+   - the credits the app shows when it opens, and its "Credits & Licenses" page, with the author's name (khorne-hub) and the
+     official project page above;
+   - this file, and the "Credits" and "License" sections of README.md and README.es.md.
+
+b) Origin (section 7 c). A modified version must be marked as changed: in its name, in its credits and wherever it is
+   offered. It must not be presented as the official version, or as made or endorsed by khorne-hub.
+
+c) Names (section 7 e). These terms give no right to use the name "4u-native" or the author's name to name or promote a
+   modified version, except to state its origin as a) and b) require.
+
+Anyone who conveys this work must also follow the GPL itself. That means giving recipients the license and these terms,
+and the complete corresponding source code, or a written offer of it (section 6). Conveying it without them ends the
+rights the license gives (section 8).
+
+----------------------------------------------------------------------------------------------------------------------
+
+MH4U para Android (4u-native): términos adicionales según la sección 7 de la GPL de GNU, versión 3
+
+(Traducción informativa. Vale el texto en inglés de arriba.)
+
+El material que khorne-hub agregó a esta obra se licencia bajo la Licencia Pública General de GNU, versión 3 o (a tu
+elección) cualquier versión posterior (LICENSE), con los términos adicionales de abajo, como lo permite la sección 7 de esa
+licencia. Ese material es la app (app_native/ y android/) y los cambios hechos al runtime en mh4n/ para este port. Los
+términos no se aplican al código de otros, que conserva su propia licencia (THIRD_PARTY_NOTICES).
+
+a) Atribución del autor (sección 7 b). Quien distribuya esta obra o una obra basada en ella, en código fuente o binario,
+   modificada o no, tiene que conservar tal cual estos avisos:
+   - los créditos que la app muestra al abrirse, y su página "Créditos y licencias", con el nombre del autor (khorne-hub) y
+     la página oficial del proyecto de arriba;
+   - este archivo, y las secciones "Créditos" y "Licencia" de README.md y README.es.md.
+
+b) Origen (sección 7 c). Una versión modificada tiene que indicar que está modificada: en su nombre, en sus créditos y
+   donde se ofrezca. No puede presentarse como la versión oficial, ni como hecha o respaldada por khorne-hub.
+
+c) Nombres (sección 7 e). Estos términos no dan derecho a usar el nombre "4u-native" ni el nombre del autor para nombrar o
+   promocionar una versión modificada, salvo para indicar su origen como lo piden a) y b).
+
+Quien distribuya esta obra también tiene que cumplir la GPL misma. Eso significa darles a quienes la reciban la licencia y
+estos términos, y el código fuente correspondiente completo, o una oferta escrita de él (sección 6). Distribuirla sin eso
+termina los derechos que da la licencia (sección 8).

@@ -1,0 +1,38 @@
+A render area for the render pass a command list begins (VulkanCommandList::renderArea; the whole framebuffer
+when it is empty, as before): on a tile-based GPU a pass loads and stores its attachments only there.
+
+diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
+--- a/plume_vulkan.cpp
++++ b/plume_vulkan.cpp
+@@ -3230,6 +3230,7 @@ namespace plume {
+ 
+     void VulkanCommandList::setFramebuffer(const RenderFramebuffer *framebuffer) {
+         endActiveRenderPass();
++        renderArea = {};
+ 
+         if (framebuffer != nullptr) {
+             const VulkanFramebuffer *interfaceFramebuffer = static_cast<const VulkanFramebuffer *>(framebuffer);
+@@ -3653,6 +3654,9 @@ namespace plume {
+             beginInfo.framebuffer = targetFramebuffer->vk;
+             beginInfo.renderArea.extent.width = targetFramebuffer->width;
+             beginInfo.renderArea.extent.height = targetFramebuffer->height;
++            if ((renderArea.extent.width != 0) && (renderArea.extent.height != 0)) {
++                beginInfo.renderArea = renderArea;
++            }
+             vkCmdBeginRenderPass(vk, &beginInfo, VkSubpassContents::VK_SUBPASS_CONTENTS_INLINE);
+             activeRenderPass = targetFramebuffer->renderPass;
+         }
+diff --git a/plume_vulkan.h b/plume_vulkan.h
+--- a/plume_vulkan.h
++++ b/plume_vulkan.h
+@@ -366,6 +366,10 @@ namespace plume {
+         const VulkanPipelineLayout *activeRaytracingPipelineLayout = nullptr;
+         VkRenderPass activeRenderPass = VK_NULL_HANDLE;
+ 
++        // mh4n (patch 15): the render area of the render pass the command list begins next (loads, stores and draws
++        // only there); an empty extent, the default and what setFramebuffer leaves, is the whole framebuffer, as before.
++        VkRect2D renderArea = {};
++
+         VulkanCommandList(VulkanCommandQueue *queue);
+         ~VulkanCommandList() override;
+         void begin() override;

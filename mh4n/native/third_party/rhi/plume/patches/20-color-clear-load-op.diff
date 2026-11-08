@@ -1,0 +1,131 @@
+A render pass that clears its colour attachment on load: VulkanFramebuffer::renderPassClearColor (the same
+attachments, the colour load op CLEAR, the depth-stencil ones as in renderPass) and renderPassClearColorDepth (both
+CLEAR, as renderPassClearDepth), compatible with renderPass, and VulkanCommandList::pendingColorClear, used by the
+next render pass the command list begins (to zero; with pendingDepthClear, both) and forgotten by setFramebuffer.
+A pass whose first draw writes every pixel of its render area begins with it: a tile-based GPU then neither reads
+the old colour nor clears it with a draw. (A CLEAR, not DONT_CARE: the MHGU port saw an Adreno 830 draw a scene
+black but for some tiles after DONT_CARE.)
+
+diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
+index 3445d55..c24d68f 100644
+--- a/plume_vulkan.cpp
++++ b/plume_vulkan.cpp
+@@ -2660,6 +2660,7 @@ namespace plume {
+         std::vector<VkAttachmentReference> colorReferences;
+         std::vector<VkImageView> imageViews;
+         VkAttachmentReference depthReference = {};
++        VkAttachmentLoadOp depthLoadOp = VK_ATTACHMENT_LOAD_OP_LOAD;  // mh4n (patch 20): renderPass's, for the variants
+         for (uint32_t i = 0; i < desc.colorAttachmentsCount; i++) {
+             const VulkanTexture *colorAttachment;
+             VkImageView colorAttachmentImageView;
+@@ -2741,6 +2742,7 @@ namespace plume {
+             attachment.storeOp = preferNoneForReadOnly ? VK_ATTACHMENT_STORE_OP_NONE_EXT : VK_ATTACHMENT_STORE_OP_STORE;
+             attachment.stencilLoadOp = attachment.loadOp;
+             attachment.stencilStoreOp = attachment.storeOp;
++            depthLoadOp = attachment.loadOp;  // mh4n (patch 20)
+             attachment.initialLayout = depthReference.layout;
+             attachment.finalLayout = depthReference.layout;
+             attachments.emplace_back(attachment);
+@@ -2778,6 +2780,24 @@ namespace plume {
+             }
+         }
+ 
++        // mh4n (patch 20): the variants that clear the colour attachment on load, with the depth-stencil one loaded as in
++        // renderPass and cleared as in renderPassClearDepth.
++        if (desc.colorAttachmentsCount == 1) {
++            attachments[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
++            if (renderPassClearDepth != VK_NULL_HANDLE) {
++                if (vkCreateRenderPass(device->vk, &passInfo, nullptr, &renderPassClearColorDepth) != VK_SUCCESS) {
++                    renderPassClearColorDepth = VK_NULL_HANDLE;
++                }
++            }
++            for (uint32_t i = 1; i < attachments.size(); i++) {
++                attachments[i].loadOp = depthLoadOp;
++                attachments[i].stencilLoadOp = depthLoadOp;
++            }
++            if (vkCreateRenderPass(device->vk, &passInfo, nullptr, &renderPassClearColor) != VK_SUCCESS) {
++                renderPassClearColor = VK_NULL_HANDLE;
++            }
++        }
++
+         VkFramebufferCreateInfo fbInfo = {};
+         fbInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+         fbInfo.renderPass = renderPass;
+@@ -2806,6 +2826,14 @@ namespace plume {
+         if (renderPassClearDepth != VK_NULL_HANDLE) {
+             vkDestroyRenderPass(device->vk, renderPassClearDepth, nullptr);
+         }
++
++        if (renderPassClearColor != VK_NULL_HANDLE) {
++            vkDestroyRenderPass(device->vk, renderPassClearColor, nullptr);
++        }
++
++        if (renderPassClearColorDepth != VK_NULL_HANDLE) {
++            vkDestroyRenderPass(device->vk, renderPassClearColorDepth, nullptr);
++        }
+     }
+ 
+     uint32_t VulkanFramebuffer::getWidth() const {
+@@ -3251,6 +3279,7 @@ namespace plume {
+         endActiveRenderPass();
+         renderArea = {};
+         pendingDepthClear = false;
++        pendingColorClear = false;
+ 
+         if (framebuffer != nullptr) {
+             const VulkanFramebuffer *interfaceFramebuffer = static_cast<const VulkanFramebuffer *>(framebuffer);
+@@ -3678,14 +3707,26 @@ namespace plume {
+                 beginInfo.renderArea = renderArea;
+             }
+             thread_local std::vector<VkClearValue> clearValues;
++            // mh4n (patch 20): the colour cleared too (to zero), or alone
++            const bool clearColor = pendingColorClear && (targetFramebuffer->renderPassClearColor != VK_NULL_HANDLE);
+             if (pendingDepthClear && (targetFramebuffer->renderPassClearDepth != VK_NULL_HANDLE)) {
+                 clearValues.assign(targetFramebuffer->depthAttachmentIndex + 1, VkClearValue{});
+                 clearValues[targetFramebuffer->depthAttachmentIndex].depthStencil = pendingDepthClearValue;
+                 beginInfo.renderPass = targetFramebuffer->renderPassClearDepth;
++                if (clearColor && (targetFramebuffer->renderPassClearColorDepth != VK_NULL_HANDLE)) {
++                    beginInfo.renderPass = targetFramebuffer->renderPassClearColorDepth;
++                }
+                 beginInfo.clearValueCount = uint32_t(clearValues.size());
+                 beginInfo.pClearValues = clearValues.data();
+             }
++            else if (clearColor) {
++                clearValues.assign(1, VkClearValue{});
++                beginInfo.renderPass = targetFramebuffer->renderPassClearColor;
++                beginInfo.clearValueCount = 1;
++                beginInfo.pClearValues = clearValues.data();
++            }
+             pendingDepthClear = false;
++            pendingColorClear = false;
+             vkCmdBeginRenderPass(vk, &beginInfo, VkSubpassContents::VK_SUBPASS_CONTENTS_INLINE);
+             activeRenderPass = targetFramebuffer->renderPass;
+         }
+diff --git a/plume_vulkan.h b/plume_vulkan.h
+index 0052a1b..d588f94 100644
+--- a/plume_vulkan.h
++++ b/plume_vulkan.h
+@@ -346,6 +346,11 @@ namespace plume {
+         // renderPass: load ops do not count), for a command list's pendingDepthClear. Null without a depth attachment.
+         VkRenderPass renderPassClearDepth = VK_NULL_HANDLE;
+         uint32_t depthAttachmentIndex = 0;
++        // mh4n (patch 20): the same render pass with the colour attachment's load op CLEAR, the depth-stencil one's as in
++        // renderPass (renderPassClearColor) or CLEAR (renderPassClearColorDepth), compatible with renderPass, for a command
++        // list's pendingColorClear. Null unless there is exactly one colour attachment (the second also without depth).
++        VkRenderPass renderPassClearColor = VK_NULL_HANDLE;
++        VkRenderPass renderPassClearColorDepth = VK_NULL_HANDLE;
+         std::vector<const VulkanTexture *> colorAttachments;
+         const VulkanTexture *depthAttachment = nullptr;
+         std::unique_ptr<VulkanTextureView> depthAttachmentView = nullptr;
+@@ -391,6 +396,11 @@ namespace plume {
+         bool pendingDepthClear = false;
+         VkClearDepthStencilValue pendingDepthClearValue = {};
+ 
++        // mh4n (patch 20): the render pass the command list begins next clears its colour attachment to zero as its load op
++        // (in the render area) instead of loading it, for a pass whose first draw writes all of it; with pendingDepthClear,
++        // both; setFramebuffer forgets it.
++        bool pendingColorClear = false;
++
+         VulkanCommandList(VulkanCommandQueue *queue);
+         ~VulkanCommandList() override;
+         void begin() override;

@@ -1,0 +1,33 @@
+# never commit: the game, its update, saves, the game code made from them, signing keys
+*.3ds
+*.cci
+*.cia
+*.cxi
+*.cfa
+*.app
+*.sav
+code.bin
+exheader.bin
+romfs.bin
+exefs/
+romfs/
+libmh4u_code*.so
+libmh4u_code*.id
+libmh4u_code*.dll
+*.keystore
+*.jks
+keystore.properties
+
+# built
+build/
+mh4n/build/
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/app/src/main/jniLibs/
+android/app/src/main/assets/code_library_id.txt
+__pycache__/
+*.pyc
+*.apk
+*.log

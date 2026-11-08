@@ -1,0 +1,8 @@
+# The known differences of G4's scheduler timeline (N0-39, N1-26): the native deterministic mode's
+# MH4N_TRACE_EVENTS file against the recording's timing.txt; `golden.py check --timeline` reads this file by default.
+# Format: ref=<tick>:<core>:<late>:<event> cand=<tick>:<core>:<late>  # reason (`-` for a missing or extra side);
+# each line is used for one difference, so the twin at the same tick needs its own line.
+# 2026-10-31, N3-32: the four lines of N1-26's residual (three nwm::UDS asynchronous events 6 ticks early on core 1 and
+# the wake-up of core 0 after the first) are gone. Its cause was the deterministic slice, 3 ticks short of Azahar's
+# MAX_SLICE_LENGTH (1,145,774 instead of 1,145,777), so every thread-safe event came 6 ticks early; with the slice
+# fixed all 143,294 of G4's events are equal and this file lists no difference. Only the orchestrator edits this file.
