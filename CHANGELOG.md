@@ -2,6 +2,10 @@
 
 [Español más abajo](#español)
 
+## 0.1.5
+
+- **Fixed the combined buttons page** (gear, Controls, buttons on the screen, Button 1-6): it showed nothing.
+
 ## 0.1.4
 
 - **PowerVR GPUs** (for example the GE8300 of the Helio A22): the game stopped a few seconds after start, when the GPU's
@@ -68,6 +72,10 @@ MH4U for Android is free. Only the links khorne-hub gives are official: if you g
 came with ads, it isn't the official one. Check the APK's SHA-256 against the release's `.sha256` file.
 
 ## Español
+
+## 0.1.5
+
+- **Arreglada la página de botones combinados** (engranaje, Controles, botones en pantalla, Botón 1-6): no mostraba nada.
 
 ## 0.1.4
 

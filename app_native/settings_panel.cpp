@@ -3241,7 +3241,8 @@ void touch_panel(bool* open) {
             }
         }
         with_help(left + tw + pad * 1.4f);
-    } else if (s.view == View::Buttons || s.view == View::Conflicts || s.view == View::PadList || s.view == View::PadMap) {  // (the whole width, the explanation beside or under)
+    } else if (s.view == View::Buttons || s.view == View::ComboEdit || s.view == View::Conflicts || s.view == View::PadList ||
+               s.view == View::PadMap) {  // (the whole width, the explanation beside or under)
         with_help(left);
     } else if (s.view == View::Keyboard) {  // (the text typed so far, what it takes beside it, the keys under it)
         const Keyboard& kb = s.keyboard;
@@ -3319,7 +3320,8 @@ void touch_panel(bool* open) {
     if (picking)  // (a window of its own, drawn over the menu's: dimmed on its own)
         list->DrawList->AddRectFilled(list->Pos, ImVec2(list->Pos.x + list->Size.x, list->Pos.y + list->Size.y), IM_COL32(0, 0, 0, 150));
     ImGui::EndChild();
-    if (s.view == View::Main || s.view == View::Buttons || s.view == View::Conflicts || s.view == View::PadList || s.view == View::PadMap)
+    if (s.view == View::Main || s.view == View::Buttons || s.view == View::ComboEdit || s.view == View::Conflicts ||
+        s.view == View::PadList || s.view == View::PadMap)
         touch_help(dl, help_rect, rows, side_help);
     if (pad_guides) {
         float gy = y1 - frame - pad * .6f - guide;
