@@ -2,6 +2,11 @@
 
 [Español más abajo](#español)
 
+## 0.1.6
+
+- **PowerVR GPUs:** 0.1.4 played, but the next start stopped again: the GPU's shader compiler also crashed when the app built
+  its saved shaders on a second thread. Now every shader is built on one thread when first needed.
+
 ## 0.1.5
 
 - **Fixed the combined buttons page** (gear, Controls, buttons on the screen, Button 1-6): it showed nothing.
@@ -72,6 +77,12 @@ MH4U for Android is free. Only the links khorne-hub gives are official: if you g
 came with ads, it isn't the official one. Check the APK's SHA-256 against the release's `.sha256` file.
 
 ## Español
+
+## 0.1.6
+
+- **GPU PowerVR:** con la 0.1.4 se podía jugar, pero al volver a entrar se cerraba otra vez: el compilador de shaders de la GPU
+  también fallaba cuando la app armaba sus shaders guardados en un segundo hilo. Ahora cada shader se arma en un solo hilo la
+  primera vez que hace falta.
 
 ## 0.1.5
 
