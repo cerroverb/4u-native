@@ -2,6 +2,11 @@
 
 [Español más abajo](#español)
 
+## 0.1.8
+
+- **Fixed a strip of wrong colours along the top edge** at low 3D resolutions (Low-end mode, 50 %): the game never draws the
+  top screen's first row, which showed as a whole line at 1x.
+
 ## 0.1.7
 
 - **Fixed a black screen with "No game folder at /game"** on phones where Android gives the app no external folder (for
@@ -84,6 +89,11 @@ MH4U for Android is free. Only the links khorne-hub gives are official: if you g
 came with ads, it isn't the official one. Check the APK's SHA-256 against the release's `.sha256` file.
 
 ## Español
+
+## 0.1.8
+
+- **Arreglada una franja de colores equivocados en el borde de arriba** con resoluciones 3D bajas (modo gama baja, 50 %): el
+  juego nunca dibuja la primera fila de la pantalla de arriba, que a 1x se veía como una línea entera.
 
 ## 0.1.7
 

@@ -928,7 +928,16 @@ int main(int argc, char* argv[]) {
         SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
         SDL_RenderClear(renderer);
         // (a render target's picture is turned upright as it is drawn: shared_screens.h)
-        shared_screens_draw(top_view, layout.top, win_w, win_h);
+        {  // (the top screen's first row is an edge the game never draws: a strip of stale colours, a whole row at 1x
+           // (4u-native #9; a third of one at 3x); drawn one 3DS row taller and that row above the window, when it is at its top)
+            SDL_FRect top = layout.top;
+            if (top.y < 0.5f) {
+                const float row = top.h / 240.0f * 2;  // (two: the filtering blends the undrawn row into the next)
+                top.y -= row;
+                top.h += row;
+            }
+            shared_screens_draw(top_view, top, win_w, win_h);
+        }
         shared_screens_check(top_view, layout.top, win_w, win_h, ext.c_str());
         if (layout.bottom_shown) {
             if (town_large) {  // (the top screen dimmed under the town's large touch screen)
