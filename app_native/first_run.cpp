@@ -18,6 +18,7 @@
 #include "app_settings.h"
 
 namespace {
+uint32_t g_gpu_api = 0;  // (the GPU's Vulkan version, VulkanGpuName fills it)
 
 void Log(const std::string& text) { std::fprintf(stderr, "[Info] App: first start: %s\n", text.c_str()); }
 
@@ -45,6 +46,7 @@ std::string VulkanGpuName() {
                 VkPhysicalDeviceProperties p{};
                 properties(devices[0], &p);
                 name = p.deviceName;
+                g_gpu_api = p.apiVersion;
             }
         }
         if (destroy != nullptr) destroy(instance, nullptr);
@@ -188,3 +190,7 @@ void first_run_fill(const std::string& ini_path) {
 }
 
 std::string first_run_gpu_name() { return VulkanGpuName(); }
+uint32_t first_run_gpu_api() {
+    if (g_gpu_api == 0) VulkanGpuName();
+    return g_gpu_api;
+}

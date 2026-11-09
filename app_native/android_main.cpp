@@ -369,8 +369,10 @@ int main(int argc, char* argv[]) {
         Logf("SDL_Init: %s", SDL_GetError());
         return 1;
     }
-    const std::string ext = SDL_GetAndroidExternalStoragePath() ? SDL_GetAndroidExternalStoragePath() : "";
     const std::string internal = SDL_GetAndroidInternalStoragePath() ? SDL_GetAndroidInternalStoragePath() : "";
+    // the app's own folder: the external one, or the internal one when the system has no external storage for it, as
+    // GameFolderActivity.home() does (a Redmi Note 8: launch.txt was written there and never read, "No game folder at /game")
+    const std::string ext = SDL_GetAndroidExternalStoragePath() ? SDL_GetAndroidExternalStoragePath() : internal;
     // the runtime logs to stderr: into log.txt in the app's external folder (Share log reads it there)
     if (!ext.empty()) {
         std::freopen((ext + "/log.txt").c_str(), "w", stderr);
@@ -534,8 +536,19 @@ int main(int argc, char* argv[]) {
                 }
             }
         }
+        int scale_times = render_scale_times(render_percent);
+        // an Adreno with a Vulkan 1.1 driver misdraws the 3D picture below 720 lines (coloured bands, an Adreno 630's
+        // 2018 driver, 4u-native #7; our MHGU port saw it too): 3x at least there
+        {
+            const std::string gpu = first_run_gpu_name();
+            const uint32_t api = first_run_gpu_api();
+            if (gpu.find("Adreno") != std::string::npos && api != 0 && api < ((1u << 22) | (2u << 12)) && scale_times < 3) {
+                Logf("%s with a Vulkan 1.1 driver: 3D resolution 3x at least (%dx misdraws there)", gpu.c_str(), scale_times);
+                scale_times = 3;
+            }
+        }
         args.push_back("--scale");
-        args.push_back(std::to_string(render_scale_times(render_percent)));
+        args.push_back(std::to_string(scale_times));
         Logf("3D resolution %d %% of %dx%d: %dx the 3DS's", render_percent, screen_w, screen_h, render_scale_times(render_percent));
         // the game's dither pattern is a fine grid over everything above 1x: off there unless mh4u.ini says otherwise
         if (render_scale_times(render_percent) > 1) {

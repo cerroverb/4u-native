@@ -5,6 +5,7 @@
 // Moto g06 and its kind: first_run_weak_gpu) or 4 GB of RAM or less. Only at the first start: an existing player's
 // options are never changed, and a key mh4u-app.ini already has stays as it is.
 #pragma once
+#include <cstdint>
 #include <string>
 
 struct FirstRunDevice {
@@ -37,3 +38,5 @@ void first_run_fill(const std::string& ini_path);
 
 // The first Vulkan GPU's name ("" when none), from an instance made for it alone: PowerVR runs without the ubershader
 std::string first_run_gpu_name();
+// That GPU's Vulkan version (VK_MAKE_API_VERSION; 0 when none)
+uint32_t first_run_gpu_api();

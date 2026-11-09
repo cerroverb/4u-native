@@ -2,6 +2,13 @@
 
 [Español más abajo](#español)
 
+## 0.1.7
+
+- **Fixed a black screen with "No game folder at /game"** on phones where Android gives the app no external folder (for
+  example a Redmi Note 8): the game now reads its setup from the same folder the folder screen writes it to.
+- **Adreno GPUs with a Vulkan 1.1 driver** (for example the Galaxy S9's Adreno 630): their driver misdraws the 3D picture
+  below 720 lines (coloured bands), so there the 3D resolution is 3x at least.
+
 ## 0.1.6
 
 - **PowerVR GPUs:** 0.1.4 played, but the next start stopped again: the GPU's shader compiler also crashed when the app built
@@ -77,6 +84,14 @@ MH4U for Android is free. Only the links khorne-hub gives are official: if you g
 came with ads, it isn't the official one. Check the APK's SHA-256 against the release's `.sha256` file.
 
 ## Español
+
+## 0.1.7
+
+- **Arreglada la pantalla negra con "No game folder at /game"** en teléfonos donde Android no le da a la app una carpeta
+  externa (por ejemplo un Redmi Note 8): el juego ahora lee su configuración de la misma carpeta donde la guarda la pantalla
+  de la carpeta del juego.
+- **GPU Adreno con driver Vulkan 1.1** (por ejemplo la Adreno 630 del Galaxy S9): su driver dibuja mal la imagen 3D por
+  debajo de 720 líneas (franjas de colores), así que ahí la resolución 3D es de 3x como mínimo.
 
 ## 0.1.6
 

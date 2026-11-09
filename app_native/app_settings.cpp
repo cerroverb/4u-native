@@ -41,7 +41,8 @@ void read_locked() {
     g_lines.clear();
     g_loaded = true;
     if (g_path.empty()) {
-        const char* ext = SDL_GetAndroidExternalStoragePath();
+        const char* ext = SDL_GetAndroidExternalStoragePath();  // (none: the internal folder, as android_main.cpp's)
+        if (ext == nullptr) ext = SDL_GetAndroidInternalStoragePath();
         g_path = std::string(ext ? ext : ".") + "/mh4u-app.ini";
     }
     std::ifstream in(g_path);
