@@ -18,6 +18,10 @@
 
 // android_main.cpp: the user folder (before the game starts).
 void content_init(const std::string& user_dir);
+// The app's own cheats (the APK's assets/cheats/comer_rapido.txt: faster eating and drinking, as MHGU's) added to the
+// cheats file, off; once per user folder (cheats/app_cheats_added.txt), so the ones a player removes don't come back. `text` is the
+// asset's: each [Name] block the file doesn't have yet is added. Before the game starts (its cheats load then).
+void content_add_port_cheats(const std::string& text);
 const std::string& content_user_dir();
 // The game's title, whose cheats file and mods these are.
 constexpr unsigned long long kContentTitle = 0x0004000000126300ull;

@@ -244,6 +244,34 @@ void DisplayMemGpu::VBlank(u32 screen) {
     }
 }
 
+// MH4N_SCALE_LOG=<n> (gpu/native's measurement aid, its display side): a screen built from guest memory at 1x while the
+// renderer draws at a higher scale (no shared picture and no scaled one for its framebuffer), when it starts after 60
+// frames without, with the framebuffer's registers; n lines at most.
+void DisplayMemGpu::LogMemoryScreen(u32 screen) {
+    static const u32 limit = [] {
+        const char* v = std::getenv("MH4N_SCALE_LOG");
+        return v != nullptr ? static_cast<u32>(std::max(0, std::atoi(v))) : 0u;
+    }();
+    if (memory_screen_logs_ >= limit) {
+        return;
+    }
+    const u32 frame = link_ != nullptr ? link_->game_frame.load() : static_cast<u32>(next_sequence_);
+    const bool again = !memory_screen_seen_[screen] || frame - memory_screen_frame_[screen] > 60;
+    memory_screen_seen_[screen] = true;
+    memory_screen_frame_[screen] = frame;
+    if (!again) {
+        return;
+    }
+    ++memory_screen_logs_;
+    const u32 fb = kFbConfigBase + kFbConfigWords * screen;
+    const bool first_buffer = shadow_.GpuReg(fb + kFbActive) == 0;
+    MH4N_LOG(Info, kLog, "scale f{}: display: the {} screen built from guest memory at 1x (framebuffer {:08x}, format {}, stride {}, "
+             "rows {}, colour fill {:08x})",
+             frame, screen == 0 ? "top" : "touch", shadow_.GpuReg(fb + (first_buffer ? kFbAddressLeft1 : kFbAddressLeft2)),
+             shadow_.GpuReg(fb + kFbFormat) & 7, shadow_.GpuReg(fb + kFbStride), shadow_.GpuReg(fb + kFbSize) >> 16,
+             shadow_.LcdReg(screen == 0 ? kLcdColorFillTop : kLcdColorFillBottom));
+}
+
 std::optional<present::ScreenImage> DisplayMemGpu::BuildScreen(u32 screen) {
 #if MH4N_DISPLAY_MEM_PLATFORM
     if (screen == 0 && link_ != nullptr && link_->runtime != nullptr) {
@@ -259,12 +287,15 @@ std::optional<present::ScreenImage> DisplayMemGpu::BuildScreen(u32 screen) {
     }
 #endif
     if (scaled_ != nullptr) {
-        if (shared_asked_ != shared_wanted_) {  // (asked here, on the renderer's own thread)
-            MH4N_LOG(Info, kLog, "shared screens asked of the renderer: {}", shared_wanted_ ? "on" : "off");
-            scaled_->SetSharedScreens(shared_wanted_);
-            shared_asked_ = shared_wanted_;
+        // (the app's side may have refused them since: present::SharedPicturesRefused, then pixels from now on)
+        const bool wanted = shared_wanted_ && !present::SharedPicturesRefused();
+        if (shared_asked_ != wanted) {  // (asked here, on the renderer's own thread)
+            MH4N_LOG(Info, kLog, "shared screens asked of the renderer: {}{}", wanted ? "on" : "off",
+                     shared_wanted_ && !wanted ? " (the app's side can't show them: the screens as pixels)" : "");
+            scaled_->SetSharedScreens(wanted);
+            shared_asked_ = wanted;
         }
-        if (shared_wanted_) {
+        if (wanted) {
             if (std::optional<present::ScreenImage> shared = BuildSharedScreen(screen)) {
                 last_error_[screen].clear();
                 last_scaled_[screen] = LastScaled{};
@@ -277,6 +308,9 @@ std::optional<present::ScreenImage> DisplayMemGpu::BuildScreen(u32 screen) {
         }
         last_scaled_[screen] = LastScaled{};
         PrepareScreenMemory(screen);  // a framebuffer the renderer still owes (asynchronous screens) is written first
+        if (scale_ > 1) {
+            LogMemoryScreen(screen);
+        }
     }
     static const bool check = [] {
         const char* v = std::getenv("MH4N_DISPLAY_CHECK");

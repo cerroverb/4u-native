@@ -253,6 +253,7 @@ private:
     bool list_dirty_ = false;
     u64 built_since_blob_ = 0;
     bool precompile_reported_ = true;
+    u64 precompile_failures_ = 0;  // keys of the list the driver refused (the line "the list is compiled")
     native::ProviderCounters total_;
     Frame frame_;
     CachingStats stats_;
@@ -428,7 +429,14 @@ void CachingProvider::Finish(Entry& entry, Built& built) {
         entry.error = built.ok() ? "the build callback returned no pipeline" : built.error();
         ++stats_.failures;
         ++total_.build_failures;
-        MH4N_LOG(Warning, kLog, "a pipeline could not be built: {}", entry.error);
+        // (the first 10, then one in 100 with the count: a driver that refuses every pipeline would fill the log)
+        if (stats_.failures <= 10 || stats_.failures % 100 == 0) {
+            MH4N_LOG(Warning, kLog, "a pipeline could not be built{}: {}",
+                     stats_.failures < 10    ? std::string()
+                     : stats_.failures == 10 ? std::string(" (10 so far; from now on one line in 100)")
+                                             : fmt::format(" ({} so far)", stats_.failures),
+                     entry.error);
+        }
     }
     ++built_since_blob_;
 }
@@ -678,12 +686,13 @@ void CachingProvider::Worker() {
         ++frame_.async_builds;
         if (from_list) {
             ++stats_.precompiled;
+            precompile_failures_ += e.state == State::Failed ? 1 : 0;
             work_cv_.notify_one();  // the background queue may go on
         }
         if (!precompile_reported_ && urgent_.empty() && background_.empty() && building_ == 0) {
             precompile_reported_ = true;
-            MH4N_LOG(Info, kLog, "the list is compiled ({} keys built on workers, {:.0f} ms after the start)", stats_.precompiled,
-                     MsSince(start_));
+            MH4N_LOG(Info, kLog, "the list is compiled ({} keys built on workers, {} failed, {:.0f} ms after the start)",
+                     stats_.precompiled, precompile_failures_, MsSince(start_));
         }
         done_cv_.notify_all();
     }

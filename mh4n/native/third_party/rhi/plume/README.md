@@ -40,7 +40,7 @@ write a patch instead.
 
 Patches 01 to 07 are the files of `docs/research/rhi-spike-evidence/patches/`, byte for byte (their sha256 is in
 that folder's `SHA256SUMS`); they were made one on top of another (01, 02, 04 and 03, 05, 06, 07 chains), so
-they are applied in number order only. 08 to 20 were written for this repository. The changed-line figures
+they are applied in number order only. 08 to 22 were written for this repository. The changed-line figures
 are `git diff --numstat` (added plus removed).
 
 | No. | File | What | Lines |
@@ -65,6 +65,8 @@ are `git diff --numstat` (added plus removed).
 | 18 | `18-allocator-block-size.diff` | `VulkanDeviceExtras::allocatorBlockSize`: VMA's `preferredLargeHeapBlockSize` (0 keeps its 256 MiB), the size of the memory blocks allocations are placed in | 7 |
 | 19 | `19-queue-global-priority.diff` | `VulkanDeviceExtras::queueGlobalPriority`: every queue made with that global priority (`VkDeviceQueueGlobalPriorityCreateInfoKHR`, `VK_KHR_global_priority` or else `VK_EXT_global_priority`, when offered); 0, the default, none; `VK_ERROR_NOT_PERMITTED` makes the device again without it | 44 |
 | 20 | `20-color-clear-load-op.diff` | `VulkanFramebuffer::renderPassClearColor` and `renderPassClearColorDepth`, the framebuffer's render pass with the colour load op `CLEAR` and the depth-stencil ones as in `renderPass` or `CLEAR` (one colour attachment only), and `VulkanCommandList::pendingColorClear`: the next render pass begun clears its colour attachment to zero instead of loading it, with `pendingDepthClear` both (`setFramebuffer` forgets it), for a pass whose first draw writes every pixel of its render area (a `CLEAR`, not `DONT_CARE`: the MHGU port saw an Adreno 830 draw a scene black but for some tiles after `DONT_CARE`) | 51 |
+| 21 | `21-implied-transfer-queue.diff` | `pickFamilyQueue` takes `VK_QUEUE_TRANSFER_BIT` as implied by a graphics or compute family (the Vulkan spec): Adreno 7xx drivers leave it out of their only family, and no family was picked (4u-native #1) | 10 |
+| 22 | `22-pipeline-results.diff` | `VulkanShader::result`, `VulkanComputePipeline::result` and `VulkanGraphicsPipeline::result`: the `VkResult` creation returned, which the RHI's errors name | 6 |
 
 `RenderTextureLayout::PRESENT` (`VK_IMAGE_LAYOUT_PRESENT_SRC_KHR`) exists at the pinned commit
 (`plume_render_interface_types.h`, `toImageLayout` in `plume_vulkan.cpp`), so no patch adds it.

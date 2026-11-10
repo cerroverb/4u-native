@@ -30,6 +30,8 @@ struct SharedScreenView {
     mh4n::present::TargetLayout target_layout{};
     unsigned gl_name = 0, gl_target = 0;
     int buffer_width = 0, buffer_height = 0;
+    // a picture from the renderer's buffers has been shown in this view (its buffer imported and sampled by GL)
+    bool shown_shared = false;
     // the pictures newer than the one shown that the renderer's GPU has not finished, oldest first, each with its sync
     // file (the main loop's wait ends when one is readable) and its region. The GPU finishes them in order: the newest
     // one finished is shown and the older ones dropped. A newer picture no longer replaces an unfinished one (it did, and
@@ -48,7 +50,10 @@ struct SharedScreenView {
 
 // Shows `picture` (its `region` of the buffer) from now on, unless the renderer's GPU has not finished it (then false:
 // the view keeps what it shows; try again when shared_screens_wait_fd is readable). The picture shown before is let go
-// once the GL work that read it is done.
+// once the GL work that read it is done. A buffer GL refuses to import gives false too; when the view has shown none of
+// the renderer's buffers yet and no render target's picture has been shown, the renderer is then asked for the screens
+// as pixels from its next VBlank on (present::SetSharedPicturesRefused). MH4U_TEST_IMPORT_FAIL=1 (launch.txt's env=, a
+// test) refuses every import.
 bool shared_screens_show(SharedScreenView& view, const std::shared_ptr<const mh4n::present::SharedPicture>& picture,
                          const mh4n::present::ImageRegion& region);
 // Draws what the view shows into `dst` of the window (`win_w` x `win_h` pixels), as SDL_RenderTexture would: a render

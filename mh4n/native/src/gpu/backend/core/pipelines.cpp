@@ -168,6 +168,21 @@ bool Pipeline::IsCompute() const {
 
 namespace {
 
+// What the driver returned when it refused a shader module or a pipeline (plume patch 22), for the error: its name where
+// it is one a refusal gives, and its number (empty: no result, the object was not made for another reason).
+std::string Refusal(VkResult result) {
+    if (result == VK_SUCCESS) return std::string();
+    const char* name = result == VK_ERROR_OUT_OF_HOST_MEMORY      ? "VK_ERROR_OUT_OF_HOST_MEMORY"
+                       : result == VK_ERROR_OUT_OF_DEVICE_MEMORY  ? "VK_ERROR_OUT_OF_DEVICE_MEMORY"
+                       : result == VK_ERROR_INITIALIZATION_FAILED ? "VK_ERROR_INITIALIZATION_FAILED"
+                       : result == VK_ERROR_DEVICE_LOST           ? "VK_ERROR_DEVICE_LOST"
+                       : result == VK_ERROR_UNKNOWN               ? "VK_ERROR_UNKNOWN"
+                       : result == VK_ERROR_INVALID_SHADER_NV     ? "VK_ERROR_INVALID_SHADER_NV"
+                       : result == VK_PIPELINE_COMPILE_REQUIRED   ? "VK_PIPELINE_COMPILE_REQUIRED"
+                                                                  : "VkResult";
+    return fmt::format(": {} ({})", name, static_cast<int>(result));
+}
+
 std::unique_ptr<::plume::RenderShader> MakeShader(Backend::Impl& backend, const ShaderCode& code, const char* what,
                                                   std::string* error) {
     if (code.spirv.empty() || code.spirv[0] != 0x07230203u) {
@@ -177,7 +192,9 @@ std::unique_ptr<::plume::RenderShader> MakeShader(Backend::Impl& backend, const 
     std::unique_ptr<::plume::RenderShader> shader = backend.device_owner->createShader(
         code.spirv.data(), code.spirv.size_bytes(), code.entry.c_str(), ::plume::RenderShaderFormat::SPIRV);
     if (shader == nullptr || static_cast<::plume::VulkanShader*>(shader.get())->vk == VK_NULL_HANDLE) {
-        *error = fmt::format("the {} shader module could not be made", what);
+        *error = fmt::format("the {} shader module could not be made{}", what,
+                             shader != nullptr ? Refusal(static_cast<::plume::VulkanShader*>(shader.get())->result)
+                                               : std::string());
         return nullptr;
     }
     return shader;
@@ -275,7 +292,10 @@ Result<std::shared_ptr<Pipeline>> Backend::CreateGraphicsPipeline(const Graphics
     impl->pipeline = backend.device_owner->createGraphicsPipeline(plume_desc.desc);
     if (impl->pipeline == nullptr ||
         static_cast<::plume::VulkanGraphicsPipeline*>(impl->pipeline.get())->vk == VK_NULL_HANDLE) {
-        return Error{where + "the graphics pipeline could not be made"};
+        return Error{where + "the graphics pipeline could not be made" +
+                     (impl->pipeline != nullptr
+                          ? Refusal(static_cast<::plume::VulkanGraphicsPipeline*>(impl->pipeline.get())->result)
+                          : std::string())};
     }
     if (!desc.name.empty()) {
         impl->pipeline->setName(desc.name);
@@ -304,7 +324,10 @@ Result<std::shared_ptr<Pipeline>> Backend::CreateComputePipeline(const ComputePi
     impl->pipeline = backend.device_owner->createComputePipeline(plume_desc);
     if (impl->pipeline == nullptr ||
         static_cast<::plume::VulkanComputePipeline*>(impl->pipeline.get())->vk == VK_NULL_HANDLE) {
-        return Error{where + "the compute pipeline could not be made"};
+        return Error{where + "the compute pipeline could not be made" +
+                     (impl->pipeline != nullptr
+                          ? Refusal(static_cast<::plume::VulkanComputePipeline*>(impl->pipeline.get())->result)
+                          : std::string())};
     }
     if (!desc.name.empty()) {
         impl->pipeline->setName(desc.name);

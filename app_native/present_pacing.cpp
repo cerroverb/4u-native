@@ -35,8 +35,10 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string>
 
 #include "mh4n/pacing_trace.h"
 
@@ -204,11 +206,36 @@ void present_pacing_before_present(bool new_frame, float fps_cap) {
     const double refresh = 1e9 / static_cast<double>(period);
     int n = 1;
     const int game_n = mh4n::pacing::g_frame_vblanks.load(std::memory_order_relaxed);
-    if (game_n > 0 && mh4n::pacing::g_vblank_lock_ns.load(std::memory_order_relaxed) >= 0) {
-        n = game_n;
+    const uint64_t vblank = mh4n::pacing::g_vblank_period_ns.load(std::memory_order_relaxed);
+    if (game_n > 0 && vblank > 0 && mh4n::pacing::g_vblank_lock_ns.load(std::memory_order_relaxed) >= 0) {
+        // The game's frame in the display's periods: its VBlanks at the VBlank's own period. That is the display's when
+        // gsp FollowDisplay holds the VBlank on it; when the system runs this app's display at another rate (a 30 FPS
+        // vote given a 30 Hz frame-rate override on a 120 Hz panel, or a panel kept at 90 or 120 Hz) the VBlank keeps its
+        // own 60 Hz clock, and a 30 cap's 2 VBlanks a frame are 1 period of 33.3 ms (4 of 8.3 ms). Taken as vsyncs they
+        // spaced the buffers 66.7 ms apart: 15 FPS at most, 10 to 12 with a late frame (4u-native #21). A frame that is
+        // no whole number of periods (60 FPS on 90 Hz) is not paced.
+        // (MH4U_PACE_VBLANKS=1: the VBlanks taken as vsyncs, as before; an A/B aid)
+        static const bool as_before = [] {
+            const char* v = std::getenv("MH4U_PACE_VBLANKS");
+            return v != nullptr && *v == '1';
+        }();
+        const double periods = game_n * static_cast<double>(vblank) / static_cast<double>(period);
+        const long k = std::lround(periods);
+        if (as_before) n = game_n;
+        else if (k >= 1 && std::fabs(periods - static_cast<double>(k)) <= 0.03 * static_cast<double>(k)) n = static_cast<int>(k);
     } else if (fps_cap > 0 && fps_cap < refresh * 0.98) {
         const int k = std::max(1, static_cast<int>(std::lround(refresh / fps_cap)));
         if (std::fabs(refresh / k - fps_cap) <= 0.02 * fps_cap) n = k;
+    }
+    {  // (log.txt: how the buffers are timed, when that changes; at most a line every 5 s and 40 in all)
+        static int told_n = -1, lines = 0;
+        static int64_t told_period = 0, told_at = 0;
+        if ((n != told_n || std::llabs(period - told_period) > period / 20) && now - told_at > 5000000000LL && lines < 40) {
+            told_n = n, told_period = period, told_at = now, ++lines;
+            std::fprintf(stderr, "[perf] the display's vsync every %.2f ms (presentation margin %.1f ms): %s\n",
+                         static_cast<double>(period) / 1e6, static_cast<double>(margin) / 1e6,
+                         n >= 2 ? (std::to_string(n) + " vsyncs a game frame").c_str() : "each picture shown when ready");
+        }
     }
     if (n < 2) {
         // At the refresh rate (or a limit that does not divide it) there is no cadence to keep: each buffer is shown when

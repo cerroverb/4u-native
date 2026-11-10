@@ -2,6 +2,42 @@
 
 [Español más abajo](#español)
 
+## 0.1.9
+
+Your code library stays valid: there's no need to build it again.
+
+- **Run with the stick:** push it past its edge to run, and lift your thumb on the padlock circle above it to keep running;
+  touching the stick or the circle again stops. The circle moves and resizes in the layout editor. Turned off, a **Run**
+  button runs while you hold it.
+- **Bows and bowguns:** a tap on aim keeps the aim up until the next tap; hold and slide to aim. **Aim with the gyro**
+  (off by default), with its sensitivity, turns the aim as you turn the phone.
+- **Menu pad:** in the game's menus a small pad comes in under your right thumb, with L and R above it, in place of the small
+  menu D-pad. Quest rewards and the Reward Box count as menus, and the hunt D-pad steps aside while the pad shows.
+- **Lock-on:** the padlock by the target icon, which didn't respond, is gone; a gold ring round the icon shows the lock-on.
+- **Black screen with the menu's music on some older Mali GPUs:** when the phone's graphics refuse the usual way of showing
+  the picture, the app now switches to another by itself, and `log.txt` tells more about the phone's graphics.
+- **Picture:** cutscenes are sharp again; textures the game rewrites are caught (no more outfits with the old pattern in
+  character creation, or wrong ground and sky); long sessions use less memory for textures, so they keep loading on 3-4 GB
+  phones; a steady 30 fps on phones that switch the screen to 30 Hz.
+- **Other GPUs:** older Vulkan 1.1 drivers get shaders they accept; on Adreno the 3x minimum is only for drivers older than
+  1.1.128, and **Adreno fix** turns it off; Adreno 610-class phones start with the light settings; PowerVR and other GPUs
+  no longer draw over a picture still on the screen.
+- **Save folder** (Menu Options): keep your save in a folder a sync app shares with your other devices. MHGU for Android
+  can share the same folder.
+- **Import save** has **Choose a folder** and finds emulators' folders by itself. An import never deletes your old save
+  before the new one is in place.
+- **Faster eating and drinking:** two cheats, off, as in the MHGU port. **Comforts** in Cheats, after jM5557's QOL mods:
+  hold A to gather, move to skip the flex, B cancels sharpening, no time limit on rewards.
+- **Playing together:** a community lobby comes set, the lobbies you type are remembered (the × removes one), and the first
+  time online a notice names the server.
+- **Playing alone,** the game waits while the settings or the layout editor are open.
+- **GitHub and Discord buttons** beside Save open the project's page and the community's Discord (they ask first).
+- **Notices:** at most once a day the app checks for a new version (**Check for updates** turns it off), and a copy that
+  isn't the official one says so.
+- Also: dashing and tapping the camera in a village no longer opens the single-screen mod's World Map (L and R together
+  still do); a thumb landing on the stick takes the stick; the error screen's way back to the last start's mods works with
+  one tap, also for a code mod the app can't load; the layout editor's panel moves and gets smaller; a 240 fps choice.
+
 ## 0.1.8
 
 - **Fixed a strip of wrong colours along the top edge** at low 3D resolutions (Low-end mode, 50 %): the game never draws the
@@ -89,6 +125,46 @@ MH4U for Android is free. Only the links khorne-hub gives are official: if you g
 came with ads, it isn't the official one. Check the APK's SHA-256 against the release's `.sha256` file.
 
 ## Español
+
+## 0.1.9
+
+Tu librería de código sigue sirviendo: no hace falta crearla de nuevo.
+
+- **Correr con la palanca:** empújala más allá de su borde para correr, y levanta el pulgar sobre el círculo del candado,
+  encima de ella, para seguir corriendo; volver a tocar la palanca o el círculo lo corta. El círculo se mueve y cambia de
+  tamaño en el editor del diseño. Desactivado, un botón **Correr** corre mientras lo mantienes.
+- **Arcos y ballestas:** un toque en apuntar deja la mira puesta hasta el próximo toque; mantén y desliza para apuntar.
+  **Apuntar con giroscopio** (desactivado por defecto), con su sensibilidad, gira la mira al girar el teléfono.
+- **Pad de menú:** en los menús del juego aparece un pad chico bajo el pulgar derecho, con L y R encima, en lugar de la
+  cruceta chica de los menús. Las recompensas de la misión y la Caja de recompensas cuentan como menú, y la cruceta de
+  cacería se aparta mientras se ve el pad.
+- **Fijar objetivo:** se fue el candado junto al ícono de objetivo, que no respondía; un aro dorado alrededor del ícono
+  muestra que está fijado.
+- **Pantalla negra con la música del menú en algunas GPU Mali viejas:** cuando los gráficos del teléfono rechazan la forma
+  habitual de mostrar la imagen, la app ahora pasa sola a otra, y `log.txt` dice más sobre los gráficos del teléfono.
+- **Imagen:** las escenas vuelven a verse nítidas; se detectan las texturas que el juego reescribe (se acabaron la ropa con
+  el dibujo anterior al crear el personaje y el suelo o el cielo equivocados); las sesiones largas usan menos memoria para
+  las texturas, así siguen cargando en teléfonos de 3-4 GB; 30 fps estables en teléfonos que pasan la pantalla a 30 Hz.
+- **Otras GPU:** los drivers Vulkan 1.1 más viejos reciben shaders que aceptan; en Adreno el mínimo de 3x es solo para
+  drivers anteriores a 1.1.128, y **Corrección de Adreno** lo apaga; los teléfonos de la clase Adreno 610 empiezan con los
+  ajustes livianos; PowerVR y otras GPU ya no dibujan sobre una imagen que todavía está en pantalla.
+- **Carpeta de partidas** (Opciones del menú): guarda tu partida en una carpeta que una app de sincronización comparta con
+  tus otros dispositivos. El MHGU para Android puede compartir la misma carpeta.
+- **Importar partida** tiene **Elegir carpeta** y encuentra solo las carpetas de los emuladores. Una importación nunca borra
+  tu partida anterior antes de que la nueva esté en su lugar.
+- **Comer y beber más rápido:** dos trucos, apagados, como en el port del MHGU. **Comodidades** en Trucos, según los mods
+  QOL de jM5557: mantener A para recolectar, moverse corta la pose, B cancela el afilado, recompensas sin tiempo.
+- **Jugar con otros:** viene puesto un lobby de la comunidad, los lobbies que escribes se recuerdan (la × quita uno), y la
+  primera vez en línea un cartel dice a qué servidor se conecta.
+- **Jugando solo,** el juego espera mientras las opciones o el editor del diseño están abiertos.
+- **Botones de GitHub y Discord** junto a Guardar: abren la página del proyecto y el Discord de la comunidad (preguntan
+  antes).
+- **Avisos:** como mucho una vez al día la app busca una versión nueva (**Buscar actualizaciones** lo apaga), y una copia
+  que no es la oficial lo avisa.
+- Además: correr y tocar la cámara en una aldea ya no abre el mapa del mundo del mod de una sola pantalla (L y R juntos sí);
+  un pulgar que cae en la palanca toma la palanca; en la pantalla de error la vuelta a los mods del último inicio funciona
+  con un toque, también para un mod de código que la app no puede cargar; el panel del editor se mueve y se achica; opción
+  de 240 fps.
 
 ## 0.1.8
 

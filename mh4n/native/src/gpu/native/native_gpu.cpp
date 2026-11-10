@@ -64,6 +64,7 @@
 #include "gpu/gx/engine.h"
 #include "gpu/native/compose.h"
 #include "gpu/native/pipeline_builder.h"
+#include "gpu/native/process_memory.h"
 #include "gpu/native/scaled_screens.h"
 #include "gpu/native/provider_select.h"
 #include "gpu/native/vertex_input.h"
@@ -107,9 +108,31 @@ constexpr u64 kVertexRingBytes = 16ull << 20;
 constexpr u64 kVsUniformRingBytes = 8ull << 20;
 constexpr u64 kFragmentUniformRingBytes = 8ull << 20;
 constexpr u64 kStagingRingBytes = 8ull << 20;
-// The decoded textures kept as images (a texture is level 0 only until N2-15); past this the ones the current recording does not
-// use are released.
-constexpr u64 kTextureBudgetBytes = 768ull << 20;
+// The decoded textures kept as images (a texture is level 0 only until N2-15); past this the least recently used ones the
+// current recording does not use are released, down to three quarters of it. 768 MB everywhere before: an area's textures
+// are 30-45 MB of images (the High Rank steppe, the village), so only a long session could reach it, and a 3-4 GB phone
+// could run out of memory first (each image's pixels were kept in the cache as well). By the device's memory: up to 3 GB
+// 192 MB, up to 4.5 GB 256 MB, up to 6.5 GB 384 MB, more 768 MB; MH4N_TEXTURE_BUDGET_MB=<n> another.
+u64 TextureBudgetBytes() {
+    static const u64 budget = [] {
+        if (const char* v = std::getenv("MH4N_TEXTURE_BUDGET_MB"); v != nullptr && std::atoi(v) > 0) {
+            return static_cast<u64>(std::atoi(v)) << 20;
+        }
+        const u64 mb = DeviceMemoryMb();
+        const u64 budget_mb = mb == 0 ? 768 : mb <= 3200 ? 192 : mb <= 4600 ? 256 : mb <= 6600 ? 384 : 768;
+        return budget_mb << 20;
+    }();
+    return budget;
+}
+// Below this much of the system's memory available (MH4N_LOWMEM_MB, as the MHGU port's: Android 14 and newer no longer
+// tell a foreground app memory runs low), the images and cache entries not used for two seconds go (TrimForMemory).
+[[maybe_unused]] long LowMemoryKb() {
+    static const long kb = [] {
+        const char* v = std::getenv("MH4N_LOWMEM_MB");
+        return (v != nullptr ? std::max(0, std::atoi(v)) : 350) * 1024L;
+    }();
+    return kb;
+}
 // A recording is submitted after this many draws, at the first draw that does not go on in the open pass (EnsureRoom,
 // gpu4), and after kMaxDrawsPerRecordingHard whatever it breaks.
 constexpr u32 kMaxDrawsPerRecording = 256;
@@ -263,9 +286,17 @@ void JoinRows(std::vector<std::pair<u32, u32>>& rows, u32 first, u32 last) {
 // picture. Where it does not come at a write, what the next frame's first pass is expected to write whole
 // (the largest box a pass into the target began with a draw that writes every pixel of it: FirstDrawClears, or a pass
 // that loads but whose first draw covers it: MH4U's scene quad) is not copied but owed, once that expectation held twice
-// in a row (trust): a later write that clears it settles it, anything else that reaches it takes it back from the
-// published image (acquired again from the app's side for the copy; counted, target_owed_taken). The hidden touch
-// screen's snapshot reads the published image itself instead (acquired back for the blit).
+// in a row (trust): a later write that clears it settles it, anything else that reaches it takes it back (counted,
+// target_owed_taken). By the Vulkan rules for memory another API uses, an image released to the foreign queue family is
+// the other side's until it is done with it, and an ownership transfer or a layout change may itself read and write the
+// image's memory while the app's OpenGL ES samples it (4u-native #31: a PowerVR picture that went dark every second). So
+// the hidden touch screen's snapshot, which reads the published picture's rows right after its hand-over (every frame
+// once trusted), is taken at the hand-over, while the image is still the renderer's: the same blit, earlier, into an
+// image the snapshot then adopts (PretakeSnapshot). Owed pixels taken back while the app still holds the picture (rare:
+// the game sampling its last picture before the expected clear, a fade) are taken from the published image itself, at
+// full scale, and only on GPUs where that was seen to work (Mali and Adreno with their own drivers, Vulkan 1.2 or newer:
+// OwingAllowed); elsewhere nothing is owed: the box is copied at the hand-over. Once no picture of the image is left,
+// the owed pixels are taken from the image itself, acquired back and kept.
 // A hand-over that copies more than a quarter of the picture three times in a row (the touch screen shown: its draws come
 // into the target right after the transfer and keep little of it) sends the target back to the upright copy for a
 // while (120 transfers, doubling up to 1920).
@@ -313,6 +344,17 @@ struct ScreenTarget {
     // next frame's first pass is expected to write whole
     std::vector<rhi::Rect> owed;
     TargetBuffer* owed_from = nullptr;
+    // The hidden touch screen's snapshot of `pretaken_of` (the published image that owes), taken at its hand-over while
+    // the image was still the renderer's (PretakeSnapshot): guest rows [pretaken_first, + pretaken_rows) at 1x, adopted
+    // by the snapshot that reads those rows of it. The rows the last hidden touch screen snapshot of the target read
+    // (snap_rows 0: none yet) say which rows to take.
+    std::shared_ptr<rhi::Image> pretaken;
+    const TargetBuffer* pretaken_of = nullptr;
+    u32 pretaken_first = 0, pretaken_rows = 0;
+    u32 snap_first = 0, snap_rows = 0;
+    // the image the last hand-over copied the box from, owing nothing, while the target's image has not been written
+    // since (OwedCheck: a snapshot of a later picture compared with it differed by what the frame drew)
+    const TargetBuffer* box_from = nullptr;
     rhi::Rect clear_box{};      // the largest box a pass's first draw wrote whole (a clear), the frame before
     rhi::Rect clear_box_now{};  // ... in the frame being drawn
     rhi::Rect watch{};          // after a hand-over before a write that owed nothing: the clear expected first (trust)
@@ -355,6 +397,9 @@ struct Target {
     // Colour targets: guest rows [first, last) where guest memory may be newer than the image (whole rows of tiles;
     // MarkStale). Never rows the draws since the last write-back touched (those are written back before they go stale).
     std::vector<std::pair<u32, u32>> stale_rows;
+    // what last made it stale, whole or in rows, and in which game frame (MH4N_SCALE_LOG)
+    const char* stale_why = "never loaded";
+    u32 stale_frame = 0;
     std::shared_ptr<rhi::Image> upload;  // scaled colour targets: the 1x image a load from guest memory goes through
     u64 drawn = 0;                       // the draw serial of the last draw into it
     u64 version = 0;                     // bumped whenever its image changes (a draw, a load, tiles copied into it)
@@ -729,6 +774,7 @@ struct TexImage {
     std::array<u32, 6> generation{};  // of the cache's decoded face the image holds
     u64 bytes = 0;
     u64 stamp = 0;  // the recording that last bound it
+    u64 used_frame = 0;  // the frame (the texture cache's count of screen pictures) that last bound it
 };
 
 // ---- the GPU --------------------------------------------------------------------------------------------------------
@@ -751,6 +797,9 @@ public:
     }
 
     ~Impl() override {
+        if (check_thread_.joinable()) {  // (the pipeline check, over before the backend is let go here)
+            check_thread_.join();
+        }
         if (renderer_ready_) {
             FlushRecording();
             backend_->WaitIdle();
@@ -788,6 +837,10 @@ public:
         }();
         if (renderer_ready_ && (command.words[0] & 0xFF) == static_cast<u32>(gx::CommandId::DisplayTransfer)) {
             ++ab_transfers_;
+            if (texture_cache_) {
+                texture_cache_->NextFrame();  // (a screen's picture is done: each texture's spot check once a picture)
+                MemoryHousekeeping();
+            }
             if (AbFrames() != 0 && fragment_state_ != nullptr && AbOffFor("shaders") != fragment::ShadersAsBefore()) {
                 fragment::SetShadersAsBefore(AbOffFor("shaders"));
                 fragment_state_->Invalidate();
@@ -810,6 +863,7 @@ public:
             return;
         }
         const CauseScope cause(*this, WritebackCause::Gx);
+        const StaleWhy why(*this, GxName(command.words[0] & 0xFF));
         GxRanges ranges;
         const bool ranged = !all && GxCommandRanges(command, &ranges);
         const GxWrites precise = WritesOf(command);
@@ -831,13 +885,22 @@ public:
             // its 1x picture); a depth target it writes starts again at 1.0, as at 1x.
             const GxWrites writes = WritesOf(command);
             ForgetScaledScreens(writes);
+            bool screen = false;
             if ((command.words[0] & 0xFF) == static_cast<u32>(gx::CommandId::DisplayTransfer)) {
-                DrawScaledScreen(command);
+                screen = DrawScaledScreen(command) != nullptr;
+            }
+            if (ScaleLogLimit() != 0) {
+                ScaleLogGx(command, ranged ? &ranges : nullptr, screen);
+                if (writes.all) {
+                    ScaleLog(fmt::format("gx {} writes where the engine's registers say: every target stale",
+                                         GxName(command.words[0] & 0xFF)));
+                }
             }
             gx_.Execute(command);
             for (auto& t : targets_) {
                 if (writes.all || (!ranged && t->depth)) {
                     t->stale = true;
+                    NoteStale(*t);
                     continue;
                 }
                 for (const auto& [begin, end] : writes.ranges) {
@@ -923,14 +986,27 @@ public:
                 return;
             }
         }
-        if (HasScreens() && (addr == pica::kGpuMmioBase + 4 * gx::kRegFillControl0 ||
+        const bool trigger = addr == pica::kGpuMmioBase + 4 * gx::kRegFillControl0 ||
                              addr == pica::kGpuMmioBase + 4 * gx::kRegFillControl1 ||
-                             addr == pica::kGpuMmioBase + 4 * gx::kRegTransferTrigger)) {
+                             addr == pica::kGpuMmioBase + 4 * gx::kRegTransferTrigger;
+        if (HasScreens() && trigger) {
             // a fill or transfer started by a register: where it reads and writes is not followed
+            if (ScaleLogLimit() != 0) {
+                ScaleLog(fmt::format("a fill or transfer started by register {:08x}: every screen's picture forgotten", addr));
+            }
             MaterializeOverlapping(0, 0xFFFFFFFFu);
             ForgetScaledScreens(GxWrites{{}, true});
         }
         gx_.WriteReg(addr, value);
+        if (trigger && texture_cache_ != nullptr) {
+            // ... and any texture's memory may be what it wrote (the GX commands' fills and transfers name their ranges; these
+            // were not told to the cache at all). Not seen from the game so far: the first few are logged.
+            if (++register_triggers_ <= 3) {
+                MH4N_LOG(Info, kLog, "a fill or transfer started by a register write ({:08x} = {:08x}): every texture is checked again",
+                         addr, value);
+            }
+            texture_cache_->OnGpuWrite(0, 0xFFFFFFFFu);
+        }
     }
 
     u32 ReadReg(u32 addr) override {
@@ -954,6 +1030,7 @@ public:
         }
         FlushHeldCpuDraw();
         const CauseScope cause(*this, WritebackCause::Cpu);
+        const StaleWhy why(*this, "the CPU's flush");
         if (const std::optional<u32> paddr = host_.VirtualToPhysical(vaddr)) {
             // a deferred framebuffer there is written first, and what the CPU wrote since stays (Materialize)
             const u32 end = static_cast<u32>(std::min<u64>(u64{*paddr} + size, 0xFFFFFFFFull));
@@ -964,6 +1041,10 @@ public:
                 ForgetScaledScreens(GxWrites{{{*paddr, end}}, false});
             }
         } else {
+            if (ScaleLogLimit() != 0) {
+                ScaleLog(fmt::format("the CPU's flush of {:08x} (+{:x}), no physical address: every target stale", vaddr, size));
+            }
+            const StaleWhy no_physical(*this, "the CPU's flush of memory with no physical address");
             MaterializeOverlapping(0, 0xFFFFFFFFu);
             WriteBackAll();
             MarkAllStale();
@@ -1390,6 +1471,9 @@ public:
         add("target_no_spare", frame_.target_no_spare);
         add("target_buffers_made", frame_.target_buffers_made);
         add("target_owed_read", frame_.target_owed_read);
+        add("target_owed_pretaken", frame_.target_owed_pretaken);
+        add("target_owed_taken_back", frame_.target_owed_taken_back);
+        add("target_box_copied", frame_.target_box_copied);
         // what the renderer's images hold, in MB (4 bytes a pixel, every mip level): targets (with their 1x upload images and
         // feedback twins), the upright screens, the shared screens' pool, the decoded textures
         {
@@ -1423,6 +1507,19 @@ public:
             add("shared_screens_mb", shared >> 20);
             add("target_buffers_mb", target_buffers >> 20);  // (a screen target's images but its image and twin, gpu3)
             add("textures_mb", texture_bytes_ >> 20);
+            add("texture_images", texture_images_.size());
+            if (texture_cache_ != nullptr) {
+                const texture::CacheStats& c = texture_cache_->stats();
+                add("texture_entries", texture_cache_->size());
+                add("texture_pixels_mb", texture_cache_->pixel_bytes() >> 20);
+                add("texture_spot_kb", c.spot_bytes >> 10);  // (since the start)
+                add("texture_spotted", c.spotted);
+                add("texture_rolled", c.rolled);
+                add("texture_stale", c.stale);
+                add("texture_repixels", c.repixels);
+                add("texture_swept", c.swept);
+                add("textures_released", textures_released_);
+            }
             if (backend_ != nullptr) {
                 const rhi::Backend::MemoryUse memory = backend_->Memory();
                 add("vma_blocks_mb", memory.block_bytes >> 20);
@@ -1521,7 +1618,10 @@ private:
         u64 target_pictures = 0, target_write_handovers = 0, target_vblank_handovers = 0, target_pingpong_handovers = 0;
         u64 target_copy_px = 0, target_owed_px = 0, target_owed_taken = 0, target_owed_cleared = 0;
         u64 target_fallbacks = 0, target_no_spare = 0, target_buffers_made = 0;
-        u64 target_owed_read = 0;  // the hidden touch screen's snapshot taken from the published image (what is owed)
+        u64 target_owed_read = 0;  // the hidden touch screen's snapshot of the published picture (what is owed)
+        u64 target_owed_pretaken = 0;  // ... taken at its hand-over (PretakeSnapshot) and adopted
+        u64 target_owed_taken_back = 0;  // owed pixels or a snapshot taken from the app's side (OwingAllowed's GPUs)
+        u64 target_box_copied = 0;  // hand-overs that copied the box they would have owed (no owing: OwingAllowed)
         u64 cpu_held = 0, cpu_joined = 0;        // CPU-path draws held back, and draws that joined them
         u64 draw_us = 0, prep_us = 0, tex_us = 0, vtx_us = 0, tgt_us = 0, compose_us = 0;
         std::map<std::string, u64, std::less<>> stubbed;
@@ -1561,6 +1661,9 @@ private:
         backend_ = *backend;
         const rhi::Capabilities& caps = backend_->Caps();
         MH4N_LOG(Info, kLog, "device: {} ({})", caps.device_name, caps.driver_name);
+        owing_allowed_ = OwingFor(caps);
+        MH4N_LOG(Info, kLog, "the top screen's hand-over {}", owing_allowed_ ? "may owe the box the next frame clears"
+                                                                              : "copies the box the next frame clears (owes nothing)");
         profile_ = fragment::ProfileOf(caps);
 
         // The quaternion fix-up of lit draws (lighting/, N2-09; design 5.5): --lighting-fixup (native_gpu.h), the environment's
@@ -1616,6 +1719,47 @@ private:
 
         builder_ = std::make_unique<PipelineBuilder>(backend_, *registry_);
         provider_ = MakePipelineProvider(backend_, *builder_, options_.options, options_.force_ubershader);
+        // A check that the driver takes what the renderer builds (an old driver may refuse it all, and the game then runs
+        // on behind a black screen: 4u-native #33), on a thread of its own: the colour readback's compute pipeline (made
+        // now and kept for ReadbackToGuest) and a graphics pipeline made as the scaled screens' is, through the path every
+        // pipeline takes (glslang at the SPIR-V chosen, plume), then let go. A refusal names its VkResult. Not on the
+        // renderer's thread: glslang's first compile of a vertex and a fragment stage (its built-in tables) took ~200 ms
+        // there on the Anbernic, a frame of the start 230 ms longer. (After the provider, which loads the driver's
+        // pipeline cache first.)
+        check_thread_ = std::thread([backend = backend_] {
+            SetHostThreadName("mh4n-check");
+            const auto start = std::chrono::steady_clock::now();
+            const rhi::Result<void> readback = backend->PrepareReadback();
+            std::string graphics;  // (empty: built)
+            {
+                std::vector<u32> vs, fs;
+                std::string error;
+                if (!shader::CompileGlslToSpirv(kScreenVertexGlsl, vs, error) ||
+                    !fragment::CompileFragmentGlslToSpirv(kScreenFragmentGlsl, fs, error)) {
+                    graphics = "its shaders do not compile: " + error;
+                } else {
+                    rhi::GraphicsPipelineDesc desc;
+                    desc.vertex.spirv = vs;
+                    desc.fragment.spirv = fs;
+                    desc.topology = rhi::Topology::TriangleList;
+                    desc.color_format = backend->ChooseFormat(rhi::Format::Rgba8Unorm, rhi::FormatUse::ColorTarget).format;
+                    desc.sets = {ScreenSetDesc()};
+                    desc.name = "pipeline check";
+                    rhi::Result<std::shared_ptr<rhi::Pipeline>> pipeline = backend->CreateGraphicsPipeline(desc);
+                    if (!pipeline.ok()) graphics = pipeline.error();
+                }
+            }
+            const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+            present::SetRendererCannotDraw(!readback.ok() || !graphics.empty());
+            if (readback.ok() && graphics.empty()) {
+                MH4N_LOG(Info, kLog, "pipeline check: the driver built a compute and a graphics pipeline ({:.0f} ms)", ms);
+            } else {
+                MH4N_LOG(Error, kLog, "pipeline check: the driver refused {}{}{}: nothing drawn may show",
+                         !readback.ok() ? "the readback's compute pipeline (" + readback.error() + ")" : std::string(),
+                         !readback.ok() && !graphics.empty() ? " and " : "",
+                         !graphics.empty() ? "a graphics pipeline (" + graphics + ")" : std::string());
+            }
+        });
         rhi::Result<std::unique_ptr<DrawComposer>> composer = DrawComposer::Create(backend_, *provider_);
         if (!composer.ok()) {
             MH4N_LOG(Error, kLog, "composer: {}", composer.error());
@@ -1655,6 +1799,25 @@ private:
             const char* v = std::getenv("MH4N_TEXTURE_CHECK_ALL");
             return v != nullptr && *v == '1';
         }();
+        cache_config.verify = [] {
+            const char* v = std::getenv("MH4N_TEXTURE_VERIFY");
+            return v != nullptr && *v == '1';
+        }();
+        cache_config.spot_check = [] {
+            const char* v = std::getenv("MH4N_TEXTURE_SPOT");
+            return v == nullptr || *v != '0';
+        }();
+        cache_config.rolling_check = [] {
+            const char* v = std::getenv("MH4N_TEXTURE_ROLL");
+            return v == nullptr || *v != '0';
+        }();
+        cache_config.release_pixels = [] {
+            const char* v = std::getenv("MH4N_TEXTURE_KEEP_PIXELS");
+            return v == nullptr || *v == '0';
+        }();
+        MH4N_LOG(Info, kLog, "textures: images up to {} MB (the device's memory {} MB), {}{}", TextureBudgetBytes() >> 20,
+                 DeviceMemoryMb(), cache_config.release_pixels ? "decoded copies let go once uploaded" : "decoded copies kept",
+                 !cache_config.spot_check ? ", no spot check" : cache_config.rolling_check ? "" : ", no rolling check");
         texture_cache_ = std::make_unique<texture::TextureCache>(host_, cache_config);
         samplers_ = std::make_unique<fragment::sampling::SamplerCache>(backend_);
 
@@ -1725,6 +1888,8 @@ private:
         last_submit_ = backend_->Submit(std::move(*rec_));
         rec_.reset();
         composer_->Submitted(last_submit_ > 0);
+        for (std::shared_ptr<rhi::Image>& image : retire_after_submit_) backend_->Retire(std::move(image), last_submit_);
+        retire_after_submit_.clear();
         if (!releasing_.empty()) {
             std::shared_ptr<rhi::SyncFile> sync = shared_->CanExportFences() ? shared_->ExportFence() : nullptr;
             for (TargetBuffer* b : releasing_) {
@@ -1848,6 +2013,8 @@ private:
             if (!blit) {
                 found->stale = true;
                 found->stale_rows.clear();
+                const StaleWhy why(*this, "made a shadow map");
+                NoteStale(*found);
             }  // (blit: its stale rows stay stale, its drawn rows dirty, as in the old image)
             if (found->upload != nullptr) {
                 backend_->Retire(found->upload, last_submit_);
@@ -1926,6 +2093,7 @@ private:
         const u32 tile_row = t.width * 8 * ColorBytesPerPixel(t.format);
         if (t.depth || tile_row == 0) {
             t.stale = true;
+            NoteStale(t);
             return;
         }
         const u32 lo = std::max(begin, t.paddr);
@@ -1933,6 +2101,7 @@ private:
         if (lo >= hi || t.stale) {
             return;
         }
+        NoteStale(t);
         const u32 first = (lo - t.paddr) / tile_row * 8;
         const u32 last = std::min(t.height, (hi - t.paddr + tile_row - 1) / tile_row * 8);
         if (first == 0 && last >= t.height) {
@@ -2014,6 +2183,11 @@ private:
                                                     static_cast<texture::Format>(t.format), rgba);
         if (!decoded) {
             return false;
+        }
+        if (t.scale > 1 && ScaleLogLimit() != 0) {
+            const std::string event = fmt::format("load: target {} rows {}-{} loaded from memory at 1x ({}", Describe(t), first,
+                                                  last, t.stale_why);
+            ScaleLog(event + fmt::format("; stale since f{})", t.stale_frame), event.size());
         }
         t.Changed(first, last);
         ++frame_.loads;
@@ -2198,6 +2372,7 @@ private:
     void MarkAllStale() {
         for (auto& t : targets_) {
             t->stale = true;
+            NoteStale(*t);
         }
     }
 
@@ -2216,6 +2391,7 @@ private:
         const u32 begin = t->paddr + first / 8 * tile_row;
         const u32 end = last >= t->height ? t->paddr + t->bytes : t->paddr + (last + 7) / 8 * tile_row;
         const CauseScope cause(*this, WritebackCause::Overlap);
+        const StaleWhy why(*this, "another target drawn over it");
         for (auto& other : targets_) {
             if (other.get() != t && first < last && other->Overlaps(begin, end)) {
                 if (DirtyOverlaps(*other, begin, end)) {
@@ -2849,6 +3025,7 @@ private:
             }
             orphan_buffers_.push_back(std::move(b));  // (dropped once submitted and let go of: FlushRecording)
         }
+        if (s.pretaken != nullptr) retire_after_submit_.push_back(std::move(s.pretaken));  // (the open recording may use it)
         t.screen.reset();
     }
 
@@ -3003,6 +3180,7 @@ private:
         }
         // what the next frame's first clear is expected to write, but where this write reaches (it reads or writes there)
         std::vector<rhi::Rect> owe;
+        const bool may_owe = OwingAllowed() && !AbOffFor("owing");
         if (!Empty(s.clear_box)) {
             // (the trust in that clear: this write is it, or reaches the box otherwise first, or the next one will tell)
             const bool is_clear = area != nullptr && cleared != nullptr && Contains(*cleared, s.clear_box);
@@ -3023,8 +3201,23 @@ private:
                     }
                     need = Subtract(need, d);
                 }
-                if (!owe.empty()) s.watch = {};  // (what is owed tells instead: TakeOwed, ScreenWrite)
+                if (!owe.empty() && may_owe) s.watch = {};  // (what is owed tells instead: TakeOwed, ScreenWrite)
             }
+        }
+        // A GPU where owed pixels could not be taken back from the published image while the app holds it (OwingAllowed)
+        // owes nothing: the box is copied now, while the image is still the renderer's (not counted as a costly hand-over:
+        // the target stays on its own pictures).
+        u64 box_px = 0;
+        if (!owe.empty() && !may_owe) {
+            box_px = Pixels(owe);
+            ++frame_.target_box_copied;
+            need.insert(need.end(), owe.begin(), owe.end());
+            owe.clear();
+        }
+        s.box_from = box_px > 0 ? x : nullptr;
+        s.pretaken_of = nullptr;
+        if (!owe.empty() && area == nullptr) {  // (after a write, the next snapshot comes after another hand-over)
+            PretakeSnapshot(t, *x, owe);
         }
         CopyRects(*x->image, *b->image, need);
         // b is the target's image now; where the others differ from it: what it is owed, what the write changes
@@ -3093,7 +3286,7 @@ private:
         }
         // a hand-over that copied more than a quarter of the picture three times in a row (the touch screen shown: its
         // draws come into the target right after the transfer and keep little of it): the upright copy for a while
-        if (!fresh && s.picture_px != 0 && copied * 4 > s.picture_px) {
+        if (!fresh && s.picture_px != 0 && (copied - box_px) * 4 > s.picture_px) {
             if (++s.expensive >= 3) {
                 s.expensive = 0;
                 s.fallback = s.fallback_next;
@@ -3109,27 +3302,148 @@ private:
         }
     }
 
-    // The pixels the image owes (the expected clear did not come first): taken back from the image that has them, which
-    // the app's side may hold (acquired for the copy and handed back; both sides only read it).
+    // The rows the hidden touch screen's snapshot read of `t` the last time (the snapshot after the top screen's, right
+    // after this hand-over), if they reach what `from` owes: taken now from `from` (about to be handed over, so still the
+    // renderer's) with the snapshot's own blit (nearest, to 1x), into the target's `pretaken`, which the snapshot adopts
+    // instead of reading the published image (DrawScaledScreen). The A/B's "pretake" phase: not taken (the snapshot reads
+    // the published image from the app's side, as before 4u-native #31; a measurement aid).
+    void PretakeSnapshot(Target& t, const TargetBuffer& from, const std::vector<rhi::Rect>& owe) {
+        ScreenTarget& s = *t.screen;
+        if (s.snap_rows == 0 || s.snap_first + s.snap_rows > t.height || AbOffFor("pretake")) return;
+        const rhi::Rect rows = RowsRect(t, s.snap_first, s.snap_first + s.snap_rows);
+        if (std::none_of(owe.begin(), owe.end(), [&](const rhi::Rect& o) { return Intersect(o, rows).has_value(); })) return;
+        if (s.pretaken == nullptr || s.pretaken->Width() != t.width || s.pretaken->Height() != s.snap_rows) {
+            if (s.pretaken != nullptr) retire_after_submit_.push_back(std::move(s.pretaken));  // (the open recording may use it)
+            rhi::ImageDesc desc;
+            desc.format = rhi::Format::Rgba8Unorm;
+            desc.width = t.width;
+            desc.height = s.snap_rows;
+            desc.name = "async screen source";
+            rhi::Result<std::shared_ptr<rhi::Image>> made = backend_->CreateImage(desc);
+            if (!made.ok()) {
+                if (target_logs_++ < 8) {
+                    MH4N_LOG(Warning, kLog, "the screen target {:08x}'s snapshot taken ahead: {}", t.paddr, made.error());
+                }
+                return;
+            }
+            s.pretaken = *made;
+        }
+        const u32 n = t.scale;
+        rhi::ImageBlitRegion blit;
+        blit.src = rhi::Rect{0, static_cast<s32>((t.height - s.snap_first - s.snap_rows) * n), t.width * n, s.snap_rows * n};
+        blit.dst = rhi::Rect{0, 0, t.width, s.snap_rows};
+        rec_->Blit(*from.image, *s.pretaken, std::span<const rhi::ImageBlitRegion>(&blit, 1), /*linear=*/false);
+        s.pretaken_of = &from;
+        s.pretaken_first = s.snap_first;
+        s.pretaken_rows = s.snap_rows;
+    }
+
+    // Owing (a hand-over that leaves the box the next frame's first clear writes to that clear) needs the owed pixels
+    // taken back from the published image when something else reaches the box first, even while the app's side holds
+    // and draws the picture (the game sampling its last picture: a fade). That was seen to work on Mali and Adreno with
+    // their own drivers (Vulkan 1.3: Mali r40 and r49, Adreno 830), the only GPUs that owe; the others copy the box at
+    // the hand-over, as the rules for memory another API uses allow. So do drivers below Vulkan 1.2 and drivers that
+    // don't say which they are (no driver properties): older ones, where it was never seen. MH4N_OWING=0: never owe,
+    // =1: owe on any GPU (measurement aids).
+    bool OwingAllowed() const { return owing_allowed_; }
+    static bool OwingFor(const rhi::Capabilities& caps) {
+        const char* v = std::getenv("MH4N_OWING");
+        if (v != nullptr && (*v == '0' || *v == '1')) return *v == '1';
+        constexpr u32 kVulkan12 = (1u << 22) | (2u << 12);
+        if (caps.api_version < kVulkan12 || caps.driver_id == 0) return false;
+        constexpr u32 kDriverQualcomm = 8, kDriverArm = 9;  // (VkDriverId)
+        return caps.driver_id == kDriverQualcomm || caps.driver_id == kDriverArm;
+    }
+
+    // The pixels the image owes (the expected clear did not come first), taken back from the image that has them. Once
+    // no picture of it is left, it is the renderer's again (acquired back from the app's side if it was there, and kept);
+    // while one lives, the app's side may be drawing it: acquired for the copy and handed back (OwingAllowed's GPUs only,
+    // counted: target_owed_taken_back), and the trust starts again.
     void TakeOwed(Target& t, const char* why) {
         ScreenTarget& s = *t.screen;
         TargetBuffer* from = s.owed_from;
         if (from != nullptr && !s.owed.empty()) {
             EnsureRecording();
             composer_->EndPass(*rec_);
+            const bool held = from->released && from->holders->load(std::memory_order_acquire) > 0;
+            const char* how = held             ? "from the published image the app still shows"
+                              : from->released ? "from the image (no picture of it left)"
+                                               : "from the image (not handed over yet)";
             if (from->released) shared_->AcquireAll(*rec_, *from->shared);
             CopyRects(*from->image, *t.image, s.owed);
-            if (from->released) shared_->ReleaseAll(*rec_, *from->shared);
-            ++frame_.target_owed_taken;
-            if (target_logs_++ < 8) {
-                MH4N_LOG(Info, kLog, "the screen target {:08x}: {} px owed taken back for {} (the expected clear did not come first)",
-                         t.paddr, Pixels(s.owed), why);
+            if (held) {
+                shared_->ReleaseAll(*rec_, *from->shared);
+                ++frame_.target_owed_taken_back;
+            } else {
+                from->released = false;  // (no picture of it lives: the renderer's again)
             }
-            TraceEventF("owed taken {:08x} {} px", t.paddr, Pixels(s.owed));
+            ++frame_.target_owed_taken;
+            if (owed_logs_++ < 32) {
+                MH4N_LOG(Info, kLog, "the screen target {:08x}: {} px owed taken back for {} (the expected clear did not come "
+                                     "first), {}", t.paddr, Pixels(s.owed), why, how);
+            }
+            TraceEventF("owed taken {:08x} {} px{}", t.paddr, Pixels(s.owed), held ? " (held)" : "");
         }
         s.owed.clear();
         s.owed_from = nullptr;
+        s.pretaken_of = nullptr;
         s.trust = 0;
+    }
+
+    // MH4N_OWED_CHECK=1 (a measurement aid, on a GPU where taking the image back from the app's side was seen to work):
+    // one hidden touch screen snapshot in 30 taken at the hand-over (PretakeSnapshot), or read from the target's own image
+    // after a hand-over that copied the box instead of owing it, is also taken the old way, from the published image, and
+    // the two are compared once submitted (logged: the pixels that differ).
+    static bool OwedCheck() {
+        static const bool on = [] {
+            const char* v = std::getenv("MH4N_OWED_CHECK");
+            return v != nullptr && *v == '1';
+        }();
+        return on;
+    }
+    // (the check's other side: `blit` of the published image, taken back from the app's side the old way)
+    void OwedCheckTake(const TargetBuffer& published, const rhi::ImageBlitRegion& blit, const ScaledScreen* entry) {
+        const u32 w = blit.dst.width, h = blit.dst.height;
+        if (owed_check_ == nullptr || owed_check_->Width() != w || owed_check_->Height() != h) {
+            rhi::ImageDesc desc;
+            desc.format = rhi::Format::Rgba8Unorm;
+            desc.width = w;
+            desc.height = h;
+            desc.name = "owed check";
+            if (owed_check_ != nullptr) retire_after_submit_.push_back(std::move(owed_check_));
+            rhi::Result<std::shared_ptr<rhi::Image>> made = backend_->CreateImage(desc);
+            owed_check_ = made.ok() ? *made : nullptr;
+        }
+        if (owed_check_ == nullptr) return;
+        shared_->AcquireAll(*rec_, *published.shared);
+        rec_->Blit(*published.image, *owed_check_, std::span<const rhi::ImageBlitRegion>(&blit, 1), /*linear=*/false);
+        shared_->ReleaseAll(*rec_, *published.shared);
+        owed_check_entry_ = entry;
+    }
+    void CompareOwedCheck(const ScaledScreen& entry) {
+        if (owed_check_ == nullptr || entry.snapshot == nullptr) return;
+        const u32 w = entry.snapshot->Width(), h = entry.snapshot->Height();
+        rhi::Result<std::vector<u8>> a = backend_->ReadImage(*entry.snapshot, 0, 0, w, h);
+        rhi::Result<std::vector<u8>> b = backend_->ReadImage(*owed_check_, 0, 0, w, h);
+        if (!a.ok() || !b.ok() || a->size() != b->size()) {
+            MH4N_LOG(Warning, kLog, "owed check: not read back ({} {})", a.ok() ? "" : a.error(), b.ok() ? "" : b.error());
+            return;
+        }
+        u64 differ = 0;
+        u32 row0 = h, row1 = 0;  // (the snapshot rows where they differ: its row r is the source's guest row first + h - 1 - r)
+        for (size_t i = 0; i + 3 < a->size(); i += 4) {
+            if (std::memcmp(a->data() + i, b->data() + i, 4) != 0) {
+                ++differ;
+                const u32 row = static_cast<u32>(i / 4 / w);
+                row0 = std::min(row0, row);
+                row1 = std::max(row1, row);
+            }
+        }
+        ++owed_compared_;
+        owed_differ_ += differ;
+        MH4N_LOG(Info, kLog, "owed check {}: the snapshot of {}x{} as taken and from the published image: {} px differ{} "
+                             "({} px in {} checks)", owed_compared_, w, h, differ,
+                 differ != 0 ? fmt::format(" in its rows {}..{}", row0, row1) : std::string(), owed_differ_, owed_compared_);
     }
 
     // After a VBlank hand-over that owed nothing: would the box have been written by the next write first?
@@ -3145,11 +3459,13 @@ private:
         s.watch = {};
     }
 
-    // Before `area` of a screen target's image is read: what it owes there taken back.
-    void ScreenRead(Target& t, const rhi::Rect& area, const char* why) {
+    // Before `area` of a screen target's image is read: what it owes there taken back. `watch` false: the read does not
+    // count against the trust in the next frame's first clear (the hidden touch screen's snapshot, which reads the
+    // published picture's rows, owed or not).
+    void ScreenRead(Target& t, const rhi::Rect& area, const char* why, bool watch = true) {
         if (t.screen == nullptr) return;
         ScreenTarget& s = *t.screen;
-        WatchTrust(s, area, nullptr);
+        if (watch) WatchTrust(s, area, nullptr);
         for (const rhi::Rect& o : s.owed) {
             if (Intersect(o, area)) {
                 TakeOwed(t, why);
@@ -3186,6 +3502,7 @@ private:
         if (s.image->holders->load(std::memory_order_acquire) > 0) {
             Detach(t, &area, cleared, keep_twin);
         }
+        s.box_from = nullptr;  // (the image differs from the one it was given the box from: OwedCheck)
     }
 
     // A screen target's picture, as the display takes it: if nothing has written the target since, its image is handed
@@ -3272,7 +3589,14 @@ private:
         return true;
     }
 
-    ScaledScreen* NoteUnscaledScreen(u32 input, const char* why) {
+    ScaledScreen* NoteUnscaledScreen(u32 input, const char* why, const Target* stale = nullptr) {
+        if (ScaleLogLimit() != 0) {
+            const std::string event = fmt::format("screen: a display transfer from {:08x} shown from guest memory at 1x ({}", input, why);
+            ScaleLog(event + (stale != nullptr ? fmt::format(": target {}, {}; stale since f{})", Describe(*stale), stale->stale_why,
+                                                             stale->stale_frame)
+                                               : std::string(")")),
+                     event.size());
+        }
         if (screen_fallback_logs_ < 8) {
             ++screen_fallback_logs_;
             MH4N_LOG(Info, kLog, "a display transfer from 0x{:08x} ({}): its framebuffer is shown from guest memory", input,
@@ -3329,6 +3653,7 @@ private:
         }
         // What it writes over: a deferred framebuffer it covers whole is dropped, one it covers in part made first; a target
         // there is written back first (a target written in part keeps the rest), as on the CPU path.
+        const StaleWhy why(*this, "a display transfer (on the GPU)");
         GxRanges ranges;
         ranges.writes.emplace_back(out, out_end);
         const GxWrites writes{{{out, out_end}}, false};
@@ -3545,6 +3870,125 @@ private:
         frame_.materialize_us += NowUs() - start;
     }
 
+    // MH4N_SCALE_LOG=<n> (a measurement aid: where a picture the GPU drew at the internal scale goes through guest memory at
+    // 1x, which looks blurred or blocky at a higher scale): the first n events of four kinds, each logged the first time
+    // and again when it comes back after 60 frames without it, with the game's frame:
+    //  - "gx": a fill, transfer, copy or DMA that reads rows of a scaled colour target (it reads their 1x write-back);
+    //  - "screen": a display transfer whose framebuffer is shown from guest memory (the 1x picture, enlarged by the app);
+    //  - "texture": a texture decoded from guest memory under a scaled colour target (not that target itself);
+    //  - "load": rows of a scaled colour target loaded from guest memory (the 1x picture, enlarged nearest).
+    static u32 ScaleLogLimit() {
+        static const u32 limit = [] {
+            const char* v = std::getenv("MH4N_SCALE_LOG");
+            return v != nullptr ? static_cast<u32>(std::max(0, std::atoi(v))) : 0u;
+        }();
+        return limit;
+    }
+    // (`what` up to `key` is the event: what follows, such as when its target went stale, is not)
+    void ScaleLog(const std::string& what, size_t key = std::string::npos) {
+        if (scale_logged_ >= ScaleLogLimit()) {
+            return;
+        }
+        const u32 frame = pacing::g_game_frame.load(std::memory_order_relaxed);
+        auto [it, fresh] = scale_seen_.try_emplace(what.substr(0, key), frame);
+        const bool again = !fresh && frame - it->second > 60;
+        it->second = frame;
+        if (fresh || again) {
+            ++scale_logged_;
+            MH4N_LOG(Info, kLog, "scale f{}: {}", frame, what);
+        }
+    }
+    // What marks targets stale while it is in scope (MarkStale, MarkAllStale: Target::stale_why).
+    struct StaleWhy {
+        StaleWhy(Impl& impl, const char* why) : impl_(impl), saved_(impl.stale_why_) { impl_.stale_why_ = why; }
+        ~StaleWhy() { impl_.stale_why_ = saved_; }
+        StaleWhy(const StaleWhy&) = delete;
+        StaleWhy& operator=(const StaleWhy&) = delete;
+        Impl& impl_;
+        const char* saved_;
+    };
+    void NoteStale(Target& t) {
+        t.stale_why = stale_why_;
+        t.stale_frame = pacing::g_game_frame.load(std::memory_order_relaxed);
+    }
+    static std::string Describe(const Target& t) {
+        return fmt::format("{:08x} {}x{} fmt {}", t.paddr, t.width, t.height, t.format);
+    }
+    static const char* GxName(u32 id) {
+        switch (id) {
+        case 0: return "a DMA";
+        case 2: return "a fill";
+        case 3: return "a display transfer";
+        case 4: return "a texture copy";
+        default: return "a GX command";
+        }
+    }
+    // A GX command that reads rows of a scaled colour target, before it runs (MH4N_SCALE_LOG): `screen`, it also made the
+    // picture its framebuffer shows at the scale (DrawScaledScreen).
+    void ScaleLogGx(const GxCommand& command, const GxRanges* ranges, bool screen) {
+        if (ranges == nullptr) {
+            ScaleLog(fmt::format("gx {} with addresses that are not physical: every target written back", GxName(command.words[0] & 0xFF)));
+            return;
+        }
+        const u32* w = command.words;
+        for (const auto& [begin, end] : ranges->reads) {
+            for (const auto& t : targets_) {
+                if (t->depth || t->shadow || t->scale <= 1 || t->stale || !t->Overlaps(begin, end)) {
+                    continue;
+                }
+                const u32 tile_row = TileRowBytes(*t);
+                const u32 lo = std::max(begin, t->paddr), hi = std::min<u64>(end, u64{t->paddr} + t->bytes);
+                std::string to;
+                const u32 out = GxPhysical(w[2]);
+                for (const auto& o : targets_) {
+                    if (o.get() != t.get() && o->Overlaps(out, out + 1)) {
+                        to = fmt::format(" into target {}", Describe(*o));
+                        break;
+                    }
+                }
+                std::string detail;
+                if ((w[0] & 0xFF) == 3) {
+                    detail = fmt::format(" in {}x{} out {}x{} flags {:08x}", w[3] & 0xFFFF, w[3] >> 16, w[4] & 0xFFFF, w[4] >> 16, w[5]);
+                } else if ((w[0] & 0xFF) == 4) {
+                    detail = fmt::format(" size {:x} gaps {:08x} {:08x} flags {:08x}", w[3], w[4], w[5], w[6]);
+                } else if ((w[0] & 0xFF) == 0) {
+                    detail = fmt::format(" size {:x}", w[3]);
+                }
+                ScaleLog(fmt::format("gx {} reads target {} rows {}-{} at 1x{}: {:08x} -> {:08x}{}{}", GxName(w[0] & 0xFF),
+                                     Describe(*t), (lo - t->paddr) / tile_row * 8,
+                                     std::min(t->height, (hi - t->paddr + tile_row - 1) / tile_row * 8), detail,
+                                     GxPhysical(w[1]), out, to, screen ? " (its screen picture made at the scale)" : ""));
+            }
+        }
+    }
+    // A texture decoded from guest memory (BindUnit, MH4N_SCALE_LOG): the scaled targets under its memory (a depth target:
+    // a draw that reads the depth as a texture).
+    void ScaleLogTexture(const texture::TextureRef& ref) {
+        const u32 bytes = static_cast<u32>(texture::EncodedBytes(ref.format, ref.width, ref.height));
+        const u32 begin = ref.paddr, end = static_cast<u32>(std::min<u64>(u64{ref.paddr} + bytes, 0xFFFFFFFFull));
+        for (const auto& t : targets_) {
+            if (t->shadow || t->scale <= 1 || !t->Overlaps(begin, end)) {
+                continue;
+            }
+            std::string why;
+            if (t->depth) {
+                why = "a depth target";
+            } else if (t->paddr != ref.paddr) {
+                why = fmt::format("at {} bytes into it", static_cast<s64>(ref.paddr) - static_cast<s64>(t->paddr));
+            } else if (t->width != ref.width || t->height != ref.height) {
+                why = "another size";
+            } else if (static_cast<u32>(ref.format) != t->format) {
+                why = "another format";
+            } else if (t->stale) {
+                why = fmt::format("the target stale ({})", t->stale_why);
+            } else {
+                why = "the same texture (not taken as the target)";
+            }
+            ScaleLog(fmt::format("texture {:08x} {}x{} fmt {} unit {} decoded from memory at 1x under target {}: {}", ref.paddr,
+                                 ref.width, ref.height, static_cast<u32>(ref.format), ref.unit, Describe(*t), why));
+        }
+    }
+
     // Which write-backs the counters put where (MH4N_GPU_COUNTERS: writebacks_gx, _overlap, _texture, _cpu).
     enum class WritebackCause : u32 { Other = 0, Gx = 1, Overlap = 2, Texture = 3, Cpu = 4 };
     struct CauseScope {
@@ -3589,6 +4033,7 @@ private:
         Target* source = nullptr;
         u32 first_row = 0;
         bool stale = false;
+        const Target* stale_target = nullptr;
         for (auto& t : targets_) {
             if (t->depth || t->scale != scale_ || t->width != regs.InputWidth() || ColorToTransferFormat(t->format) != in_format ||
                 input < t->paddr || input >= t->paddr + t->bytes) {
@@ -3604,6 +4049,7 @@ private:
             }
             if (t->stale) {
                 stale = true;
+                stale_target = t.get();
                 continue;
             }
             if (source == nullptr || t->drawn > source->drawn) {
@@ -3612,7 +4058,8 @@ private:
             }
         }
         if (source == nullptr) {
-            return NoteUnscaledScreen(input, stale ? "its render target is older than guest memory" : "no render target holds it");
+            return NoteUnscaledScreen(input, stale ? "its render target is older than guest memory" : "no render target holds it",
+                                      stale_target);
         }
         // the rows a snapshot holds: those the blitter's window has in the source, in whole rows of tiles
         const u32 snapshot_rows = std::min<u32>((source->height - first_row) / 8 * 8, (regs.InputHeight() + 7) / 8 * 8);
@@ -3659,10 +4106,16 @@ private:
         const bool hidden = touch_forced_hidden_ || (touch_skip_enabled_.load(std::memory_order_relaxed) &&
                                                      !touch_shown_.load(std::memory_order_relaxed));
         const bool picture = !(hidden && width == 240 && height == 320 && transfer_alternations_ >= 4);
-        // A screen target's image may owe pixels (gpu3: handed over at a VBlank that came between the top screen's
-        // transfer and this one): the hidden touch screen's snapshot, its only read, is taken from the image that has
-        // them, the published one (all of the picture), acquired from the app's side for it; anything else takes them back.
+        // A screen target's image may owe pixels (gpu3: handed over at the top screen's transfer, or a VBlank, before
+        // this one): the hidden touch screen's snapshot, its only read then, is of the published picture (all of it),
+        // taken at the hand-over (PretakeSnapshot: the rows read here the last time) and adopted; other rows are taken
+        // from the published image, acquired from the app's side (OwingAllowed's GPUs, the only ones that owe). Anything
+        // else takes the owed pixels back.
         const rhi::Rect read_rows = RowsRect(*source, first_row, first_row + std::max(snapshot_rows, (height + 7) / 8 * 8));
+        if (!picture && snapshot && source->screen != nullptr) {
+            source->screen->snap_first = first_row;  // (what PretakeSnapshot takes the next time)
+            source->screen->snap_rows = snapshot_rows;
+        }
         TargetBuffer* read_from = nullptr;
         if (!picture && snapshot && source->screen != nullptr && source->screen->owed_from != nullptr &&
             std::any_of(source->screen->owed.begin(), source->screen->owed.end(),
@@ -3670,7 +4123,9 @@ private:
             read_from = source->screen->owed_from;
             ++frame_.target_owed_read;
         } else {
-            ScreenRead(*source, read_rows, "a display transfer");
+            // (the hidden touch screen's snapshot reads what a hand-over that owes would have read from the published
+            // picture: a GPU that owes nothing, OwingAllowed, copied the box instead, and the trust holds as it does there)
+            ScreenRead(*source, read_rows, "a display transfer", /*watch=*/picture || !snapshot);
         }
         // gpu3: the top screen's picture is the target's own image where it can be (no upright copy; ScreenTarget).
         // MH4N_TARGET_SCREENS_CHECK=1 draws the copy too, to go with it.
@@ -3791,33 +4246,69 @@ private:
             // The source rows the transfer reads, at 1x (a nearest blit: the sample a write-back takes), in a target's row
             // order: guest rows [first_row, first_row + snapshot_rows) are the source image's rows
             // [(height - first_row - snapshot_rows) N, (height - first_row) N).
-            if (entry->snapshot == nullptr || entry->snapshot->Width() != source->width ||
-                entry->snapshot->Height() != snapshot_rows) {
-                if (entry->snapshot != nullptr) {
-                    backend_->Retire(entry->snapshot, last_submit_);
-                }
-                rhi::ImageDesc desc;
-                desc.format = rhi::Format::Rgba8Unorm;
-                desc.width = source->width;
-                desc.height = snapshot_rows;
-                desc.name = "async screen source";
-                rhi::Result<std::shared_ptr<rhi::Image>> made = backend_->CreateImage(desc);
-                if (!made.ok()) {
-                    MH4N_LOG(Error, kLog, "an async screen's source copy: {}", made.error());
-                    entry->snapshot.reset();
-                    FlushRecording();
-                    return nullptr;
-                }
-                entry->snapshot = *made;
-            }
             rhi::ImageBlitRegion blit;
             blit.src = rhi::Rect{0, static_cast<s32>((source->height - first_row - snapshot_rows) * n), source->width * n,
                                  snapshot_rows * n};
             blit.dst = rhi::Rect{0, 0, source->width, snapshot_rows};
-            if (read_from != nullptr && read_from->released) shared_->AcquireAll(*rec_, *read_from->shared);
-            rec_->Blit(read_from != nullptr ? *read_from->image : *source->image, *entry->snapshot,
-                       std::span<const rhi::ImageBlitRegion>(&blit, 1), /*linear=*/false);
-            if (read_from != nullptr && read_from->released) shared_->ReleaseAll(*rec_, *read_from->shared);
+            ScreenTarget* const st = source->screen.get();
+            const bool adopt = read_from != nullptr && st->pretaken != nullptr && st->pretaken_of == read_from &&
+                               st->pretaken_first == first_row && st->pretaken_rows == snapshot_rows;
+            if (adopt) {
+                // (taken at the hand-over, the same blit of the same image: the entry's image becomes the next one taken
+                // ahead)
+                if (entry->snapshot != nullptr && entry->snapshot->Width() == source->width &&
+                    entry->snapshot->Height() == snapshot_rows) {
+                    std::swap(entry->snapshot, st->pretaken);
+                } else {
+                    if (entry->snapshot != nullptr) {
+                        backend_->Retire(entry->snapshot, last_submit_);
+                    }
+                    entry->snapshot = std::move(st->pretaken);
+                }
+                st->pretaken_of = nullptr;
+                ++frame_.target_owed_pretaken;
+                if (OwedCheck() && read_from->released && owed_checks_++ % 30 == 0) {
+                    OwedCheckTake(*read_from, blit, entry);
+                }
+            } else {
+                if (entry->snapshot == nullptr || entry->snapshot->Width() != source->width ||
+                    entry->snapshot->Height() != snapshot_rows) {
+                    if (entry->snapshot != nullptr) {
+                        backend_->Retire(entry->snapshot, last_submit_);
+                    }
+                    rhi::ImageDesc desc;
+                    desc.format = rhi::Format::Rgba8Unorm;
+                    desc.width = source->width;
+                    desc.height = snapshot_rows;
+                    desc.name = "async screen source";
+                    rhi::Result<std::shared_ptr<rhi::Image>> made = backend_->CreateImage(desc);
+                    if (!made.ok()) {
+                        MH4N_LOG(Error, kLog, "an async screen's source copy: {}", made.error());
+                        entry->snapshot.reset();
+                        FlushRecording();
+                        return nullptr;
+                    }
+                    entry->snapshot = *made;
+                }
+                // (the image is the renderer's: the target's own, or a published one not yet handed over; else the
+                // published image taken back from the app's side for the blit: rows not taken ahead, or the A/B's
+                // "pretake" phase, as before 4u-native #31)
+                const bool back = read_from != nullptr && read_from->released;
+                if (back) {
+                    shared_->AcquireAll(*rec_, *read_from->shared);
+                    ++frame_.target_owed_taken_back;
+                }
+                rec_->Blit(read_from != nullptr ? *read_from->image : *source->image, *entry->snapshot,
+                           std::span<const rhi::ImageBlitRegion>(&blit, 1), /*linear=*/false);
+                if (back) shared_->ReleaseAll(*rec_, *read_from->shared);
+                // (MH4N_OWED_CHECK on a hand-over that copied the box instead of owing it: the snapshot of the target's
+                // own image against the published one it was copied from)
+                if (OwedCheck() && read_from == nullptr && !picture && st != nullptr && st->box_from != nullptr &&
+                    st->box_from->released && st->box_from->holders->load(std::memory_order_acquire) > 0 &&
+                    owed_checks_++ % 30 == 0) {
+                    OwedCheckTake(*st->box_from, blit, entry);
+                }
+            }
             entry->snapshot_rows = snapshot_rows;
             entry->source_format = source->format;
         }
@@ -3849,6 +4340,10 @@ private:
         FlushRecording();
         entry->ready = last_submit_;
         entry->valid = picture;
+        if (owed_check_entry_ == entry) {
+            owed_check_entry_ = nullptr;
+            CompareOwedCheck(*entry);
+        }
         std::shared_ptr<const SharedScreenPicture> upright_picture;
         if (slot != nullptr) {
             upright_picture = std::make_shared<const SharedScreenPicture>(
@@ -3937,21 +4432,139 @@ private:
         }
     }
 
-    // Releases the images the current recording does not use when the budget is exceeded (called when a recording begins, with
-    // everything earlier submitted: the GPU may still be reading them, so the backend keeps them until it has passed that).
+    // Releases images the current recording does not use when the budget is exceeded, the least recently bound first, down
+    // to three quarters of it (called when a recording begins, with everything earlier submitted: the GPU may still be reading
+    // them, so the backend keeps them until it has passed that). Every one the current recording does not use went at once
+    // before, and the next frames made and uploaded them all again. After an image could not be made (texture_memory_short_)
+    // every one not used in the last 120 pictures goes, or every one not used in this recording if that frees nothing.
     void TrimTextures() {
-        if (binding_textures_ || texture_bytes_ <= kTextureBudgetBytes) {  // not while a draw is still collecting its images
+        if (binding_textures_) {  // not while a draw is still collecting its images
             return;
         }
-        for (auto it = texture_images_.begin(); it != texture_images_.end();) {
-            if (it->second.stamp != recording_serial_) {
-                texture_bytes_ -= it->second.bytes;
-                backend_->Retire(it->second.image, last_submit_);
-                it = texture_images_.erase(it);
-            } else {
-                ++it;
+        if (texture_memory_short_) {
+            texture_memory_short_ = false;
+            const u64 before = texture_bytes_;
+            const size_t images = texture_images_.size();
+            ReleaseTextures(0, TextureFrame() > 120 ? TextureFrame() - 120 : 0);
+            if (texture_bytes_ == before) {
+                ReleaseTextures(0, ~u64{0});
+            }
+            if (++texture_memory_short_told_ <= 10) {  // (the first few: a memory that stays short gives one each recording)
+                const rhi::Backend::MemoryUse use = backend_->Memory();
+                MH4N_LOG(Warning, kLog, "texture memory ran out: {} of {} images let go ({} -> {} MB); the allocator's blocks {} "
+                         "MB ({} MB in use), the system's available memory {} MB",
+                         images - texture_images_.size(), images, before >> 20, texture_bytes_ >> 20, use.block_bytes >> 20,
+                         use.allocation_bytes >> 20, AvailableMemoryKb() / 1024);
+            }
+            return;
+        }
+        if (texture_bytes_ <= TextureBudgetBytes()) {
+            return;
+        }
+        ReleaseTextures(TextureBudgetBytes() / 4 * 3, ~u64{0});
+    }
+
+    // Releases the images not bound by the current recording and last bound before frame `before`, the least recently bound
+    // first, until the images hold at most `down_to` bytes.
+    void ReleaseTextures(u64 down_to, u64 before) {
+        std::vector<std::pair<u64, std::map<TexImageKey, TexImage>::iterator>> unused;
+        for (auto it = texture_images_.begin(); it != texture_images_.end(); ++it) {
+            if (it->second.stamp != recording_serial_ && it->second.used_frame < before) {
+                unused.emplace_back(it->second.stamp, it);
             }
         }
+        std::sort(unused.begin(), unused.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+        for (auto& [stamp, it] : unused) {
+            if (texture_bytes_ <= down_to) {
+                break;
+            }
+            texture_bytes_ -= it->second.bytes;
+            backend_->Retire(it->second.image, last_submit_);
+            texture_images_.erase(it);
+            ++textures_released_;
+        }
+    }
+
+    u64 TextureFrame() const {
+        return texture_cache_ != nullptr ? texture_cache_->frame() : 0;
+    }
+
+    // At each screen picture (two a game frame, one per screen): every 600 pictures the cache's entries no draw used in the
+    // last 36000 go (five to ten minutes: an entry is small once its pixels went, and one used again after that is decoded
+    // and uploaded again, a stutter for a big one), and a changing texture's pixels once it has not changed in 600; every
+    // 120 the system's available memory is read, and below MH4N_LOWMEM_MB what was not used in the last 120 goes
+    // (TrimForMemory); the memory line (MemoryLine) every minute.
+    void MemoryHousekeeping() {
+        const u64 frame = TextureFrame();
+        if (frame % 600 == 0) {
+            texture_cache_->Sweep(36000, 600);
+        }
+#if !defined(_WIN32)
+        if (frame % 120 == 0 && LowMemoryKb() > 0) {
+            const long available = AvailableMemoryKb();
+            if (available >= 0 && available < LowMemoryKb()) {
+                TrimForMemory(available);
+            } else if (available >= LowMemoryKb() + 100 * 1024) {
+                memory_short_told_ = false;  // (an episode is over: the next one is told again)
+            }
+        }
+#endif
+        static const u64 every_us = [] {
+            const char* v = std::getenv("MH4N_MEM_LOG");
+            return static_cast<u64>(v != nullptr && std::atoi(v) > 0 ? std::atoi(v) : 60) * 1000000;
+        }();
+        const u64 now = static_cast<u64>(
+            std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
+        if (now >= next_memory_line_us_) {
+            next_memory_line_us_ = now + every_us;
+            MemoryLine();
+        }
+    }
+
+    // Little of the system's memory left: the images and the cache entries not used in the last 120 pictures (one or two
+    // seconds) go.
+    void TrimForMemory(long available_kb) {
+        const u64 frame = TextureFrame();
+        const u64 before = texture_bytes_, pixels = texture_cache_->pixel_bytes();
+        const size_t entries = texture_cache_->size();
+        if (!binding_textures_) {
+            ReleaseTextures(0, frame > 120 ? frame - 120 : 0);
+        }
+        texture_cache_->Sweep(120, 0);
+        if (!memory_short_told_) {
+            memory_short_told_ = true;
+            MH4N_LOG(Warning, kLog, "memory short ({} MB of the system's available): textures' images {} -> {} MB, decoded copies "
+                     "{} -> {} MB, cache entries {} -> {}", available_kb / 1024, before >> 20, texture_bytes_ >> 20, pixels >> 20,
+                     texture_cache_->pixel_bytes() >> 20, entries, texture_cache_->size());
+        }
+    }
+
+    // The renderer's memory line (MH4N_MEM_LOG=<seconds>, every minute otherwise), beside the app's [mem] line (its map
+    // entries and the system's memory, read on a thread of its own: /proc/self/maps takes the memory map lock): the process's
+    // resident memory, the GPU allocator's blocks, the textures' images and decoded copies, the targets. A long session that
+    // runs out shows here which part grew.
+    void MemoryLine() {
+        const ProcessMemory m = ReadProcessMemory();
+        if (first_resident_kb_ < 0) {
+            first_resident_kb_ = m.resident_kb;
+        }
+        const rhi::Backend::MemoryUse use = backend_ != nullptr ? backend_->Memory() : rhi::Backend::MemoryUse{};
+        u64 targets = 0;
+        for (const auto& t : targets_) {
+            for (const rhi::Image* image : {t->image.get(), t->upload.get(), t->twin.get()}) {
+                if (image != nullptr) targets += u64{image->Width()} * image->Height() * 4 * image->Layers();
+            }
+        }
+        const texture::CacheStats& c = texture_cache_->stats();
+        MH4N_LOG(Info, "Memory",
+                 "[mem] the renderer: resident {} MB ({:+}; own {}, files {}); GPU allocator {} MB in {} blocks ({} MB in {} "
+                 "allocations); textures: {} images {} MB (up to {}; {} let go so far), {} cache entries with {} MB decoded ({} "
+                 "gone unused, {} decoded again for an image, {} caught by the spot check, {} of them by the rolling one, {} "
+                 "failed); targets {} MB",
+                 m.resident_kb / 1024, (m.resident_kb - first_resident_kb_) / 1024, m.anon_kb / 1024, m.file_kb / 1024,
+                 use.block_bytes >> 20, use.blocks, use.allocation_bytes >> 20, use.allocations, texture_images_.size(),
+                 texture_bytes_ >> 20, TextureBudgetBytes() >> 20, textures_released_, texture_cache_->size(),
+                 texture_cache_->pixel_bytes() >> 20, c.swept, c.repixels, c.spotted, c.rolled, c.failures, targets >> 20);
     }
 
     // Uploads one decoded face into `image` (submitting the recording once when the staging ring is full). False on failure.
@@ -4070,6 +4683,9 @@ private:
                      first.height, static_cast<u32>(first.format), key.cube ? " (cube)" : "", decode_us);
         }
         auto it = texture_images_.find(key);
+        if (it == texture_images_.end() && texture_memory_short_) {
+            return nullptr;  // (an image could not be made in this recording: TrimTextures first)
+        }
         if (it == texture_images_.end()) {
             rhi::ImageDesc desc;
             desc.format = rhi::Format::Rgba8Unorm;
@@ -4090,7 +4706,13 @@ private:
                          first.width, first.height, key.cube ? " (cube)" : "", create_us, use.block_bytes >> 20, use.blocks);
             }
             if (!image.ok()) {
-                MH4N_LOG(Error, kLog, "texture {}x{}: {}", first.width, first.height, image.error());
+                if (texture_create_failures_++ < 10) {
+                    MH4N_LOG(Error, kLog, "texture {}x{}: {} (images {} MB in {})", first.width, first.height, image.error(),
+                             texture_bytes_ >> 20, texture_images_.size());
+                }
+                // (the images not used lately go when the next recording begins, and no image is made until then: each
+                // failing one can cost the allocator a new block's try)
+                texture_memory_short_ = true;
                 return nullptr;
             }
             TexImage entry;
@@ -4103,9 +4725,20 @@ private:
         // (no draw of this recording has bound it: its uploads may go ahead of the recording, UploadFace)
         const bool unread_here = entry.stamp != recording_serial_;
         entry.stamp = recording_serial_;
+        entry.used_frame = TextureFrame();
+        bool uploaded_any = false;  // (only then is there a decoded copy to let go)
         for (size_t i = 0; i < faces.size(); ++i) {
             if (entry.generation[i] == decoded[i]->generation) {
                 continue;
+            }
+            if (decoded[i]->rgba8.empty()) {
+                // its pixels went once an image held them (TextureCache::ReleasePixels): this image is new or was let go
+                const u64 pixels_start = NowUs();
+                decoded[i] = texture_cache_->Pixels(key.faces[i]);
+                frame_.decode_us += NowUs() - pixels_start;
+                if (decoded[i] == nullptr) {
+                    return nullptr;
+                }
             }
             const u64 upload_start = NowUs();
             const bool uploaded = UploadFace(*entry.image, static_cast<u32>(i), first.width, first.height, decoded[i]->rgba8,
@@ -4115,9 +4748,13 @@ private:
                 return nullptr;
             }
             entry.generation[i] = decoded[i]->generation;
+            uploaded_any = true;
             // Uploading may have submitted the recording: the entry stays valid (the map is not touched), but the stamp of this
             // recording is the new one.
             entry.stamp = recording_serial_;
+        }
+        for (size_t i = 0; i < faces.size() && uploaded_any; ++i) {
+            texture_cache_->ReleasePixels(key.faces[i]);  // (the image holds them now)
         }
         return entry.image.get();
     }
@@ -4179,6 +4816,7 @@ private:
                                            other->format, other->dirty_first, other->dirty_last, other->stale ? " all" : "", stale);
                 }
                 WriteBack(*other);
+                const StaleWhy why(*this, "another target over it, sampled");
                 MarkStale(*found, other->paddr, other->paddr + other->bytes);
             }
         }
@@ -4558,7 +5196,10 @@ private:
     // one pass instead of copied (DrawTiles); columns, a ping-pong's twin given only the columns that changed
     // (Target::TwinDiffers) (gpu4); notex, a measurement aid: the game's textures (not the targets read as textures)
     // the 1x1 null texture, not the picture; shaders, the fragment stages as before gpu5 (fragment::SetShadersAsBefore: the
-    // TEV's roundings and clamps, the LOD of a unit with levels).
+    // TEV's roundings and clamps, the LOD of a unit with levels); pretake, a measurement aid: the hidden touch screen's
+    // snapshot of a published picture that owes not taken at the hand-over (PretakeSnapshot) but from the image the app's
+    // side holds, as before 4u-native #31; owing, a hand-over that owes nothing (the box copied, as on a GPU OwingAllowed
+    // says no to).
     static u32 AbFrames() {
         static const u32 frames = [] {
             const char* v = std::getenv("MH4N_AB");
@@ -4724,6 +5365,7 @@ private:
             JoinRows(t.stale_rows, a, b);
             std::erase_if(t.copied, [&](const Target::Copied& c) { return c.first < b && a < c.last; });
         }
+        if (t.screen != nullptr) t.screen->box_from = nullptr;  // (as ScreenWrite: OwedCheck)
         if (t.screen != nullptr && t.screen->twin != nullptr) {
             // (a screen target, gpu3: the images swap their places too; an old image a picture holds is not the twin: it
             // goes to the app with the next submission, and the next twin is another one)
@@ -4838,6 +5480,9 @@ private:
         rhi::Image* image = options_.target_textures && faces.size() == 1 ? TargetAsTexture(state, *faces[0], unit, type == Type::Texture2D)
                                                                           : nullptr;
         if (image == nullptr) {
+            if (ScaleLogLimit() != 0 && scale_ > 1) {
+                for (const texture::TextureRef* f : faces) ScaleLogTexture(*f);
+            }
             image = TextureImage(faces);
             // MH4N_AB_FEATURE=notex (a measurement aid, not the picture): while the phase is off, the game's textures
             // are the 1x1 null texture, to tell what their reads cost the GPU (the render targets read as textures stay)
@@ -4950,6 +5595,47 @@ private:
         }
     }
 
+    // MH4N_GAS_LOG=<n> (a measurement aid): the first n draws in a gas mode (fog mode 7 or fragment operation mode 1, the
+    // depth of field's passes) with the registers that drive them
+    void GasLog(const pica::DrawCall& draw, const pica::PicaState& state, u32 color, u32 depth, u32 width, u32 height) {
+        static const u32 limit = [] {
+            const char* v = std::getenv("MH4N_GAS_LOG");
+            return v != nullptr ? static_cast<u32>(std::atoi(v)) : 0u;
+        }();
+        static u32 told = 0, after = 0;
+        if (told >= limit) return;
+        const auto& r = state.regs;
+        const bool fog_gas = (r[0xE0] & 7) == 7, op_gas = (r[0x100] & 3) == 1;
+        if (!fog_gas && !op_gas) {
+            if (after > 0) {  // (the draws after a shading pass: what reads what it wrote)
+                --after;
+                MH4N_LOG(Info, kLog, "  after: c {:08x} d {:08x} {}x{} verts {} | 100 {:08x} 101 {:08x} 107 {:08x} 112 {:08x} "
+                         "113 {:08x} | tex0 {:08x} {:08x} {:08x} cfg {:08x} | tev0 {:08x} {:08x} {:08x} {:08x}",
+                         color, depth, width, height, draw.num_vertices, r[0x100], r[0x101], r[0x107], r[0x112], r[0x113],
+                         r[0x85], r[0x82], r[0x8E], r[0x83], r[0xC0], r[0xC1], r[0xC2], r[0xC3]);
+            }
+            return;
+        }
+        ++told;
+        if (fog_gas && told <= 4) {
+            const auto& t = state.gas.lut;
+            MH4N_LOG(Info, kLog, "gas table {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} | {:08x} {:08x} {:08x} {:08x} "
+                     "{:08x} {:08x} {:08x} {:08x}", t[0], t[1], t[2], t[3], t[4], t[5], t[6], t[7], t[8], t[9], t[10], t[11],
+                     t[12], t[13], t[14], t[15]);
+            after = 6;
+        }
+        MH4N_LOG(Info, kLog,
+                 "gas draw f{} {}{}: c {:08x} d {:08x} {}x{} verts {} | E0 {:08x} E4 {:08x} E5 {:08x} 100 {:08x} 101 {:08x} "
+                 "102 {:08x} 103 {:08x} 104 {:08x} 105 {:08x} 106 {:08x} 107 {:08x} 112 {:08x} 113 {:08x} 114 {:08x} 115 {:08x} "
+                 "116 {:08x} 117 {:08x} | 120 {:08x} 121 {:08x} 122 {:08x} 125 {:08x} 126 {:08x} | 4D {:08x} 4E {:08x} | "
+                 "tev0 {:08x} {:08x} {:08x} {:08x} {:08x} tevbuf {:08x} {:08x}",
+                 pacing::g_game_frame.load(std::memory_order_relaxed), fog_gas ? "shading" : "", op_gas ? "density" : "", color,
+                 depth, width, height, draw.num_vertices, r[0xE0], r[0xE4], r[0xE5], r[0x100], r[0x101], r[0x102], r[0x103],
+                 r[0x104], r[0x105], r[0x106], r[0x107], r[0x112], r[0x113], r[0x114], r[0x115], r[0x116], r[0x117], r[0x120],
+                 r[0x121], r[0x122], r[0x125], r[0x126], r[0x4D], r[0x4E], r[0xC0], r[0xC1], r[0xC2], r[0xC3], r[0xC4], r[0xFD],
+                 r[0xE1]);
+    }
+
     // ---- a draw ----
     rhi::Result<DrawResult> DrawImpl(const pica::DrawCall& draw) {
         const pica::PicaState& state = *draw.state;
@@ -5049,6 +5735,7 @@ private:
         }
         // (a block changed here and not written, its draw dropped, is written by the next draw that gets that far)
         block_unwritten_ = block_unwritten_ || prepared->block_changed;
+        GasLog(draw, state, color_address, depth_address, width, height);
         const fragment::FragmentKey key = fragment_state_->key();
         const fragment::Needs needs = fragment_state_->needs();
         // (what follows from the key alone, again only when it changed: the texture units its shader reads, its stubs)
@@ -6693,6 +7380,14 @@ private:
     std::unique_ptr<fragment::sampling::SamplerCache> samplers_;
     std::map<TexImageKey, TexImage> texture_images_;
     u64 texture_bytes_ = 0;
+    u64 textures_released_ = 0;           // images let go (the budget, the memory short)
+    u64 register_triggers_ = 0;           // fills and transfers started by a register write (WriteReg)
+    bool texture_memory_short_ = false;   // an image could not be made: TrimTextures at the next recording
+    u32 texture_create_failures_ = 0;
+    u32 texture_memory_short_told_ = 0;  // "texture memory ran out" lines written (TrimTextures)
+    bool memory_short_told_ = false;
+    u64 next_memory_line_us_ = 0;
+    long first_resident_kb_ = -1;
     u64 recording_serial_ = 0;
     rhi::TimelineValue last_submit_ = 0;
     std::shared_ptr<rhi::Image> null_2d_, null_black_2d_, null_cube_;  // transparent black, opaque black, transparent black cube
@@ -6730,6 +7425,10 @@ private:
     std::vector<u32> tile_vs_, tile_fs_;
     bool tile_pipeline_failed_ = false;
     u32 screen_fallback_logs_ = 0;
+    // MH4N_SCALE_LOG: what marks targets stale now (StaleWhy), each event's last game frame, the lines written
+    const char* stale_why_ = "something else";
+    std::map<std::string, u32> scale_seen_;
+    u32 scale_logged_ = 0;
     // shared screens (SetSharedScreens, TakeSharedSlot, ReadSharedScreen)
     bool shared_wanted_ = false, shared_tried_ = false;
     std::unique_ptr<rhi::SharedImages> shared_;
@@ -6741,6 +7440,14 @@ private:
     u32 target_logs_ = 0;
     bool target_refusal_told_ = false;
     const char* handover_where_ = nullptr;  // (the log's word for a hand-over before a write: Detach)
+    bool owing_allowed_ = false;  // (OwingAllowed)
+    std::thread check_thread_;  // the pipeline check after the device is made (EnsureRenderer), joined by the destructor
+    // MH4N_OWED_CHECK: the snapshots taken, the old way's copy of the one being checked, its entry, the totals
+    u64 owed_checks_ = 0, owed_compared_ = 0, owed_differ_ = 0;
+    u32 owed_logs_ = 0;  // (TakeOwed's lines: the first 32)
+    std::shared_ptr<rhi::Image> owed_check_;
+    const ScaledScreen* owed_check_entry_ = nullptr;
+    std::vector<std::shared_ptr<rhi::Image>> retire_after_submit_;  // (images the open recording may use: FlushRecording)
     std::vector<std::unique_ptr<SharedSlot>> shared_slots_;
     std::shared_ptr<rhi::SyncFile> shared_sync_;     // the last sync file made, and the submissions it covers
     rhi::TimelineValue shared_sync_value_ = 0;

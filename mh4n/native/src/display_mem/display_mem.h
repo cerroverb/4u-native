@@ -82,6 +82,7 @@ private:
     // The screen from guest memory, decoded straight to RGBA; the last picture again (the same pixels) when the
     // framebuffer and its registers are as they were. nullopt: the slow path decides (a fill, an error).
     std::optional<present::ScreenImage> BuildMemoryScreen(u32 screen);
+    void LogMemoryScreen(u32 screen);
     // The screen from the inner GPU's picture at its scale; nullopt when it has none.
     std::optional<present::ScreenImage> BuildScaledScreen(u32 screen);
     // The same as a shared picture (shared screens); nullopt when the renderer has none of that framebuffer.
@@ -104,6 +105,10 @@ private:
     u64 next_sequence_ = 0;
     u32 top_swaps_ = 0;  // the top screen's buffer swaps seen, in the GSP's order (the pacing trace)
     std::string last_error_[2];
+    // MH4N_SCALE_LOG: a screen built from guest memory above 1x (LogMemoryScreen): seen, its last frame, the lines written
+    bool memory_screen_seen_[2] = {};
+    u32 memory_screen_frame_[2] = {};
+    u32 memory_screen_logs_ = 0;
     // BuildMemoryScreen's last picture of each screen and what it was made from
     struct LastScreen {
         u64 key = 0;

@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "app_settings.h"
+#include "gpu_driver.h"
 
 namespace {
 uint32_t g_gpu_api = 0;  // (the GPU's Vulkan version, VulkanGpuName fills it)
@@ -55,6 +56,13 @@ std::string VulkanGpuName() {
     return name;
 }
 
+// A GPU's name given in launch.txt's env= (a test run): '_' stands for a space there ("Adreno_(TM)_610")
+std::string EnvGpuName(const char* text) {
+    std::string name = text;
+    for (char& c : name) c = c == '_' ? ' ' : c;
+    return name;
+}
+
 // The number after `prefix` in `name` (any case), or -1
 int NumberAfter(const std::string& name, const char* prefix) {
     const size_t at = [&] {
@@ -65,6 +73,11 @@ int NumberAfter(const std::string& name, const char* prefix) {
     if (at == std::string::npos) return -1;
     size_t i = at + std::char_traits<char>::length(prefix);
     while (i < name.size() && (name[i] == ' ' || name[i] == '-')) ++i;
+    // (a trademark between them: "Adreno (TM) 610", as every Adreno names itself to Vulkan)
+    if (name.compare(i, 4, "(TM)") == 0 || name.compare(i, 4, "(tm)") == 0) {
+        i += 4;
+        while (i < name.size() && name[i] == ' ') ++i;
+    }
     if (i >= name.size() || !std::isdigit(static_cast<unsigned char>(name[i]))) return -1;
     return std::atoi(name.c_str() + i);
 }
@@ -106,7 +119,7 @@ bool first_run_fast_cores() {
 FirstRunDevice first_run_probe() {
     FirstRunDevice d;
     const char* gpu = std::getenv("MH4U_FIRST_RUN_GPU");
-    d.gpu = gpu != nullptr ? gpu : VulkanGpuName();
+    d.gpu = gpu != nullptr ? EnvGpuName(gpu) : VulkanGpuName();
     const char* ram = std::getenv("MH4U_FIRST_RUN_RAM_MB");
     d.ram_mb = ram != nullptr ? std::atoll(ram)
                               : static_cast<long long>(sysconf(_SC_PHYS_PAGES)) * sysconf(_SC_PAGE_SIZE) / (1024 * 1024);
@@ -189,8 +202,39 @@ void first_run_fill(const std::string& ini_path) {
     std::fprintf(stderr, "[Info] App: mh4u.ini lacked %s (the settings' defaults): added\n", added.c_str());
 }
 
-std::string first_run_gpu_name() { return VulkanGpuName(); }
-uint32_t first_run_gpu_api() {
-    if (g_gpu_api == 0) VulkanGpuName();
-    return g_gpu_api;
+namespace {
+// The system's GPU, asked once (an instance of its own each time cost a start tens of milliseconds)
+struct GpuProbe {
+    std::string name;
+    uint32_t api = 0;
+};
+const GpuProbe& Probe() {
+    static const GpuProbe probe = [] {
+        GpuProbe p;
+        p.name = VulkanGpuName();
+        p.api = g_gpu_api;
+        if (const char* name = std::getenv("MH4U_GPU_NAME"); name != nullptr && *name != 0) p.name = EnvGpuName(name);
+        if (const char* api = std::getenv("MH4U_GPU_API"); api != nullptr && *api != 0) {
+            unsigned major = 0, minor = 0, patch = 0;
+            if (std::sscanf(api, "%u.%u.%u", &major, &minor, &patch) >= 2) p.api = VK_MAKE_API_VERSION(0, major, minor, patch);
+        }
+        return p;
+    }();
+    return probe;
+}
+}  // namespace
+
+std::string first_run_gpu_name() { return Probe().name; }
+uint32_t first_run_gpu_api() { return Probe().api; }
+
+bool adreno_fix_applies() {
+    const GpuProbe& p = Probe();
+    if (p.name.find("Adreno") == std::string::npos || p.api == 0) return false;
+    if (p.api >= VK_MAKE_API_VERSION(0, 1, 1, 128)) return false;
+    // (a driver of the player's own, chosen for this start, is another driver: what was measured is the system's)
+    return gpu_driver_status().chosen.empty();
+}
+
+int adreno_fix_scale(int times, bool on) {
+    return on && times < 3 && adreno_fix_applies() ? 3 : times;
 }

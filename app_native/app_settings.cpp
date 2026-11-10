@@ -151,6 +151,16 @@ void app_setting_set(const char* section, const char* key, const std::string& va
     g_lines.push_back(std::move(l));
 }
 
+void app_setting_remove(const char* section, const char* key) {
+    std::lock_guard lock(g_mutex);
+    load_locked();
+    for (auto it = g_lines.begin(); it != g_lines.end();)
+        if (!it->key.empty() && same(it->section, section) && same(it->key, key))
+            it = g_lines.erase(it);
+        else
+            ++it;
+}
+
 void app_setting_set_int(const char* section, const char* key, int value) {
     app_setting_set(section, key, std::to_string(value));
 }
@@ -202,6 +212,10 @@ int render_scale_times(int percent) {
     const double want = percent >= 100 ? std::ceil(times * percent / 100.0 - 0.05) : std::round(times * percent / 100.0);
     return std::clamp(static_cast<int>(want), 1, 10);  // (10: the renderer's kMaxScale)
 }
+
+int render_scale_used(int percent, bool adreno_fix) { return adreno_fix_scale(render_scale_times(percent), adreno_fix); }
+
+bool app_adreno_fix() { return !same(app_setting("Graphics", "AdrenoFix", "auto"), "off"); }
 
 int app_low_end_level(const std::string& text) {
     if (same(text, "toaster") || text == "2") return LOW_END_TOASTER;

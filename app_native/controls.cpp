@@ -46,6 +46,8 @@ enum { TOWN_SELECT, TOWN_L3, TOWN_R3, TOWN_OFF };
 struct Settings {
     bool label = false, cstick = false, invert_x = false, invert_y = false;
     float speed = 1.0f, deadzone = .10f;
+    bool gyro_aim = false;    // [Controls] GyroAim, GyroSensitivity (controls_gyro)
+    float gyro_sens = 1.0f;
     int r3 = R3_LOCKON;
     int town = TOWN_SELECT;
 };
@@ -75,6 +77,7 @@ Uint64 g_last_ms = 0;  // the camera's last turn
 std::function<void(bool, int, int)> g_set_touch;
 u32 g_town_presses = 0;
 bool g_last_pad = false;  // (controls_last_input_pad)  // the presses while the town's list or cursor has the controller, since controls_input
+u32 g_out_buttons = 0;  // (controls_buttons: the game's buttons from the controller and the keys, the last turn)
 bool g_debug = false;  // MH4U_PAD_DEBUG=1: every controller's press and push in the log
 
 void read_settings() {
@@ -90,6 +93,9 @@ void read_settings() {
     s.r3 = !SDL_strcasecmp(r3.c_str(), "L") ? R3_L : !SDL_strcasecmp(r3.c_str(), "ZL") ? R3_ZL
            : !SDL_strcasecmp(r3.c_str(), "ZR") ? R3_ZR : !SDL_strcasecmp(r3.c_str(), "off") ? R3_OFF : R3_LOCKON;
     s.deadzone = std::clamp(app_setting_int("Controls", "Deadzone", 10), 0, 30) / 100.0f;
+    s.gyro_aim = app_setting_bool("Controls", "GyroAim", false);
+    s.gyro_sens = std::clamp(std::strtof(app_setting("Controls", "GyroSensitivity", "1.0").c_str(), nullptr), kGyroSensMin, kGyroSensMax);
+    if (!(s.gyro_sens >= kGyroSensMin)) s.gyro_sens = 1.0f;  // (not a number)
     const std::string town = app_setting("Controls", "TownMenu", "select");
     s.town = !SDL_strcasecmp(town.c_str(), "l3") ? TOWN_L3 : !SDL_strcasecmp(town.c_str(), "r3") ? TOWN_R3
              : !SDL_strcasecmp(town.c_str(), "off") ? TOWN_OFF : TOWN_SELECT;
@@ -98,6 +104,27 @@ void read_settings() {
                  s.label ? "label" : "position", s.cstick ? "as the C-stick" : "turns the camera", s.speed,
                  s.invert_x ? ", inverted across" : "", s.invert_y ? ", inverted up and down" : "", r3.c_str(),
                  s.deadzone * 100);
+}
+
+// ---- Aiming with the gyro ([Controls] GyroAim), as the MHGU port's (its runtime/host_input.c gyro_update): while a
+// bow or a bowgun aims (touch.cpp asks), the phone's gyroscope - the controller's in use, if it has one - turns the aim
+// as a drag does, added to it: the angle turned since the aim began, times GyroSensitivity. The sensor is open only
+// while aiming. The phone's axes go by the display's quarter turns from the device's natural orientation (a phone's
+// portrait, an Anbernic RG406V's landscape)
+constexpr float kGyroDeadband = 0.01f;  // (radians a second: the gyroscope's own drift, at rest)
+SDL_Sensor* g_gyro_dev = nullptr;
+SDL_Gamepad* g_gyro_pad = nullptr;
+bool g_gyro_on = false;
+int g_gyro_turns = 0;
+Uint64 g_gyro_ns = 0;
+int display_quarter(SDL_DisplayOrientation o) {  // (the device turned this many quarters counterclockwise)
+    return o == SDL_ORIENTATION_LANDSCAPE ? 1 : o == SDL_ORIENTATION_PORTRAIT_FLIPPED ? 2 : o == SDL_ORIENTATION_LANDSCAPE_FLIPPED ? 3 : 0;
+}
+void gyro_off() {
+    if (g_gyro_dev) SDL_CloseSensor(g_gyro_dev), g_gyro_dev = nullptr;
+    if (g_gyro_pad) SDL_SetGamepadSensorEnabled(g_gyro_pad, SDL_SENSOR_GYRO, false), g_gyro_pad = nullptr;
+    if (g_gyro_on) std::fprintf(stderr, "[Info] Controls: the gyro off\n");
+    g_gyro_on = false, g_gyro_ns = 0;
 }
 
 // ---- which devices are controllers
@@ -166,6 +193,7 @@ void close_pad(SDL_JoystickID id) {
     std::fprintf(stderr, "[Info] Controls: controller removed%s: %s\n", g_active == id ? " (it was in use)" : "",
                  name ? name : "?");
     SDL_Gamepad* g = it->pad;
+    if (g == g_gyro_pad) g_gyro_pad = nullptr;  // (its gyro was read: gone with it)
     g_pads.erase(it);
     if (g_active == id) {
         g_active = g_pads.empty() ? 0 : g_pads.front().id;
@@ -654,8 +682,11 @@ ControlsInput controls_input(std::uint32_t game_frame) {
         out.cstick_x = units(right.x), out.cstick_y = units(right.y);
     }
     script_input(game_frame, out);
+    g_out_buttons = out.buttons;
     return out;
 }
+
+std::uint32_t controls_buttons() { return g_out_buttons; }
 
 bool controls_last_input_pad() {
     return g_last_pad;
@@ -665,6 +696,51 @@ bool controls_real_pad() {
     for (const Pad& p : g_pads)
         if (p.real) return true;
     return false;
+}
+
+bool controls_gyro(bool aiming, float* right_deg, float* up_deg) {
+    *right_deg = *up_deg = 0;
+    read_settings();
+    if (!aiming || !g_set.gyro_aim) {
+        if (g_gyro_on) gyro_off();
+        return false;
+    }
+    if (!g_gyro_on) {  // (the aim begins: where it is now is the middle, the phone's pose with it)
+        g_gyro_on = true, g_gyro_ns = 0;
+        Pad* p = find_pad(g_active);
+        SDL_Gamepad* pad = p && SDL_GamepadHasSensor(p->pad, SDL_SENSOR_GYRO) ? p->pad : nullptr;
+        if (pad && SDL_SetGamepadSensorEnabled(pad, SDL_SENSOR_GYRO, true)) g_gyro_pad = pad;
+        int n = 0;
+        SDL_SensorID* ids = g_gyro_pad ? nullptr : SDL_GetSensors(&n);
+        for (int i = 0; ids && i < n && !g_gyro_dev; i++)
+            if (SDL_GetSensorTypeForID(ids[i]) == SDL_SENSOR_GYRO) g_gyro_dev = SDL_OpenSensor(ids[i]);
+        SDL_free(ids);
+        const SDL_DisplayID d = SDL_GetPrimaryDisplay();
+        g_gyro_turns = (display_quarter(SDL_GetCurrentDisplayOrientation(d)) - display_quarter(SDL_GetNaturalDisplayOrientation(d)) + 4) % 4;
+        std::fprintf(stderr, "[Info] Controls: the gyro on: %s (the display %d quarter turns from the device's own orientation)\n",
+                     g_gyro_pad ? SDL_GetGamepadName(g_gyro_pad) : g_gyro_dev ? SDL_GetSensorName(g_gyro_dev) : "no gyroscope",
+                     g_gyro_turns);
+    }
+    float g[3] = {0, 0, 0}, right = 0, up = 0;  // (radians a second: the aim's turn right, up)
+    if (g_gyro_pad && SDL_GetGamepadSensorData(g_gyro_pad, SDL_SENSOR_GYRO, g, 3)) {
+        right = -g[1], up = g[0];  // (SDL's: a controller held before you, x right, y up, z toward you)
+    } else if (g_gyro_dev && SDL_GetSensorData(g_gyro_dev, g, 3)) {
+        // (the device's natural axes: x right, y up, z out of the screen; the screen's up and right in them, by quarter turn)
+        static const float ux[4] = {0, 1, 0, -1}, uy[4] = {1, 0, -1, 0}, rx[4] = {1, 0, -1, 0}, ry[4] = {0, -1, 0, 1};
+        const int k = g_gyro_turns;
+        right = -(g[0] * ux[k] + g[1] * uy[k]), up = g[0] * rx[k] + g[1] * ry[k];
+    }
+    if (std::fabs(right) < kGyroDeadband) right = 0;
+    if (std::fabs(up) < kGyroDeadband) up = 0;
+    if (const char* t = std::getenv("MH4U_GYRO_TEST"); t && *t) {  // (tests: "<right>_<up>", degrees a second)
+        float tr = 0, tu = 0;
+        if (std::sscanf(t, "%f%*[ _,]%f", &tr, &tu) == 2) right = tr * 0.0174533f, up = tu * 0.0174533f;
+    }
+    const Uint64 now = SDL_GetTicksNS();
+    const float dt = g_gyro_ns ? std::min((now - g_gyro_ns) * 1e-9f, 0.1f) : 0.0f;
+    g_gyro_ns = now;
+    *right_deg = right * dt * 57.29578f * g_set.gyro_sens, *up_deg = up * dt * 57.29578f * g_set.gyro_sens;
+    return *right_deg != 0 || *up_deg != 0;
 }
 
 SDL_JoystickID controls_active_pad() {

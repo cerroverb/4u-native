@@ -8,6 +8,8 @@ runtime of its own that does the console's work, with its graphics drawn through
 
 [Lee esta guía en español](README.es.md)
 
+Talk with other players and ask for help in the community's [Discord](https://discord.gg/sk5xEjEMwF).
+
 ## What it does
 
 ### Display and performance
@@ -32,14 +34,27 @@ runtime of its own that does the console's work, with its graphics drawn through
 
 - A movement stick, the camera by dragging anywhere on the screen, attacks as a pill, two buttons or a band in the corner,
   and buttons for evade, guard, sheathe, kick, target and the camera
+- **Run with the stick:** push it past its edge to run. Slide your thumb up onto the small circle with a padlock above the
+  stick, which lights up, and lift it there: the run locks and the hunter keeps running, steered with the camera, until you
+  touch the stick or the circle again, draw your weapon or open a menu. To run only while you hold a button instead: gear,
+  **Controls**, **Buttons on the screen**, turn off **Run with the stick**, and a **Run** button shows
 - **Lock-on:** hold the camera button (L)
 - **Item bar without the D-pad:** tap the game's item bar to use the item, swipe it to change the item
 - **Bows and bowguns** get a layout of their own: a large fire button, reload, aim, crouching fire or coatings, and arrows
-  for the ammo
+  for the ammo. A tap on aim keeps the aim up until the next tap; hold and slide it to aim, the slide turning the aim as
+  dragging the view does
+- **Aim with the gyro:** gear, **Controls**, **Aim with the gyro** (off by default) and **Gyro sensitivity**. While a bow or
+  a bowgun aims, turning the phone turns the aim, from where you held it when the aim began, added to your finger. A
+  controller with a gyro works too. The sensor is only read while aiming
 - The controls follow the game: hunting, menus, and bows and bowguns each have their layout
+- **Menus made for your thumb:** when a menu of the game's opens, the touch controls fade and a small pad comes in under
+  your right thumb, with the page buttons L and R above it. The movement stick and a drag on the screen move the cursor
+  too, and A and B stay where they are. To hide it: gear, **Controls**, **Buttons on the screen**, **Menu pad**
 - **Combined buttons:** up to six buttons of your own that press several at once, such as A+X
 - **The layout editor:** a long press on the gear. Move and resize every button, and move the game's own HUD: the clock,
-  the health and stamina bars, the sharpness, the name plates, the area's map, the target camera and the item bar
+  the health and stamina bars, the sharpness, the name plates, the area's map, the target camera and the item bar. The
+  menu pad and the run's padlock circle move and resize there too. The editor's panel moves out of the way when you drag
+  its title, and gets smaller down to 60 %
 - Your phone's keyboard for your hunter's name and the chat
 - Vibration on touch, adjustable opacity and camera speed
 
@@ -60,8 +75,13 @@ runtime of its own that does the console's work, with its graphics drawn through
 - Mods, with load order and conflicts, and cheats in Azahar's format: see [Mods and cheats](#mods-and-cheats)
 - Playing together over network rooms, and finding rooms on the same Wi-Fi: see [Playing together](#playing-together)
 - Import your save from Azahar, Citra or a Checkpoint backup, and export it for them
+- Keep your save in a folder a sync app shares with your other devices: see
+  [Choose where your save is kept](#choose-where-your-save-is-kept)
+- **Faster eating and drinking** cheats, and **Comforts** after jM5557's QOL mods: see [Mods and cheats](#mods-and-cheats)
+- When you play alone, the game waits while the settings or the layout editor are open
 - The game pauses when you leave the app
 - If the game closes because of an error, a screen tells you and lets you share the log
+- A notice when a new version is out, and when a copy isn't the official one: see [Official downloads](#official-downloads)
 
 ## How well does it run?
 
@@ -188,14 +208,33 @@ like and tap **Save**; a few options say they need a restart, which **Save and r
 1. Copy the folder with your save's files (`system`, `user1`...) to the device, for example into `Download`. In Azahar or
    Citra: right-click the game, **Open Save Data Location**. From a 3DS: a Checkpoint backup of the game.
 2. In the game, gear, **Menu Options**, **Import save**. The app looks for saves on the device (an Azahar app on the same
-   device too): tap the one to bring in.
+   device too): tap the one to bring in. If it isn't listed, **Choose a folder** and pick your save's own folder (`system`,
+   `user1`...), an emulator's `sdmc` folder, or a folder **Export save** made.
 
-The game restarts with it. The save you had is kept in `Android/data/com.mh4u.native/files/save_backups`.
+The game restarts with it. The save you had is kept in `Android/data/com.mh4u.native/files/save_backups`, and it is never
+deleted before the new one is in place.
 
 ## Export your save
 
 Save in the game first. Then gear, **Menu Options**, **Export save**, and choose a folder: a new folder named `MH4U save`
 with the date is made there, in the layout Azahar and Citra use, with the save, the guild cards, event quests and the Palico.
+
+## Choose where your save is kept
+
+The save is in the app's own folder unless you choose another one, for example a folder that a sync app (Syncthing,
+FolderSync and the like) shares with your other devices. Go to the gear, **Menu Options**, **Save folder**, and choose the
+folder:
+
+- Your save, with its extra data, goes in a folder named `MH4U save` inside the one you choose, so one shared folder can
+  hold MH4U's and MHGU for Android's (`MHGU save`). A folder that already holds a save, such as one **Export save** made,
+  is used as it is.
+- Your save is copied there before anything changes. If the folder already has a save, you choose which one stays; the
+  other is kept in a copy, in `save_backups` in the app's own folder.
+- The game restarts to use the folder: save first. **Use the game's own folder**, on the same screen, goes back.
+- On two devices, hunt on one at a time, and let the sync app finish before you open the game on the other.
+
+When the game starts it checks the folder. If it can't reach it, if the sync app kept two versions of the save, or if
+another device has the game open, it says so and lets you choose what to do.
 
 ## Mods and cheats
 
@@ -212,18 +251,50 @@ at start after a change of mods, its error screen offers **Mods of the last star
 Citra's format (each cheat is its `[Name]` and its code lines). They come in off: turn on the ones you want and save. They
 work at once. Save your game before trying one, and use them online only if everyone in the room agrees.
 
+**Faster eating and drinking:** two cheats come with the app, off, at the end of the list, as in the MHGU port. **Comer
+rapido siempre (beber x1.7, carne x1.8)** gives the Speed Eating skill's effect without the skill; **Beber muy rapido
+(x2.5)** drinks faster still (meat x1.8). Use one of the two. They speed up the animation, but don't let you walk while
+drinking. Turned off, the effect lasts until the next quest.
+
+### Comforts
+
+Under the cheats, **Comforts** has four ideas from jM5557's [MH4U QOL mods](https://github.com/jM5557/MH4U-QOL-Cheats), done by
+the app itself: no mod and no new code library. They are off until you turn them on, and work at once:
+
+- **Hold A to gather:** hold A to carve, gather, mine and catch bugs again and again, until you let go.
+- **Move to skip the flex:** after a potion or a ration, moving, rolling or any other action ends the flex. What you drank
+  still works; if you stand still, the flex plays whole.
+- **B cancels sharpening:** B while sharpening rolls out of it.
+- **No time limit on rewards:** the rewards screen doesn't count down.
+
+The wait after a quest already ends early here: hold ZL and ZR (gear, **Gameplay**, **End the wait**), as jM5557's *Skip
+Quest End Timer* does with A and B.
+
+jM5557's other mods change the game's code, so they work as code mods: *Full Item Box In Villages And Hubs* (the house's
+full item box, with equipment and appearance, at the village and hall boxes), *Send All Rewards To Item Box (Hold X+Y)* and
+the *Hide Number* version of the rewards one. Get them from [jM5557's repository](https://github.com/jM5557/MH4U-QOL-Cheats), from its
+**USA v1.1** folder (made for the 1.3.0 update), and build your code library with the one you want (step 3, with that
+mod's folder, the one with `exefs` in it, in the `mods` folder). The library takes one code mod, as Azahar does (the
+single-screen mod is one too); *ALL Cheats* has all of them together, comforts included, so with it leave the app's
+comforts off.
+
 ## Playing together
 
 The game's local play goes through a network room, the same kind of rooms Azahar uses: players of this app and of Azahar can
-share one. The app comes with no room or server of its own.
+share one.
 
 1. Gear, **Multiplayer**: choose a **Nickname**.
-2. On the same Wi-Fi: one player taps **Host a room**; the others tap **Search this Wi-Fi** under **Rooms on this Wi-Fi** and
+2. **Public rooms** lists the rooms of a community lobby, `http://88.198.47.46:5000`, which players run (not this
+   project); MH4U's come first. Everyone in your group taps the same room to join it (an empty one, so you are alone in it).
+3. Or, on the same Wi-Fi: one player taps **Host a room**; the others tap **Search this Wi-Fi** under **Rooms on this Wi-Fi** and
    join it. Over the internet, the host forwards UDP port 24872 on their router to the phone, or everyone joins a room
    someone runs; the others type its **Room address** (and **Password**, if it has one) and tap **Join the room**.
-3. In the game: World Map, Solo/Multiplayer, **Local Play**. One player creates a Gathering Hall and the others find it.
+4. In the game: World Map, Solo/Multiplayer, **Local Play**. One player creates a Gathering Hall and the others find it.
 
-Join the room before going to the Gathering Hall. The room's chat is on the same page.
+Join the room before going to the Gathering Hall. The room's chat is on the same page. **Lobby** picks another lobby
+(**Custom...**) or none (**Off**); the lobbies you type and save stay in its list, the last one first (up to 24), and the
+**×** beside one takes it out. The first time you play online a notice says which server the app connects to: like any
+server on the internet, it sees your IP address.
 
 ## Samsung: Game Booster
 
@@ -248,8 +319,9 @@ Use the name of the APK you downloaded. It's optional: the game runs the same wi
 | The game stops at start after adding or removing a mod | A mod with an `exefs` folder needs the library built with it (step 3). On the error screen, **Mods of the last start** puts the mods back as they were |
 | It runs slowly or the phone gets hot | Lower the **Frame rate limit** or the **3D resolution**, or turn on **Low-end mode**; on the weakest phones, **Toaster** |
 | The game closes by itself | Close other apps: it's usually a lack of memory. Then share the log |
+| A black screen at start, with the menu's music playing (some older Mali GPUs) | When the phone's graphics refuse the usual way of showing the picture, the app now switches to another by itself. If it stays black, attach `log.txt` from `Android/data/com.mh4u.native/files` (a file manager or a PC can copy it) to an issue |
 
-If it still fails, open an [issue](../../issues) with your device's model and the log. If the game closes because of an error,
+If it still fails, ask in the [Discord](https://discord.gg/sk5xEjEMwF) or open an [issue](../../issues) with your device's model and the log. If the game closes because of an error,
 a screen lets you share it; if not, it's under the gear, **Menu Options**, **Share log**. Don't attach game files.
 
 ## Building the app
@@ -284,6 +356,7 @@ Rights holders: please open an issue to get in touch.
 - From the same author: [MHGU for Android](https://github.com/khorne-hub/gu-native), Monster Hunter Generations Ultimate
   recompiled for Android the same way.
 - The single-screen mod is [jM5557's](https://github.com/jM5557/mh4u-single-screen-mod), and is not part of this project.
+- The **Comforts** follow jM5557's [MH4U QOL mods](https://github.com/jM5557/MH4U-QOL-Cheats); no code of them is in this project.
 - The libraries this project uses, with their licenses, are listed in [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES). Their
   licenses are also in the app: gear, **Credits & Licenses**, **Licenses**.
 
@@ -291,7 +364,8 @@ Rights holders: please open an issue to get in touch.
 
 MH4U for Android is free. The only official downloads are the links khorne-hub gives, starting with this repository's
 [Releases](https://github.com/khorne-hub/4u-native/releases). If you got it anywhere else, paid for it, or your copy came with
-ads, it is not the official one.
+ads, it is not the official one. In the app, the GitHub button at the top of the settings menu, beside **Save**, opens this
+page in your browser, and the Discord button beside it the community's [Discord](https://discord.gg/sk5xEjEMwF).
 
 Every official APK is signed with the same key. Its certificate's SHA-256 fingerprint is:
 
@@ -300,7 +374,12 @@ Every official APK is signed with the same key. Its certificate's SHA-256 finger
 ```
 
 To check an APK: `apksigner verify --print-certs MH4U-<version>.apk` (Android SDK build-tools). A copy signed with
-another key can't be installed over the official app either.
+another key can't be installed over the official app either. From 0.1.9 the app checks it too: a copy signed with another
+key says so once when it starts.
+
+The app also tells you when a new version is out. At most once a day it asks GitHub for this repository's latest release
+(nothing else is sent, not even the phone's model), and at the next start it offers to open the release page. It never
+downloads or installs anything by itself. Gear, **Menu Options**, **Check for updates** turns it off.
 
 ## License
 

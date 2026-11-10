@@ -16,7 +16,8 @@ struct FirstRunDevice {
 };
 
 // The phone, as the first start sees it: its GPU (a Vulkan instance of its own, made and destroyed here) and its RAM.
-// MH4U_FIRST_RUN_GPU and MH4U_FIRST_RUN_RAM_MB (launch.txt's env=, a test run) stand in for what the phone reports.
+// MH4U_FIRST_RUN_GPU and MH4U_FIRST_RUN_RAM_MB (launch.txt's env=, a test run; '_' for a space in a name) stand in for what
+// the phone reports.
 FirstRunDevice first_run_probe();
 // A GPU too weak for the game at the phone's own resolution and 60 FPS: Mali-G52 and the Bifrost and Midgard ones of
 // its rank and below, Adreno 3xx to 5xx and 610 to 613, PowerVR. Not a Mali-G57 (an Anbernic RG406V) or an Adreno 830.
@@ -36,7 +37,18 @@ void first_run_write(const std::string& ini_path, const FirstRunDevice& device);
 // the PC port's mh4u.ini or a test's is left as it is, and a key that is there is never changed.
 void first_run_fill(const std::string& ini_path);
 
-// The first Vulkan GPU's name ("" when none), from an instance made for it alone: PowerVR runs without the ubershader
+// The first Vulkan GPU's name ("" when none), from an instance made for it alone, once (the system's driver: a player's own
+// isn't opened here): PowerVR runs without the ubershader. MH4U_GPU_NAME (launch.txt's env=, a test run;
+// '_' for a space) stands in for it.
 std::string first_run_gpu_name();
-// That GPU's Vulkan version (VK_MAKE_API_VERSION; 0 when none)
+// That GPU's Vulkan version (VK_MAKE_API_VERSION; 0 when none). MH4U_GPU_API ("1.1.87", a test run) stands in for it.
 uint32_t first_run_gpu_api();
+
+// The Adreno fix ([Graphics] AdrenoFix = auto|off, the settings' "Adreno fix" row). An Adreno 630 on its 2020 system driver
+// (Vulkan 1.1.87) drew coloured flashes over the 3D picture below 720 lines, and not at 3x (4u-native #7). Drivers from
+// 1.1.128 on (an Adreno 610's and 619's of 2021 and 2023) are left alone: there the floor only cost speed and kept the
+// player's 3D resolution from changing (4u-native #26, #27, #28), and those phones played at 1x before it with no bands.
+// Applies: an Adreno on a system driver older than 1.1.128, with no driver of the player's own chosen for this start.
+bool adreno_fix_applies();
+// The --scale the renderer gets for `times` (the 3D resolution's): at least 3 where the fix applies and `on` (auto)
+int adreno_fix_scale(int times, bool on);

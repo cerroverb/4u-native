@@ -1,0 +1,54 @@
+vkCreateShaderModule, vkCreateComputePipelines and vkCreateGraphicsPipelines keep the VkResult they returned (result), so a
+caller's error names it: a driver that refuses the renderer's shaders says how in the line about the pipeline.
+--- a/plume_vulkan.cpp
++++ b/plume_vulkan.cpp
+@@ -1401,6 +1401,7 @@ namespace plume {
+         shaderInfo.codeSize = size;
+         VkResult res = vkCreateShaderModule(device->vk, &shaderInfo, nullptr, &vk);
+         if (res != VK_SUCCESS) {
++            result = res;
+             fprintf(stderr, "vkCreateShaderModule failed with error code 0x%X.\n", res);
+             return;
+         }
+@@ -1507,6 +1508,7 @@ namespace plume {
+ 
+         VkResult res = vkCreateComputePipelines(device->vk, device->pipelineCache, 1, &pipelineInfo, nullptr, &vk);
+         if (res != VK_SUCCESS) {
++            result = res;
+             fprintf(stderr, "vkCreateComputePipelines failed with error code 0x%X.\n", res);
+             return;
+         }
+@@ -1776,6 +1778,7 @@ namespace plume {
+ 
+         VkResult res = vkCreateGraphicsPipelines(device->vk, device->pipelineCache, 1, &pipelineInfo, nullptr, &vk);
+         if (res != VK_SUCCESS) {
++            result = res;
+             fprintf(stderr, "vkCreateGraphicsPipelines failed with error code 0x%X.\n", res);
+             return;
+         }
+--- a/plume_vulkan.h
++++ b/plume_vulkan.h
+@@ -215,6 +215,7 @@ namespace plume {
+ 
+     struct VulkanShader : RenderShader {
+         VkShaderModule vk = VK_NULL_HANDLE;
++        VkResult result = VK_SUCCESS; // what vkCreateShaderModule returned
+         std::string entryPointName;
+         VulkanDevice *device = nullptr;
+         RenderShaderFormat format = RenderShaderFormat::UNKNOWN;
+@@ -249,6 +250,7 @@ namespace plume {
+ 
+     struct VulkanComputePipeline : VulkanPipeline {
+         VkPipeline vk = VK_NULL_HANDLE;
++        VkResult result = VK_SUCCESS; // what vkCreateComputePipelines returned
+         VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
+ 
+         VulkanComputePipeline(VulkanDevice *device, const RenderComputePipelineDesc &desc);
+@@ -259,6 +261,7 @@ namespace plume {
+ 
+     struct VulkanGraphicsPipeline : VulkanPipeline {
+         VkPipeline vk = VK_NULL_HANDLE;
++        VkResult result = VK_SUCCESS; // what vkCreateGraphicsPipelines returned
+         VkRenderPass renderPass = VK_NULL_HANDLE;
+ 
+         VulkanGraphicsPipeline(VulkanDevice *device, const RenderGraphicsPipelineDesc &desc);

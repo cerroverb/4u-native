@@ -22,8 +22,10 @@
 #include "gpu/backend/readback/impl.h"
 #include "gpu/backend/sync/sync.h"
 #include "mh4n/log.h"
+#include "mh4n/spirv_target.h"
 
 #include "readback_shaders.inc"
+#include "readback_shaders_v11.inc"
 
 namespace mh4n::gpu::rhi {
 
@@ -130,9 +132,12 @@ Result<void> EnsureKind(Backend& backend, ReadbackData& data, u32 kind) {
     if (k.pipeline != nullptr) return Result<void>{};
     static const std::span<const u32> kShaders[3] = {readback_color_comp, readback_depth_comp,
                                                      readback_depth_stencil_comp};
+    // (SPIR-V 1.3 below Vulkan 1.2: mh4n/spirv_target.h)
+    static const std::span<const u32> kShaders13[3] = {readback_color_comp_v11, readback_depth_comp_v11,
+                                                       readback_depth_stencil_comp_v11};
     static const char* const kNames[3] = {"readback colour", "readback depth", "readback depth and stencil"};
     ComputePipelineDesc desc;
-    desc.shader.spirv = kShaders[kind];
+    desc.shader.spirv = SpirvTarget13() ? kShaders13[kind] : kShaders[kind];
     desc.sets = {SetShape(kind)};
     desc.name = kNames[kind];
     Result<std::shared_ptr<Pipeline>> pipeline = backend.CreateComputePipeline(desc);
@@ -202,6 +207,12 @@ void SubmitAndWait(Backend& backend, Recorder&& recorder) {
 }
 
 }  // namespace readback
+
+Result<void> Backend::PrepareReadback() {
+    ReadbackData& data = ReadbackState(*impl_);
+    std::lock_guard lock(data.mutex);
+    return EnsureKind(*this, data, 0);  // (0: colour)
+}
 
 Result<void> Backend::ReadbackToGuest(const Image& image, Rect rect, PicaFormat format, std::span<u8> dest, u32 scale) {
     Image::Impl& img = image.impl();

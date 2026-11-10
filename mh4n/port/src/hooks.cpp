@@ -184,6 +184,11 @@ struct Options {
     bool trace_state = false;    // trace_state / MH4U_TRACE_STATE: log the game's state (GameState) as it changes
     bool trace_state_actions = false;  // trace_state = actions: the hunter's every action too
     u32 hud_probe = 0;      // hud_probe (tests): the top-screen layout object with this hash drawn off the screen
+    // Comforts after jM5557's MH4U QOL mods (Qol* below), each off unless set: qol_hold_gather (holding A carves,
+    // gathers, mines and catches bugs again and again), qol_flex_cancel (moving, rolling or another action ends the flex
+    // after a drink), qol_sharpen_cancel (B while sharpening rolls out of it), qol_rewards_no_limit (the rewards
+    // screen's countdown stands still)
+    bool qol_hold_gather = false, qol_flex_cancel = false, qol_sharpen_cancel = false, qol_rewards_no_limit = false;
     // hud_<part> = dx dy: a part of the hunting HUD moved by this much (top-screen pixels, right and down: the app's
     // layout editor drags it; item_bar is hud_items as an earlier version wrote it)
     float hud_dx[HUD_PART_COUNT] = {}, hud_dy[HUD_PART_COUNT] = {};
@@ -373,6 +378,14 @@ void Set(Options& o, const std::string& key, const std::string& value) {
         o.trace_every = static_cast<u32>(std::max(0L, std::strtol(value.c_str(), nullptr, 10)));
     } else if (key == "trace_filters") {
         o.trace_filters = IsOn(value);
+    } else if (key == "qol_hold_gather") {
+        o.qol_hold_gather = IsOn(value);
+    } else if (key == "qol_flex_cancel") {
+        o.qol_flex_cancel = IsOn(value);
+    } else if (key == "qol_sharpen_cancel") {
+        o.qol_sharpen_cancel = IsOn(value);
+    } else if (key == "qol_rewards_no_limit") {
+        o.qol_rewards_no_limit = IsOn(value);
     } else if (key == "trace_state") {
         o.trace_state = IsOn(value) || value == "actions";
         o.trace_state_actions = value == "actions";
@@ -451,7 +464,11 @@ Options LoadOptions(std::vector<std::string>& log) {
         {"MH4U_RADIAL_BLUR", "radial_blur"},
         {"MH4U_HAZE", "haze"},
         {"MH4U_TRACE_FILTERS", "trace_filters"},
-        {"MH4U_TRACE_STATE", "trace_state"}};
+        {"MH4U_TRACE_STATE", "trace_state"},
+        {"MH4U_QOL_HOLD_GATHER", "qol_hold_gather"},
+        {"MH4U_QOL_FLEX_CANCEL", "qol_flex_cancel"},
+        {"MH4U_QOL_SHARPEN_CANCEL", "qol_sharpen_cancel"},
+        {"MH4U_QOL_REWARDS_NO_LIMIT", "qol_rewards_no_limit"}};
     for (const auto& [var, key] : env) {
         if (const char* value = std::getenv(var)) {
             Set(o, key, value);
@@ -672,6 +689,8 @@ void UpdateQuestOverlay(RCtx* ctx);
 void UpdateGameState(RCtx* ctx);
 void ItemBarStep(RCtx* ctx);
 void TraceFilters();
+bool QolRewardsHold(RCtx* ctx, u32* screen, u32* left, u32* part);  // (jM5557's comforts, below)
+void QolRewardsKeep(RCtx* ctx, u32 screen, u32 left, u32 part);
 
 void Frame(RCtx* ctx, RFunc original) {
     PACE_MARK(kFrameStart, static_cast<u32>(frames));
@@ -702,7 +721,12 @@ void Frame(RCtx* ctx, RFunc original) {
     }
     WideTransfer(ctx);
     if (const std::string line = Keyboard::Frame(ctx); !line.empty()) LogInfo("{}", line);  // (the phone's keyboard)
+    u32 rewards = 0, rewards_left = 0, rewards_part = 0;
+    const bool rewards_held = QolRewardsHold(ctx, &rewards, &rewards_left, &rewards_part);
     original(ctx);
+    if (rewards_held) {
+        QolRewardsKeep(ctx, rewards, rewards_left, rewards_part);
+    }
     ++frames;
     UpdateQuestOverlay(ctx);
     UpdateGameState(ctx);
@@ -1160,6 +1184,7 @@ u32 panel_touch_allowed_return = PANEL_TOUCH_ALLOWED_RETURN;
 constexpr u32 AQUEST_WAIT_LEFT = 0x3c;    // s32: units of the wait left (loaded from the holder's
                                           // +0xad60: 20 s × sMain+0x2c)
 constexpr u32 AQUEST_END_STAGE = 0x48;    // u32: the end sequence's stage, 0 while waiting
+constexpr u32 AQUEST_END_REWARDS = 3;     // that stage once the rewards are up (UpdateGameState)
 constexpr u32 QUEST_STATE_PHASE = 0x24;   // u8 in the state block: 0 playing, 1 waiting, then over
 constexpr u8 QUEST_PHASE_WAITING = 1;
 std::atomic<bool> skip_offered{false};   // SkipOffered()
@@ -1279,6 +1304,7 @@ void PanelIsTapped(RCtx* ctx, RFunc original) {
 std::atomic<u32> host_triggers{0};  // SetHostTriggers: ZL 0x400 and ZR 0x800, as the held word has them
 
 void ItemBarHold(RCtx* ctx);  // (the item bar by touch, below)
+void QolPadStep(RCtx* ctx, u32 pad);  // (jM5557's comforts, below)
 
 void MhPadUpdate(RCtx* ctx, RFunc original) {
     const u32 pad = ctx->r[0];
@@ -1308,6 +1334,7 @@ void MhPadUpdate(RCtx* ctx, RFunc original) {
         wr8(ctx, QUEST_HUD + HUD_TARGET_REQUEST, 1);  // (the app's tap on the icon; only while hunting: the HUD clears it)
     }
     ItemBarHold(ctx);
+    QolPadStep(ctx, pad);
     UpdateSkip(ctx);
     const bool offered = skip_offered.load(std::memory_order_relaxed);
     // the end of the wait: the combo held for skip_end_hold seconds, once per quest
@@ -2055,10 +2082,200 @@ void ItemBarStep(RCtx* ctx) {
     }
 }
 
+// ── Comforts after jM5557's MH4U QOL mods (github.com/jM5557/MH4U-QOL-Cheats; their "USA v1.1" is this v1.3.0's code) ──
+//
+// Their code patches change the game's code, which this port runs translated ahead of time: a patch like theirs needs a
+// code library made again with it. These do the same from the hooks instead, each behind its option (off unless set),
+// with the same tests and the same game calls as their patches. Their patches run inside the hunter's update (at
+// 0x00b14a44 and in the input copy at 0x00b1ceec); these run at the end of sMhPad's update, which comes before the
+// hunter's in each frame, so the hunter's update sees what they did that same frame.
+constexpr u32 SMHPAD_PRESSED = 0x94;           // u32: the buttons pressed this frame (SPAD_HELD's bits)
+constexpr u32 SMHPAD_COMMANDS = 0x30c;         // u16: the game's commands held; +4 those pressed this frame (the hunter's
+constexpr u32 SMHPAD_COMMANDS_PRESSED = 0x310; //   input takes both from here: 0x00b1ce88)
+constexpr u32 SMHPAD_STICK = 0xff0000;         // the held word's circle pad directions
+constexpr u32 SMHPAD_FACE_BUTTONS = 0xf000;    // A, B, X and Y
+constexpr u32 STATE_REST_MODE = 0x370;         // u8 of the hunter's state object: the mode its actions go back to
+constexpr u16 ACTION_NEUTRAL = 0x00, ACTION_NEUTRAL_MOVING = 0x18;  // (mode 0: standing, and walking)
+constexpr u16 ACTION_FLEX = 0x57;              // (mode 0) the flex after a drink
+constexpr u16 ACTION_SHARPEN = 0x5a;           // (mode 0) sharpening with a whetstone
+constexpr u32 FN_SET_ACTION = 0x00b1d764;      // (hunter, mode, 4, 0; a fifth argument on the stack, 0): the mode's
+                                               // neutral action, as their patches end the flex or the sharpening
+constexpr u32 FN_FACE_STICK = 0x00b3d0d8;      // (hunter): turn to the circle pad (their patch, when it is pushed)
+constexpr u32 FN_AFTER_SET_ACTION = 0x00b67070;  // (hunter): their patch's call after FN_SET_ACTION
+constexpr u32 FN_ROLL_REFUSED = 0x00b185c8;    // (hunter): nonzero where the hunter can't roll now
+constexpr u32 FN_ROLL = 0x00b0d734;            // (hunter): the roll
+// The gathering actions (mode 0): carving, gathering, mining and catching bugs (their patch's table of actions)
+constexpr u16 GATHER_ACTIONS[] = {0x4d, 0x4e, 0x51, 0x52, 0x53, 0x54, 0x8f, 0x90, 0x94, 0x95, 0x96, 0xa7, 0xa8, 0xa9, 0xaa, 0xab, 0xac};
+bool qol_gathering = false;     // the hunter was gathering with a button held (their patch's first flag)
+bool qol_gather_again = false;  // a held button was taken as a press after a gathering (their second flag)
+u8 qol_gather_rest_mode = 0;    // the rest mode while it gathered (their third byte)
+bool qol_rewards_logged = false;
+
+/// A game call with a fifth argument: four in registers and one in a word of stack below the caller's (the stack
+/// pointer put back afterwards).
+u32 CallGame5(RCtx* ctx, u32 function, std::initializer_list<u32> args, u32 fifth) {
+    const u32 sp = ctx->r[13];
+    ctx->r[13] = sp - 8;
+    wr32(ctx, sp - 8, fifth);
+    const u32 result = CallGame(ctx, function, args);
+    ctx->r[13] = sp;
+    return result;
+}
+
+bool GatherAction(u16 action) {
+    return std::find(std::begin(GATHER_ACTIONS), std::end(GATHER_ACTIONS), action) != std::end(GATHER_ACTIONS);
+}
+
+/// "Hold A to Carve, Gather, Mine, Catch Bugs": while a gathering action runs, and the frame it ends, the commands held
+/// count as pressed, so a held A starts the next one at once; if that press started anything but a gathering or the
+/// neutral actions, the next frame sends the hunter back to its neutral action (both as their patch does).
+void QolHoldGather(RCtx* ctx, u32 pad, u32 hunter, u32 state) {
+    const u8 mode = rd8(ctx, state + STATE_MODE);
+    const u16 action = rd16(ctx, state + STATE_MODE_ACTION);
+    if (qol_gather_again) {
+        qol_gather_again = false;
+        if (mode != 0 || (action != ACTION_NEUTRAL && action != ACTION_NEUTRAL_MOVING && !GatherAction(action))) {
+            qol_gathering = false;
+            CallGame5(ctx, FN_SET_ACTION, {hunter, qol_gather_rest_mode, 4, 0}, 0);
+            LogInfo("qol: the held button started action {:02X} mode {}, not a gathering: back to neutral", action, mode);
+            return;
+        }
+    }
+    const u16 held = rd16(ctx, pad + SMHPAD_COMMANDS);
+    if ((held & 0x3fc) == 0 || mode != 0) {
+        qol_gathering = false;
+        return;
+    }
+    if (action == ACTION_NEUTRAL || action == ACTION_NEUTRAL_MOVING) {
+        if (qol_gathering) {
+            wr16(ctx, pad + SMHPAD_COMMANDS_PRESSED, rd16(ctx, pad + SMHPAD_COMMANDS_PRESSED) | held);
+            qol_gather_again = true;
+        }
+    } else if (GatherAction(action)) {
+        if (!qol_gathering) {
+            LogInfo("qol: gathering (action {:02X}) with a button held", action);
+        }
+        qol_gathering = true;
+        qol_gather_rest_mode = rd8(ctx, state + STATE_REST_MODE);
+        wr16(ctx, pad + SMHPAD_COMMANDS_PRESSED, rd16(ctx, pad + SMHPAD_COMMANDS_PRESSED) | held);
+    } else {
+        qol_gathering = false;
+    }
+}
+
+/// "Interruptable Flex" and "Whetstone Sharpening Cancel": the flex after a drink ends when the circle pad is pushed or
+/// A, B, X or Y is pressed (not while L is held), and sharpening ends when B is pressed, with a roll where the hunter
+/// can roll. The drink's effect has already been given when the flex starts.
+void QolCancel(RCtx* ctx, u32 pad, u32 hunter, u32 state) {
+    if (rd8(ctx, state + STATE_MODE) != 0) {
+        return;
+    }
+    const u16 action = rd16(ctx, state + STATE_MODE_ACTION);
+    const bool flex = options.qol_flex_cancel && action == ACTION_FLEX;
+    const bool sharpen = options.qol_sharpen_cancel && action == ACTION_SHARPEN;
+    if (!flex && !sharpen) {
+        return;
+    }
+    const u32 held = rd32(ctx, pad + SPAD_HELD);
+    const u32 pressed = rd32(ctx, pad + SMHPAD_PRESSED);
+    const bool go = flex ? (held & SMHPAD_STICK) != 0 || ((held & 0x100) == 0 && (pressed & SMHPAD_FACE_BUTTONS) != 0)
+                         : (pressed & 0x4000) != 0;  // (L 0x100, B 0x4000)
+    if (!go) {
+        return;
+    }
+    if (held & SMHPAD_STICK) {
+        CallGame(ctx, FN_FACE_STICK, {hunter});
+    }
+    CallGame5(ctx, FN_SET_ACTION, {hunter, rd8(ctx, state + STATE_REST_MODE), 4, 0}, 0);
+    CallGame(ctx, FN_AFTER_SET_ACTION, {hunter});
+    bool rolled = false;
+    if (sharpen && CallGame(ctx, FN_ROLL_REFUSED, {hunter}) == 0) {
+        CallGame(ctx, FN_ROLL, {hunter});
+        rolled = true;
+    }
+    LogInfo("qol: {} ended{}", flex ? "the flex" : "the sharpening", rolled ? " with a roll" : "");
+}
+
+/// Once a frame, at the end of sMhPad's update: the comforts that are on, for this console's hunter in a quest.
+void QolPadStep(RCtx* ctx, u32 pad) {
+    if (!options.qol_hold_gather) {
+        qol_gathering = qol_gather_again = false;
+    }
+    if (!options.qol_hold_gather && !options.qol_flex_cancel && !options.qol_sharpen_cancel) {
+        return;
+    }
+    int weapon = -1;
+    const u32 hunter = LocalHunter(ctx, &weapon);
+    const u32 state = hunter ? rd32(ctx, hunter + HUNTER_STATE) : 0;
+    if (!HeapPointer(state) || CallGame(ctx, FN_IS_LOCAL, {hunter}) == 0) {
+        qol_gathering = qol_gather_again = false;
+        return;
+    }
+    if (options.qol_hold_gather) {
+        QolHoldGather(ctx, pad, hunter, state);
+    }
+    QolCancel(ctx, pad, hunter, state);
+}
+
+// "No Time Limit on Rewards Screen": the rewards screen's update (0x00acccd0, called by 0x0065c590 with the object at
+// REWARDS_SCREEN) in its states 1 and 2 (+4) gathers the frame's delta at +0x18, and each whole unit takes one off the
+// countdown at +0x14 (1/60 s units: 10800 is the 180 the screen shows). Their patch skips the gathering; here the
+// countdown is held at a value in the middle of its second, set before the game's frame and put back after it, so the
+// one or two units a frame takes off never change the number shown (held on the second's edge, it showed 180 and 179
+// in turns on the RG406V).
+constexpr u32 REWARDS_SCREEN = 0x00ef32b4;  // the rewards screen's object*
+constexpr u32 REWARDS_STATE = 0x04;   // s8
+constexpr u32 REWARDS_LEFT = 0x14;    // s32: the countdown
+constexpr u32 REWARDS_PART = 0x18;    // f32: the part of a unit gathered
+std::int32_t qol_rewards_value = 0;   // the value it is held at (qol_rewards_logged: holding)
+
+bool QolRewardsHold(RCtx* ctx, u32* screen, u32* left, u32* part) {
+    if (!options.qol_rewards_no_limit) {
+        qol_rewards_logged = false;
+        return false;
+    }
+    *screen = rd32(ctx, REWARDS_SCREEN);
+    const s8 state = HeapPointer(*screen) ? static_cast<s8>(rd8(ctx, *screen + REWARDS_STATE)) : 0;
+    if (state != 1 && state != 2) {
+        qol_rewards_logged = false;
+        return false;
+    }
+    const std::int32_t now = static_cast<std::int32_t>(rd32(ctx, *screen + REWARDS_LEFT));
+    if (!qol_rewards_logged) {
+        qol_rewards_value = now >= 90 ? now - now % 60 - 30 : now;
+    }
+    if (now != qol_rewards_value) {
+        wr32(ctx, *screen + REWARDS_LEFT, static_cast<u32>(qol_rewards_value));
+    }
+    *left = static_cast<u32>(qol_rewards_value);
+    *part = rd32(ctx, *screen + REWARDS_PART);
+    return true;
+}
+
+void QolRewardsKeep(RCtx* ctx, u32 screen, u32 left, u32 part) {
+    if (rd32(ctx, REWARDS_SCREEN) != screen) {
+        return;
+    }
+    const s8 state = static_cast<s8>(rd8(ctx, screen + REWARDS_STATE));
+    const std::int32_t now = static_cast<std::int32_t>(rd32(ctx, screen + REWARDS_LEFT));
+    // (only the countdown's own step is undone: a new state or a fresh countdown is left alone)
+    if ((state != 1 && state != 2) || now > static_cast<std::int32_t>(left) ||
+        (now == static_cast<std::int32_t>(left) && rd32(ctx, screen + REWARDS_PART) == part)) {
+        return;
+    }
+    wr32(ctx, screen + REWARDS_LEFT, left);
+    wr32(ctx, screen + REWARDS_PART, part);
+    if (!qol_rewards_logged) {
+        qol_rewards_logged = true;
+        LogInfo("qol: the rewards screen's countdown held at {}", static_cast<std::int32_t>(left));
+    }
+}
+
 std::string FormatGameState(const GameState& s) {
     constexpr const char* places[] = {"other", "town", "quest"};
-    std::string text = fmt::format("place {} menu {} weapon {} drawn {} action {:04X} ranged {} item bar ",
-                                   s.place < 0 ? "-" : places[s.place], s.menu, s.weapon, s.weapon_drawn,
+    std::string text = fmt::format("place {}{} menu {} weapon {} drawn {} action {:04X} ranged {} item bar ",
+                                   s.place < 0 ? "-" : places[s.place], s.front_end ? " (the front end)" : "",
+                                   s.menu, s.weapon, s.weapon_drawn,
                                    static_cast<u16>(s.action), s.ranged);
     if (s.item_bar_shown == 1) {
         text += fmt::format("at {:.3f} {:.3f} {:.3f} {:.3f}", s.item_bar[0], s.item_bar[1], s.item_bar[2],
@@ -2107,10 +2324,22 @@ void UpdateGameState(RCtx* ctx) {
     case VT_AQUEST: {
         s.place = GameState::PLACE_QUEST;
         const u8 hud = rd8(ctx, QUEST_HUD + HUD_STATE);
+        // The quest's end: its sequence's stage (0 while the quest runs and through the wait after it, 1 the "Quest
+        // Complete" stamp, 2 the Guild's crest) is 3 once the rewards are up (Quest Rewards and the Reward Box, the
+        // item box beside them, the sale): the game's windows have the buttons until the area goes
+        const u32 end_stage = rd32(ctx, top + AQUEST_END_STAGE);
+        const bool rewards = end_stage >= AQUEST_END_REWARDS && end_stage < 0x100;
         // (not the helpers' talks that come up by themselves in a hunt, as the Caravaneer's: the hunt's
         // layout has A and B for them, and nothing found tells them apart from the hunt yet)
         s.menu = hud == HUD_MENU_OPENING || hud == HUD_MENU || hud == HUD_BOX_OPENING || hud == HUD_BOX ||
-                         GameMenuOpen(ctx) ? 1 : 0;
+                         GameMenuOpen(ctx) || rewards ? 1 : 0;
+        if (options.trace_state) {
+            static u32 end_logged = 0;
+            if (end_stage != end_logged) {
+                LogInfo("state: frame {} the quest's end at stage {}{}", s.frame, end_stage, rewards ? " (the rewards)" : "");
+                end_logged = end_stage;
+            }
+        }
         int weapon = -1;
         if (const u32 hunter = LocalHunter(ctx, &weapon)) {
             s.weapon = weapon;
@@ -2130,10 +2359,12 @@ void UpdateGameState(RCtx* ctx) {
         }
         break;
     }
-    case VT_AARENA:     // the Arena's equipment screen
     case VT_ADEMO:      // the intro, the title
     case VT_ANEWGAME:   // the character's creation
     case VT_ACONTINUE:  // the choice of a save
+        s.front_end = 1;
+        [[fallthrough]];
+    case VT_AARENA:     // the Arena's equipment screen
         s.place = GameState::PLACE_OTHER;
         s.menu = 1;
         break;
@@ -2212,6 +2443,7 @@ void UpdateGameState(RCtx* ctx) {
     if (hold) {
         s.menu = game_state.menu;
         s.place = game_state.place;
+        s.front_end = game_state.front_end;
     }
     game_state = s;
     if (options.trace_state && (s.place != game_state_logged.place || s.menu != game_state_logged.menu ||
@@ -2814,7 +3046,8 @@ bool SetOption(const std::string& key, const std::string& value) {
         "target", "skip", "skip_panel", "skip_hint", "skip_end", "skip_end_hold", "touch_overlay",
         "quest_overlay", "target_overlay",
         "hud_edges", "trace_frames", "trace_layout", "trace_panels", "bloom", "motion_blur",
-        "depth_of_field", "radial_blur", "haze", "trace_filters", "trace_state", "item_bar", "hud_probe"};
+        "depth_of_field", "radial_blur", "haze", "trace_filters", "trace_state", "item_bar", "hud_probe",
+        "qol_hold_gather", "qol_flex_cancel", "qol_sharpen_cancel", "qol_rewards_no_limit"};
     if (std::find(std::begin(live), std::end(live), key) == std::end(live) && HudPartIndex(key) < 0) {
         return false;
     }

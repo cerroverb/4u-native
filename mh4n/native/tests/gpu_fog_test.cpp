@@ -752,6 +752,7 @@ std::array<u32, 16> GasTable() {
 
 constexpr u32 kAccMax4 = 0x4400;  // 4.0
 constexpr int kShadingAlpha = 77;
+constexpr int kShadingOutAlpha = 0;  // (S6: the shading pass writes alpha 0, as Azahar does; fog.cpp)
 
 DrawSpec DensityDraw(std::array<int, 4> fragment) {
     return Draw(FullTriangle(fragment), [](pica::PicaState& s) { s.regs[kRegOutputMerger] = kOperationGas; });
@@ -827,21 +828,21 @@ TEST_CASE("gas/the_shading_pass_reads_the_density_normalises_it_by_accmax_and_lo
         bool light_factor;
         std::array<int, 4> want;
     };
-    // gas.md, H1 to H13 (the table is GasTable(); ACCMAX 4.0 = 0x4400 unless stated; the output alpha is the TEV's, 77)
+    // gas.md, H1 to H13 (the table is GasTable(); ACCMAX 4.0 = 0x4400 unless stated; the TEV's alpha 77, the output's 0)
     const std::vector<Case> cases = {
-        {"H1 density 1.75: t = 0.4375, position 3.5, segment 3, fraction 0.5", {1, 1, 0x3F, 0x00}, kAccMax4, false, {110, 195, 50, kShadingAlpha}},
-        {"H2 density 0: t = 0, segment 0", {5, 5, 0x00, 0x00}, kAccMax4, false, {1, 2, 3, kShadingAlpha}},
-        {"H3 density 8.0 above ACCMAX: t = 1, segment 7 fraction 1, clamped", {1, 1, 0x48, 0x00}, kAccMax4, false, {255, 0, 100, kShadingAlpha}},
-        {"H4 density equal to ACCMAX: t = 1", {1, 1, 0x44, 0x00}, kAccMax4, false, {255, 0, 100, kShadingAlpha}},
-        {"H5 negative density (bits 0xBC00) compares above ACCMAX: t = 1", {1, 1, 0xBC, 0x00}, kAccMax4, false, {255, 0, 100, kShadingAlpha}},
-        {"H6 light-factor input: t = 1 (unverified placeholder)", {1, 1, 0x3F, 0x00}, kAccMax4, true, {255, 0, 100, kShadingAlpha}},
-        {"H7 density 1.0: t = 0.25, position 2.0 exactly, segment 2", {1, 1, 0x3C, 0x00}, kAccMax4, false, {40, 50, 60, kShadingAlpha}},
-        {"H8 ACCMAX 0 and a density above it: t = 1", {1, 1, 0x3C, 0x00}, 0x0000, false, {255, 0, 100, kShadingAlpha}},
-        {"H9 ACCMAX NaN (0x7E00): t = 0", {1, 1, 0x3C, 0x00}, 0x7E00, false, {1, 2, 3, kShadingAlpha}},
-        {"H10 density +infinity (0x7C00) at or above ACCMAX: t = 1", {1, 1, 0x7C, 0x00}, kAccMax4, false, {255, 0, 100, kShadingAlpha}},
-        {"H11 density 0.001 (0x1000 = 2^-11): t = 2^-13, position 2^-10: segment 0 plus 2^-10 of a zero difference", {1, 1, 0x10, 0x00}, kAccMax4, false, {1, 2, 3, kShadingAlpha}},
-        {"H12 density -0 (0x8000): t = 0, not 1 (unverified choice, gas.md S2)", {1, 1, 0x80, 0x00}, kAccMax4, false, {1, 2, 3, kShadingAlpha}},
-        {"H13 density 2.75 (0x4180): t = 0.6875, position 5.5, segment 5 with negative red and blue differences", {1, 1, 0x41, 0x80}, kAccMax4, false, {185, 100, 70, kShadingAlpha}},
+        {"H1 density 1.75: t = 0.4375, position 3.5, segment 3, fraction 0.5", {1, 1, 0x3F, 0x00}, kAccMax4, false, {110, 195, 50, kShadingOutAlpha}},
+        {"H2 density 0: t = 0, segment 0", {5, 5, 0x00, 0x00}, kAccMax4, false, {1, 2, 3, kShadingOutAlpha}},
+        {"H3 density 8.0 above ACCMAX: t = 1, segment 7 fraction 1, clamped", {1, 1, 0x48, 0x00}, kAccMax4, false, {255, 0, 100, kShadingOutAlpha}},
+        {"H4 density equal to ACCMAX: t = 1", {1, 1, 0x44, 0x00}, kAccMax4, false, {255, 0, 100, kShadingOutAlpha}},
+        {"H5 negative density (bits 0xBC00) compares above ACCMAX: t = 1", {1, 1, 0xBC, 0x00}, kAccMax4, false, {255, 0, 100, kShadingOutAlpha}},
+        {"H6 light-factor input: t = 1 (unverified placeholder)", {1, 1, 0x3F, 0x00}, kAccMax4, true, {255, 0, 100, kShadingOutAlpha}},
+        {"H7 density 1.0: t = 0.25, position 2.0 exactly, segment 2", {1, 1, 0x3C, 0x00}, kAccMax4, false, {40, 50, 60, kShadingOutAlpha}},
+        {"H8 ACCMAX 0 and a density above it: t = 1", {1, 1, 0x3C, 0x00}, 0x0000, false, {255, 0, 100, kShadingOutAlpha}},
+        {"H9 ACCMAX NaN (0x7E00): t = 0", {1, 1, 0x3C, 0x00}, 0x7E00, false, {1, 2, 3, kShadingOutAlpha}},
+        {"H10 density +infinity (0x7C00) at or above ACCMAX: t = 1", {1, 1, 0x7C, 0x00}, kAccMax4, false, {255, 0, 100, kShadingOutAlpha}},
+        {"H11 density 0.001 (0x1000 = 2^-11): t = 2^-13, position 2^-10: segment 0 plus 2^-10 of a zero difference", {1, 1, 0x10, 0x00}, kAccMax4, false, {1, 2, 3, kShadingOutAlpha}},
+        {"H12 density -0 (0x8000): t = 0, not 1 (unverified choice, gas.md S2)", {1, 1, 0x80, 0x00}, kAccMax4, false, {1, 2, 3, kShadingOutAlpha}},
+        {"H13 density 2.75 (0x4180): t = 0.6875, position 5.5, segment 5 with negative red and blue differences", {1, 1, 0x41, 0x80}, kAccMax4, false, {185, 100, 70, kShadingOutAlpha}},
     };
     for (const Case& c : cases) {
         INFO(c.name);
@@ -860,7 +861,7 @@ TEST_CASE("gas/the_shading_pass_reads_the_density_normalises_it_by_accmax_and_lo
         std::string why;
         const std::vector<DrawSpec> frame = {DensityDraw({10, 20, 0x3C, 0x00}), DensityDraw({30, 40, 0x38, 0x00}),
                                              DensityDraw({50, 60, 0x34, 0x00}), ShadingDraw(kAccMax4)};
-        CHECK_MESSAGE(AllNear(rig->Render(frame), {110, 195, 50, kShadingAlpha}, 0, &why), why);
+        CHECK_MESSAGE(AllNear(rig->Render(frame), {110, 195, 50, kShadingOutAlpha}, 0, &why), why);
     }
 }
 

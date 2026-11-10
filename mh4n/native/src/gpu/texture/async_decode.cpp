@@ -3,9 +3,6 @@
 #include <algorithm>
 #include <utility>
 
-#define XXH_INLINE_ALL
-#include <xxhash.h>
-
 #include "gpu/texture/decode.h"
 #include "mh4n/host_thread_name.h"
 
@@ -73,7 +70,7 @@ void AsyncDecoder::Run() {
             queue_.pop_front();
         }
         Result result;
-        result.hash = XXH3_64bits(job.bytes.data(), job.bytes.size());
+        result.hash = ContentHash(job.bytes.data(), job.bytes.size());
         if (!DecodeToRgba8(job.bytes.data(), job.bytes.size(), job.key.width, job.key.height, job.key.format, result.rgba8)) {
             result.rgba8.clear();
         }

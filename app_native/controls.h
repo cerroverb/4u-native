@@ -55,6 +55,13 @@ bool controls_last_input_pad();
 bool controls_a_is_south();
 // The controller the game reads (0: none).
 SDL_JoystickID controls_active_pad();
+// Aiming with the gyro ([Controls] GyroAim): each turn of the loop, whether a bow or a bowgun aims now (touch.cpp); the
+// degrees the aim turns right and up by since the last call (the phone's gyroscope, or the controller's; GyroSensitivity
+// times the turn). The sensor is open only while aiming. The same in the MHGU port
+bool controls_gyro(bool aiming, float* right_deg, float* up_deg);
+// The game's buttons the controller and the keys held at the last controls_input (mh4n::kPad* bits)
+std::uint32_t controls_buttons();
+constexpr float kGyroSensMin = 0.2f, kGyroSensMax = 3.0f;  // [Controls] GyroSensitivity (1.0 the same angle)
 
 // Tests (launch.txt's env=):
 //   MH4U_TEST_INPUT=<file>       an input script (the runner's format: f<frame>:<BUTTON>:f<frames>, CIRCLE:x:y,

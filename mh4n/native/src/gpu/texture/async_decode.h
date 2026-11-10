@@ -20,7 +20,7 @@ namespace mh4n::gpu::texture {
 class AsyncDecoder {
 public:
     struct Result {
-        u64 hash = 0;            // XXH3 of the bytes it was decoded from
+        u64 hash = 0;            // ContentHash of the bytes it was decoded from
         std::vector<u8> rgba8;   // empty: the bytes did not decode
     };
 

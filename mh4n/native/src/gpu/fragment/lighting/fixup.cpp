@@ -15,6 +15,8 @@
 #include <glslang/Public/ShaderLang.h>
 #include <SPIRV/GlslangToSpv.h>
 
+#include "mh4n/spirv_target.h"
+
 namespace mh4n::gpu::fragment::lighting {
 namespace {
 
@@ -168,10 +170,11 @@ std::vector<u32> GenerateFixupGeometrySpirv(const FixupStageInputs& inputs, std:
     glslang::TShader shader(EShLangGeometry);
     const char* strings[1] = {source.c_str()};
     shader.setStrings(strings, 1);
-    // Vulkan 1.2 and SPIR-V 1.5, as the vertex and fragment stages.
+    // Vulkan 1.2 and SPIR-V 1.5, as the vertex and fragment stages (1.1 and 1.3 below Vulkan 1.2: mh4n/spirv_target.h).
     shader.setEnvInput(glslang::EShSourceGlsl, EShLangGeometry, glslang::EShClientVulkan, 100);
-    shader.setEnvClient(glslang::EShClientVulkan, glslang::EShTargetVulkan_1_2);
-    shader.setEnvTarget(glslang::EShTargetSpv, glslang::EShTargetSpv_1_5);
+    const bool spirv13 = ::mh4n::gpu::SpirvTarget13();
+    shader.setEnvClient(glslang::EShClientVulkan, spirv13 ? glslang::EShTargetVulkan_1_1 : glslang::EShTargetVulkan_1_2);
+    shader.setEnvTarget(glslang::EShTargetSpv, spirv13 ? glslang::EShTargetSpv_1_3 : glslang::EShTargetSpv_1_5);
     const EShMessages messages = static_cast<EShMessages>(EShMsgSpvRules | EShMsgVulkanRules);
     if (!shader.parse(GetDefaultResources(), 450, false, messages)) {
         return fail(std::string(shader.getInfoLog()) + shader.getInfoDebugLog());

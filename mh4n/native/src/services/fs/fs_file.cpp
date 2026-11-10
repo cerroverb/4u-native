@@ -26,13 +26,17 @@
 //    from the modelled delay, so the reply moves with the host.
 //  - OpenSubFile (0x0801) is not implemented: the game does not use it.
 #include <algorithm>
+#include <cstdlib>
 #include <functional>
 #include <memory>
 #include <vector>
 
 #include "fs_state.h"
+#include "mh4n/gpu.h"
+#include "mh4n/host.h"
 #include "mh4n/ipc.h"
 #include "mh4n/log.h"
+#include "mh4n/memory.h"
 #include "mh4n/service.h"
 
 namespace mh4n::fs {
@@ -105,7 +109,19 @@ private:
             data->bytes = std::make_unique_for_overwrite<u8[]>(buffer_size);
             data->result = backend->Read(offset, backend_length, data->bytes.get(), &data->read);
         };
-        const auto fill = [data, buffer, count](Reply& reply) {
+        // The GPU is told what a read wrote, as the CPU's own writes are told by the game's cache flushes: a texture the
+        // game reads from its archives straight into place has no flush of its own, and the renderer drew the old picture
+        // of that memory (the sky on the ground late in a hunt, 4u-native #28; MH4N_FS_NOTIFY=0: not told, as before).
+        static const bool notify = [] {
+            const char* v = std::getenv("MH4N_FS_NOTIFY");
+            return v == nullptr || *v != '0';
+        }();
+        // Only memory the GPU can address (VRAM and the linear heap: GuestMemory::VirtualToPhysical) is told, whole: a
+        // read into the heap the GPU cannot see is none of its business, and an address with no physical one makes
+        // FlushRegion mark every target stale and forget every scaled screen (a 1x picture, seen in character creation).
+        gpu::Gpu* const gpu = notify ? Context().Interfaces().gpu : nullptr;
+        const GuestMemory* const memory = gpu != nullptr ? &Context().Memory() : nullptr;
+        const auto fill = [data, buffer, count, gpu, memory](Reply& reply) {
             if (IsError(data->result)) {
                 reply.Push(data->result);
                 reply.Push<u32>(0);
@@ -113,6 +129,10 @@ private:
                 // Never copy more than was requested, even if the backend reports more.
                 const std::size_t size = std::min(data->read, count);
                 buffer.Write(data->bytes.get(), 0, static_cast<u32>(size));
+                if (gpu != nullptr && size != 0 && memory->VirtualToPhysical(buffer.Address()) &&
+                    memory->VirtualToPhysical(buffer.Address() + static_cast<u32>(size) - 1)) {
+                    gpu->FlushRegion(buffer.Address(), static_cast<u32>(size));
+                }
                 reply.Push(kResultSuccess);
                 reply.Push<u32>(static_cast<u32>(size));
             }

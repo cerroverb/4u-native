@@ -215,6 +215,7 @@ namespace plume {
 
     struct VulkanShader : RenderShader {
         VkShaderModule vk = VK_NULL_HANDLE;
+        VkResult result = VK_SUCCESS; // what vkCreateShaderModule returned
         std::string entryPointName;
         VulkanDevice *device = nullptr;
         RenderShaderFormat format = RenderShaderFormat::UNKNOWN;
@@ -249,6 +250,7 @@ namespace plume {
 
     struct VulkanComputePipeline : VulkanPipeline {
         VkPipeline vk = VK_NULL_HANDLE;
+        VkResult result = VK_SUCCESS; // what vkCreateComputePipelines returned
         VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
 
         VulkanComputePipeline(VulkanDevice *device, const RenderComputePipelineDesc &desc);
@@ -259,6 +261,7 @@ namespace plume {
 
     struct VulkanGraphicsPipeline : VulkanPipeline {
         VkPipeline vk = VK_NULL_HANDLE;
+        VkResult result = VK_SUCCESS; // what vkCreateGraphicsPipelines returned
         VkRenderPass renderPass = VK_NULL_HANDLE;
 
         VulkanGraphicsPipeline(VulkanDevice *device, const RenderGraphicsPipelineDesc &desc);

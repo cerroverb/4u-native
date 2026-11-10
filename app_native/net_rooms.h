@@ -3,7 +3,8 @@
 // on a thread of its own. The runtime's local-wireless service talks to the process's room client by itself, so a room
 // joined here is the one the game's Local Play (the Gathering Hall) reaches; nothing is passed to the game.
 //
-// No server is built in: the room's address and the lobby's are the player's to type (empty: none).
+// No room server is built in: a room's address is the player's to type, or picked from a lobby's list or this Wi-Fi's.
+// The lobby comes set to a community one (settings_panel.cpp DEFAULT_LOBBY), and the player can type another or none.
 // Everything here runs on the app's main thread (the interface's), but for the lobby's fetch, which has its own.
 #pragma once
 #include <cstdint>

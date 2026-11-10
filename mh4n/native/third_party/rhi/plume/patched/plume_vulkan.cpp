@@ -1401,6 +1401,7 @@ namespace plume {
         shaderInfo.codeSize = size;
         VkResult res = vkCreateShaderModule(device->vk, &shaderInfo, nullptr, &vk);
         if (res != VK_SUCCESS) {
+            result = res;
             fprintf(stderr, "vkCreateShaderModule failed with error code 0x%X.\n", res);
             return;
         }
@@ -1507,6 +1508,7 @@ namespace plume {
 
         VkResult res = vkCreateComputePipelines(device->vk, device->pipelineCache, 1, &pipelineInfo, nullptr, &vk);
         if (res != VK_SUCCESS) {
+            result = res;
             fprintf(stderr, "vkCreateComputePipelines failed with error code 0x%X.\n", res);
             return;
         }
@@ -1776,6 +1778,7 @@ namespace plume {
 
         VkResult res = vkCreateGraphicsPipelines(device->vk, device->pipelineCache, 1, &pipelineInfo, nullptr, &vk);
         if (res != VK_SUCCESS) {
+            result = res;
             fprintf(stderr, "vkCreateGraphicsPipelines failed with error code 0x%X.\n", res);
             return;
         }

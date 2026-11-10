@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <set>
+#include <string>
 #include <string_view>
 
 #include <fmt/format.h>
@@ -10,6 +11,7 @@
 #include "gpu/backend/core/impl.h"
 #include "gpu/backend/driver_hooks.h"
 #include "mh4n/log.h"
+#include "mh4n/spirv_target.h"
 
 namespace mh4n::gpu::rhi {
 
@@ -585,6 +587,14 @@ Result<std::shared_ptr<Backend>> CreateBackend(std::shared_ptr<Instance> instanc
     }
 
     const Capabilities& c = impl->caps;
+    {  // (the SPIR-V the shaders are compiled to: 1.3 below Vulkan 1.2, mh4n/spirv_target.h; MH4N_SPIRV=1.3|1.5 a test)
+        const char* env = std::getenv("MH4N_SPIRV");
+        const bool v13 = env != nullptr && std::string(env) == "1.3"   ? true
+                         : env != nullptr && std::string(env) == "1.5" ? false
+                                                                       : c.api_version < MakeApi(1, 2);
+        gpu::g_spirv_1_3.store(v13, std::memory_order_relaxed);
+        MH4N_LOG(Info, "RHI", "rhi: shaders compiled to SPIR-V {} (Vulkan {})", v13 ? "1.3" : "1.5", v13 ? "1.1" : "1.2");
+    }
     MH4N_LOG(Info, "RHI", "rhi: mask {}", mask.bits != 0 ? mask.ToString() : std::string("none"));
     MH4N_LOG(Info, "RHI", "rhi: device {} \"{}\" driver \"{}\" (id {}) api {}.{}.{}, queue family {}, {}",
              c.device_index, c.device_name, c.driver_name, c.driver_id, (c.api_version >> 22) & 0x7F,
@@ -628,7 +638,13 @@ Result<std::shared_ptr<Backend>> CreateBackend(std::shared_ptr<Instance> instanc
                 made.driver_info += (made.driver_info.empty() ? "" : ", ") + line;
             }
         }
-        MH4N_LOG(Info, "RHI", "rhi: driver info \"{}\", version {:#x}", made.driver_info, made.driver_version);
+        // (a Mali driver without driver properties, an old one, tells its release only in driverVersion: Arm's rNpM is
+        // VK_MAKE_VERSION(N, M, 0), r34p0 0x8800000)
+        constexpr u32 kVendorArm = 0x13B5;
+        const std::string release = c.driver_name.empty() && c.vendor_id == kVendorArm
+                                        ? fmt::format(" (r{}p{})", made.driver_version >> 22, (made.driver_version >> 12) & 0x3FF)
+                                        : std::string();
+        MH4N_LOG(Info, "RHI", "rhi: driver info \"{}\", version {:#x}{}", made.driver_info, made.driver_version, release);
         core::HostDeviceMade(made);
     }
 

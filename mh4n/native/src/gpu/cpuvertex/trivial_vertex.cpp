@@ -5,10 +5,16 @@
 #include "gpu/cpuvertex/trivial_vertex.h"
 
 #include "gpu/cpuvertex/trivial_vertex_spv.inc"
+#include "gpu/cpuvertex/trivial_vertex_spv_v11.inc"
+#include "mh4n/spirv_target.h"
 
 namespace mh4n::gpu::cpuvertex {
 
 std::span<const u32> TrivialVertexShader(bool use_clip_planes) {
+    if (SpirvTarget13()) {  // (SPIR-V 1.3 below Vulkan 1.2: mh4n/spirv_target.h)
+        return use_clip_planes ? std::span<const u32>(spv_trivial_vertex_clip_v11)
+                               : std::span<const u32>(spv_trivial_vertex_noclip_v11);
+    }
     return use_clip_planes ? std::span<const u32>(spv_trivial_vertex_clip)
                            : std::span<const u32>(spv_trivial_vertex_noclip);
 }

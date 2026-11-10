@@ -75,10 +75,7 @@ public class ImportActivity extends Activity {
     private int kind;
     private boolean es, busy;
 
-    private File home() {
-        File f = getExternalFilesDir(null);
-        return f != null ? f : getFilesDir();
-    }
+    private File home() { return AppHome.home(this); }
 
     /** The user folder the game runs with: launch.txt's user=, else files/user. */
     private File userDir() {

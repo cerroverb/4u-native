@@ -24,6 +24,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -44,6 +45,15 @@ bool g_native_fence = false;  // EGL_ANDROID_native_fence_sync + EGL_KHR_wait_sy
 // window's frames queued behind the game's), against 2 ms; on the Galaxy the pictures were finished when taken anyway.
 bool g_gpu_wait = false;
 bool g_logged_texture_mode = false;
+bool g_logged_target_mode = false;
+// What a log needs when the screens stay black (4u-native #33, #34): the first buffer of each kind described (a screen's,
+// a render target's), refusals counted (the first 3 logged), whether the renderer was asked for pixels instead, and
+// whether a render target's picture was ever shown (after that its buffers have been sampled: no switch to pixels).
+bool g_described[2] = {};
+unsigned g_refusals = 0;
+bool g_refused = false;
+bool g_target_shown = false;
+bool g_test_import_fail = false;  // MH4U_TEST_IMPORT_FAIL=1: every import refused (a test of the switch to pixels)
 
 PFNEGLGETNATIVECLIENTBUFFERANDROIDPROC p_eglGetNativeClientBufferANDROID = nullptr;
 PFNEGLCREATEIMAGEKHRPROC p_eglCreateImageKHR = nullptr;
@@ -386,6 +396,36 @@ std::shared_ptr<const SharedPicture> TakeFinishedPending(SharedScreenView& view,
     return nullptr;
 }
 
+// A buffer GL refused (or a part of its import): the first 3 lines logged, then the count at 10, 100, 1000... (a driver
+// that refuses every buffer would log one each picture)
+void Refusal(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
+void Refusal(const char* fmt, ...) {
+    ++g_refusals;
+    if (g_refusals <= 3) {
+        va_list ap;
+        va_start(ap, fmt);
+        std::vfprintf(stderr, fmt, ap);
+        va_end(ap);
+        if (g_refusals == 3) std::fprintf(stderr, "[Info] App: the next refusals of screen buffers are counted, not logged\n");
+        return;
+    }
+    unsigned p = 10;
+    while (p < g_refusals && p <= 100'000'000u) p *= 10;
+    if (p == g_refusals) std::fprintf(stderr, "[Warning] App: %u refusals of screen buffers so far\n", g_refusals);
+}
+
+// The first buffer of each kind as the system describes it (its stride and usage: what GL is given to import).
+void Describe(const SharedPicture& picture) {
+    const int kind = picture.Target() != nullptr ? 1 : 0;
+    if (g_described[kind]) return;
+    g_described[kind] = true;
+    AHardwareBuffer_Desc d{};
+    AHardwareBuffer_describe(static_cast<const AHardwareBuffer*>(picture.HardwareBuffer()), &d);
+    std::fprintf(stderr, "[Info] App: the first %s buffer: %ux%u, %u layer(s), format %u, stride %u, usage 0x%llx\n",
+                 kind == 1 ? "render target's" : "screen", d.width, d.height, d.layers, d.format, d.stride,
+                 static_cast<unsigned long long>(d.usage));
+}
+
 void DropImport(Import& im) {
     if (im.texture != nullptr) SDL_DestroyTexture(im.texture);
     if (im.external_name != 0) glDeleteTextures(1, &im.external_name);
@@ -402,6 +442,11 @@ Import* ImportOf(const SharedPicture& picture) {
         it->second.last_used = g_frame;
         return &it->second;
     }
+    Describe(picture);
+    if (g_test_import_fail) {
+        Refusal("[Error] App: MH4U_TEST_IMPORT_FAIL: a screen buffer's import refused (a test)\n");
+        return nullptr;
+    }
     SyncWithSdl();
     const EGLDisplay display = Display();
     EGLClientBuffer client =
@@ -413,7 +458,8 @@ Import* ImportOf(const SharedPicture& picture) {
     im.image = client != nullptr ? p_eglCreateImageKHR(display, EGL_NO_CONTEXT, EGL_NATIVE_BUFFER_ANDROID, client, attrs)
                                  : EGL_NO_IMAGE_KHR;
     if (im.image == EGL_NO_IMAGE_KHR) {
-        std::fprintf(stderr, "[Error] App: eglCreateImageKHR of a screen buffer failed (0x%x)\n", eglGetError());
+        Refusal("[Error] App: eglCreateImageKHR of a screen buffer failed (0x%x%s)\n", eglGetError(),
+                client == nullptr ? ", no client buffer" : "");
         return nullptr;
     }
     GLint previous = 0, active = 0;
@@ -445,14 +491,19 @@ Import* ImportOf(const SharedPicture& picture) {
                 im.external_target = kinds[k];
             } else {
                 glDeleteTextures(1, &name);
-                std::fprintf(stderr, "[Info] App: a render target's buffer as %s refused (0x%x)\n",
-                             k == 0 ? "GL_TEXTURE_2D" : "GL_TEXTURE_EXTERNAL_OES", error);
+                Refusal("[Info] App: a render target's buffer as %s refused (0x%x)\n",
+                        k == 0 ? "GL_TEXTURE_2D" : "GL_TEXTURE_EXTERNAL_OES", error);
             }
         }
         glActiveTexture(static_cast<GLenum>(active));
         if (im.external_name == 0) {
             DropImport(im);
             return nullptr;
+        }
+        if (!g_logged_target_mode) {
+            g_logged_target_mode = true;
+            std::fprintf(stderr, "[Info] App: the top screen's target pictures are shown (%s)\n",
+                         im.external_target == GL_TEXTURE_2D ? "GL_TEXTURE_2D" : "GL_TEXTURE_EXTERNAL_OES");
         }
         im.last_used = g_frame;
         return &g_imports.emplace(id, im).first->second;
@@ -495,7 +546,7 @@ Import* ImportOf(const SharedPicture& picture) {
             im.texture = SDL_CreateTextureWithProperties(g_renderer, props);
             SDL_DestroyProperties(props);
         } else {
-            std::fprintf(stderr, "[Error] App: a screen buffer as GL_TEXTURE_EXTERNAL_OES refused too (0x%x)\n", error);
+            Refusal("[Error] App: a screen buffer as GL_TEXTURE_EXTERNAL_OES refused too (0x%x)\n", error);
         }
     }
     glActiveTexture(static_cast<GLenum>(active));
@@ -534,6 +585,17 @@ void Retire(std::shared_ptr<const SharedPicture> picture) {
     g_retiring.push_back(Retiring{std::move(picture), fence});
 }
 
+// A picture `view` could not show because GL refused its buffer. While the view has shown none of the renderer's buffers
+// and no render target's picture has been shown, the renderer is asked for the screens as pixels from now on (the
+// display reads it at its next VBlank, before more of its buffers go to GL); after that what is shown stays.
+void RefuseShared(const SharedScreenView& view) {
+    if (g_refused || view.shown_shared || g_target_shown) return;
+    g_refused = true;
+    mh4n::present::SetSharedPicturesRefused(true);
+    std::fprintf(stderr, "[Warning] App: the renderer's buffers can't be shown on this phone (an import was refused): the "
+                         "screens come as pixels from now on\n");
+}
+
 void FreeCpuTexture(SharedScreenView& view) {
     if (view.cpu_texture != nullptr) SDL_DestroyTexture(view.cpu_texture);
     view.cpu_texture = nullptr;
@@ -550,6 +612,13 @@ void TimerInit();
 bool shared_screens_init(SDL_Renderer* renderer) {
     g_renderer = renderer;
     g_available = false;
+    // (a run starts: nothing refused yet)
+    g_refused = g_target_shown = false;
+    g_refusals = 0;
+    g_described[0] = g_described[1] = false;
+    mh4n::present::SetSharedPicturesRefused(false);
+    const char* test = std::getenv("MH4U_TEST_IMPORT_FAIL");
+    g_test_import_fail = test != nullptr && *test == '1';
     const char* name = SDL_GetRendererName(renderer);
     if (name == nullptr || std::strcmp(name, "opengles2") != 0) {
         std::fprintf(stderr, "[Info] App: the renderer is %s: the screens come as pixels\n", name ? name : "?");
@@ -557,6 +626,22 @@ bool shared_screens_init(SDL_Renderer* renderer) {
     }
     SDL_FlushRenderer(renderer);
     const EGLDisplay display = eglGetCurrentDisplay();
+    {
+        const auto gl = [](GLenum what) {
+            const char* s = reinterpret_cast<const char*>(glGetString(what));
+            return s != nullptr ? s : "?";
+        };
+        const auto egl = [display](EGLint what) {
+            const char* s = display != EGL_NO_DISPLAY ? eglQueryString(display, what) : nullptr;
+            return s != nullptr ? s : "?";
+        };
+        std::fprintf(stderr, "[Info] App: SDL renderer %s: GL \"%s\" on \"%s\", GLSL \"%s\"; EGL \"%s\", vendor \"%s\"\n",
+                     name, gl(GL_VERSION), gl(GL_RENDERER), gl(GL_SHADING_LANGUAGE_VERSION), egl(EGL_VERSION),
+                     egl(EGL_VENDOR));
+    }
+    if (g_test_import_fail) {
+        std::fprintf(stderr, "[Warning] App: MH4U_TEST_IMPORT_FAIL=1: every screen buffer's import is refused (a test)\n");
+    }
     if (display == EGL_NO_DISPLAY) {
         Log("no current EGL display: the screens come as pixels");
         return false;
@@ -648,6 +733,7 @@ bool Show(SharedScreenView& view, const std::shared_ptr<const SharedPicture>& pi
     Import* import = target && !EnsureTargetPrograms() ? nullptr : ImportOf(*picture);
     if (import == nullptr || (!target && import->texture == nullptr)) {
         if (fd >= 0) close(fd);
+        RefuseShared(view);
         return false;
     }
     CloseWaiting();
@@ -669,6 +755,8 @@ bool Show(SharedScreenView& view, const std::shared_ptr<const SharedPicture>& pi
     ++(fd >= 0 ? g_stats.shown_waiting : g_stats.shown_ready);
     Retire(std::move(view.picture));
     view.picture = picture;
+    view.shown_shared = true;
+    g_target_shown = g_target_shown || target;
     view.texture = import->texture;  // (a render target's: none, shared_screens_draw draws it)
     view.target = target;
     if (target) {

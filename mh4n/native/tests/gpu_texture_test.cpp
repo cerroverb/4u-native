@@ -875,6 +875,157 @@ TEST_CASE("textures are keyed by address, format and size; unreadable ones are r
     CHECK(cache.size() == 0);
 }
 
+TEST_CASE("the decoded copy goes once its image holds it, and is decoded again for a new image: the same generation while the memory is the same") {
+    gpu_capture::CaptureHost host;
+    PlaceI8(host, kFcram + 0x1000, PatternTile(4096));
+    const CacheKey key{kFcram + 0x1000, Format::I8, 64, 64};
+    TextureCache cache(host);
+    const CachedTexture* first = cache.Get(key);
+    REQUIRE(first != nullptr);
+    const u32 generation = first->generation;
+    const Bytes pixels = first->rgba8;
+    CHECK(pixels.size() == 64 * 64 * 4);
+    CHECK(cache.pixel_bytes() == 64 * 64 * 4);
+
+    cache.ReleasePixels(key);
+    CHECK(cache.pixel_bytes() == 0);
+    const CachedTexture* hit = cache.Get(key);
+    REQUIRE(hit != nullptr);
+    CHECK(hit->rgba8.empty());  // (a hit: its image has them)
+    CHECK(hit->generation == generation);
+
+    const CachedTexture* again = cache.Pixels(key);  // an image made again
+    REQUIRE(again != nullptr);
+    CHECK(again->rgba8 == pixels);
+    CHECK(again->generation == generation);  // (the same contents: an image that holds them needs no upload)
+    CHECK(cache.stats().repixels == 1);
+    CHECK(cache.pixel_bytes() == 64 * 64 * 4);
+
+    // the memory changed (no notification) while the pixels were gone: decoded again, with a new generation
+    cache.ReleasePixels(key);
+    Bytes changed = PatternTile(4096);
+    changed[2404] ^= 0xFF;
+    PlaceI8(host, kFcram + 0x1000, changed);
+    const CachedTexture* other = cache.Pixels(key);
+    REQUIRE(other != nullptr);
+    CHECK(other->generation != generation);
+    Bytes expected;
+    REQUIRE(DecodeToRgba8(changed.data(), changed.size(), 64, 64, Format::I8, expected));
+    CHECK(other->rgba8 == expected);
+
+    // a texture whose contents changed keeps its buffer until it settles (Sweep)
+    cache.OnFlush(kFcram + 0x1000, 4);
+    PlaceI8(host, kFcram + 0x1000, PatternTile(4096));
+    REQUIRE(cache.Get(key) != nullptr);
+    CHECK(cache.stats().redecodes == 1);
+    cache.ReleasePixels(key);
+    CHECK(cache.pixel_bytes() == 64 * 64 * 4);
+    for (int i = 0; i < 11; ++i) cache.NextFrame();
+    CHECK(cache.Sweep(1000, 10) == 0);
+    CHECK(cache.pixel_bytes() == 0);
+
+    // kept, as before
+    TextureCache keeping(host, {.release_pixels = false});
+    REQUIRE(keeping.Get(key) != nullptr);
+    keeping.ReleasePixels(key);
+    CHECK(keeping.pixel_bytes() == 64 * 64 * 4);
+}
+
+TEST_CASE("the rolling check finds a change the spot check's 16 pieces miss, within 32 frames") {
+    // 64x64 I8: 4096 bytes, 16 pieces of 32 bytes at i * 4064 / 15 (2167..2199 and 2438..2470 around byte 2404), 32 slices of
+    // 128 bytes: byte 2404 is in slice 19 (2304..2432), the 19th one the check hashes
+    const Bytes tile = PatternTile(4096);
+    for (const bool rolling : {true, false}) {
+        gpu_capture::CaptureHost host;
+        PlaceI8(host, kFcram + 0x1000, tile);
+        const CacheKey key{kFcram + 0x1000, Format::I8, 64, 64};
+        TextureCache cache(host, {.check_all_on_notify = false, .rolling_check = rolling});
+        const CachedTexture* first = cache.Get(key);
+        REQUIRE(first != nullptr);
+        const u32 generation = first->generation;
+        Bytes changed = tile;
+        changed[2404] ^= 0xFF;  // one texel, written with no flush
+        PlaceI8(host, kFcram + 0x1000, changed);
+        int caught_at = 0;
+        for (int frame = 1; frame <= 64 && caught_at == 0; ++frame) {
+            cache.NextFrame();
+            const CachedTexture* t = cache.Get(key);
+            REQUIRE(t != nullptr);
+            if (t->generation != generation) caught_at = frame;
+        }
+        if (rolling) {
+            CHECK(caught_at == 19);
+            CHECK(cache.stats().spotted == 1);
+            CHECK(cache.stats().rolled == 1);
+        } else {
+            CHECK(caught_at == 0);  // (the 16 pieces alone never see it)
+            CHECK(cache.stats().spotted == 0);
+        }
+    }
+    // a whole new texture in the same place: the pieces see it at the first frame
+    gpu_capture::CaptureHost host;
+    PlaceI8(host, kFcram + 0x1000, tile);
+    const CacheKey key{kFcram + 0x1000, Format::I8, 64, 64};
+    TextureCache cache(host, {.check_all_on_notify = false});
+    REQUIRE(cache.Get(key) != nullptr);
+    Bytes other(4096);
+    for (size_t k = 0; k < other.size(); ++k) other[k] = static_cast<u8>(k * 13 + 1);
+    PlaceI8(host, kFcram + 0x1000, other);
+    cache.NextFrame();
+    REQUIRE(cache.Get(key) != nullptr);
+    CHECK(cache.stats().spotted == 1);
+    CHECK(cache.stats().rolled == 0);
+}
+
+TEST_CASE("a notification looks only near its range, and still finds a big texture that begins long before it") {
+    gpu_capture::CaptureHost host;
+    const Bytes big = PatternTile(128 * 128 * 4);
+    REQUIRE(host.WriteBoth(kFcram + 0x10000, big.data(), static_cast<u32>(big.size())));  // 0x10000..0x20000
+    PlaceI8(host, kFcram + 0x40000, PatternTile(64));
+    PlaceI8(host, kFcram + 0x08000, PatternTile(64));
+    const CacheKey a{kFcram + 0x10000, Format::RGBA8, 128, 128};
+    const CacheKey b{kFcram + 0x40000, Format::I8, 8, 8};
+    const CacheKey c{kFcram + 0x08000, Format::I8, 8, 8};
+    TextureCache cache(host, {.check_all_on_notify = false, .spot_check = false});
+    REQUIRE(cache.Get(a) != nullptr);
+    REQUIRE(cache.Get(b) != nullptr);
+    REQUIRE(cache.Get(c) != nullptr);
+    cache.OnFlush(kFcram + 0x1FFF0, 4);  // the big one's last bytes only
+    cache.Get(a);
+    cache.Get(b);
+    cache.Get(c);
+    CHECK(cache.stats().rehashes == 1);
+    cache.OnGpuWrite(kFcram + 0x08000, 0x40001);  // all three
+    cache.Get(a);
+    cache.Get(b);
+    cache.Get(c);
+    CHECK(cache.stats().rehashes == 4);
+    cache.OnInvalidate(kFcram, 0x8000);  // ends where c begins: none
+    cache.Get(c);
+    CHECK(cache.stats().rehashes == 4);
+}
+
+TEST_CASE("Sweep lets go of the entries no draw used, and one made again never takes an old generation") {
+    gpu_capture::CaptureHost host;
+    PlaceI8(host, kFcram + 0x1000, PatternTile(64));
+    PlaceI8(host, kFcram + 0x3000, PatternTile(64));
+    const CacheKey a{kFcram + 0x1000, Format::I8, 8, 8};
+    const CacheKey b{kFcram + 0x3000, Format::I8, 8, 8};
+    TextureCache cache(host);
+    const u32 generation = cache.Get(a)->generation;
+    for (int i = 0; i < 10; ++i) {
+        cache.NextFrame();
+        cache.Get(b);
+    }
+    CHECK(cache.Sweep(5, 1000) == 1);  // a: unused for 10 frames
+    CHECK(cache.size() == 1);
+    CHECK(cache.stats().swept == 1);
+    const CachedTexture* again = cache.Get(a);
+    REQUIRE(again != nullptr);
+    CHECK(again->generation != generation);  // (an image that still holds the old contents is uploaded again)
+    CHECK(cache.stats().misses == 3);
+}
+
 // ===============================================================================================
 // Texture registers
 // ===============================================================================================

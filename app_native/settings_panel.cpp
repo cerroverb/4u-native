@@ -45,6 +45,7 @@
 #include "app_settings.h"
 #include "content.h"
 #include "controls.h"
+#include "first_run.h"
 #include "game_options.h"
 #include "gpu_driver.h"
 #include "imgui.h"
@@ -70,6 +71,33 @@ const char* const page_names[PAGES] = {"Graphics & Audio", "Display", "Controls"
 namespace rooms = mh4n::rooms;
 void credits_show();  // (the credits shown when the app opens: draw_credits, further down)
 void thanks_show();   // (the thanks card: draw_thanks, further down)
+void online_then(const std::string& server, std::function<void()> fn);  // (the notice about playing online: the same card)
+// The notice about playing online (the card's, further down; the same text in MHGU for Android): %s the server
+const char* const ONLINE_TEXT = "Playing online connects this device to %s. As with any server on the internet, the servers it connects to can see your IP address. You can choose another server, or none, in the menu's Multiplayer tab.";
+// The lobby that lists public rooms ([Network] Lobby): empty is this one, a community lobby where most of the game's
+// players list their rooms (run by players, not by this project), so a later default reaches everyone who kept it;
+// "Off" is none, anything else the one typed. The same short list as MHGU's hub server: the default, Custom..., Off
+const char* const DEFAULT_LOBBY = "http://88.198.47.46:5000";
+const char* const LOBBY_LIST[] = {DEFAULT_LOBBY};
+bool lobby_off(const std::string& setting) { return !strcasecmp(setting.c_str(), "off"); }
+std::string lobby_url(const std::string& setting) { return lobby_off(setting) ? "" : setting.empty() ? DEFAULT_LOBBY : setting; }
+// [Network] RecentLobby1..: how many lobbies typed and saved the Lobby row lists, the last first (MHGU's LDN_RECENT)
+constexpr int kRecentLobbies = 24;
+// A lobby the player typed: not the default (empty), not Off, none of LOBBY_LIST's
+bool typed_lobby(const std::string& v) {
+    if (v.empty() || lobby_off(v) || v.find_first_of("\r\n") != std::string::npos) return false;
+    for (const char* l : LOBBY_LIST)
+        if (!strcasecmp(v.c_str(), l)) return false;
+    return true;
+}
+bool has_lobby(const std::vector<std::string>& list, const std::string& v) {
+    for (const auto& l : list)
+        if (!strcasecmp(l.c_str(), v.c_str())) return true;
+    return false;
+}
+bool g_online_seen = false;           // (the notice was let go: now, or in an earlier session as the menu opens)
+std::string g_online_server;          // (the server it names)
+std::function<void()> g_online_then;  // (what waits for it)
 const char* const THANKS_BODY = "To everyone who created this game, and to everyone who kept it alive over the years: thank you. This work is a love letter to the Monster Hunter series, with my deepest respect to the people who develop it.";
 enum { THEME_HUNTER, THEME_GOLD, THEME_BLUE };
 const char* const THEME_KEYS[] = {"hunter", "gold", "blue"};
@@ -92,16 +120,18 @@ struct TouchButton {
 };
 const TouchButton TOUCH_BUTTONS[] = {
     {"attacks", "Attacks (A / X)", true, 0},        {"dodge", "Evade (B)", true, 0},
-    {"guard", "Guard / dash (R)", true, 0},         {"sheathe", "Sheathe (Y)", true, 0},
+    {"guard", "Guard / dash (R)", true, 0},         {"guard_slide", "Keep guarding while sliding", false, 0},
+    {"sheathe", "Sheathe (Y)", true, 0},
     {"zr", "Kick (ZR)", true, 0},                   {"zl", "Target (ZL)", true, 0},
     {"l", "Camera (L)", true, 0},                   {"stick", "Movement stick", true, 0},
+    {"stick_run", "Run with the stick", true, 0},
     {"select", "SELECT in hunts", false, 0},
     {"dpad", "D-pad in hunts", false, 0},           {"ranged", "Layout for bows and bowguns", true, 1},
     {"fire", "Fire / shoot", true, 1},              {"second", "Reload / melee", true, 1},
     {"aim", "Aim", true, 1},                        {"ranged_special", "Crouching fire / coating", true, 1},
     {"ammo", "Ammo arrows", true, 1},               {"start", "Game menu (START)", true, 2},
     {"screen", "Touch screen button", true, 2},
-    {"menu_dpad", "D-pad in menus", true, 2},       {"item_arrows", "Item bar arrows", true, 0},
+    {"menu_dpad", "Menu pad", true, 2},             {"item_arrows", "Item bar arrows", true, 0},
 };
 constexpr int TB = sizeof TOUCH_BUTTONS / sizeof *TOUCH_BUTTONS;
 
@@ -113,16 +143,22 @@ struct Draft {
     // mh4u.ini (game_options.h), as the file has them
     std::string fps, steady, widescreen, hud_edges, bloom, motion_blur, depth_of_field, radial_blur, haze, dither, antialiasing, fov;
     std::string kick, target, skip, skip_end, skip_end_hold;
+    std::string qol_gather, qol_flex, qol_sharpen, qol_rewards;  // (the Cheats page's comforts: hooks.cpp Qol*)
     // mh4u-app.ini (app_settings.h)
     int scale = kRenderScaleDefault, volume = 100;  // scale: the 3D resolution, % of the phone's (0: the 3DS's)
     int low_end = LOW_END_OFF;
     bool stats = false, shadows = true, reverb = true;
+    bool adreno_fix = true;  // [Graphics] AdrenoFix: auto (first_run.h adreno_fix_applies; its row shows only there)
     bool screen_shown = true;
     int layout = 0, corner = 0, size = 42, opacity = 100;
     bool haptics = true;
     bool lock_on = true;  // [Controls] LockOn: a long press on L, a pad's right stick click (touch.cpp)
+    bool gyro_aim = false;  // [Controls] GyroAim, GyroSensitivity (tenths: 2..30): the gyro's aim (controls.cpp)
+    int gyro_sens = 10;
     int language = 0, theme = THEME_HUNTER, menu_scale = 100;
     bool pause_background = true;
+    bool updates = true;  // [Interface] Updates: the start looks for a newer release once a day (Notices.java)
+    bool pause_menu = true;  // [Interface] PauseInMenu: the game waits while this menu is open, playing alone (android_main)
     // the touch controls (touch_layout.txt)
     int controls = 0, touch_opacity = 80, attack_style = 0;
     float camera = 1.0f;
@@ -132,8 +168,11 @@ struct Draft {
     int face = 0, right_stick = 0, stick_speed = 100, r3 = 0, deadzone = 10, town = 0;
     bool invert_x = false, invert_y = false;
     std::string combo[6];  // the combined buttons: "A+X" (touch.cpp's combo1..combo6)
-    // mh4u-app.ini's [Network] (net_rooms.h): no room and no lobby come with the app
+    // mh4u-app.ini's [Network] (net_rooms.h): no room comes with the app; the lobby: empty the default (lobby_url); the
+    // lobbies typed and saved, the last first ([Network] RecentLobby1..: kRecentLobbies of them, none of LOBBY_LIST's;
+    // the same in the draft and as saved: taking one out is done at once, forget_lobby)
     std::string nick, address, password, lobby, host_port = "24872";
+    std::vector<std::string> lobbies;
     int slots = 4;
     bool notices = true;
     // the GPU driver for the next start (gpu_driver.h): its folder; empty: the system's
@@ -160,10 +199,11 @@ Draft defaults() {
     Draft d;
     d.fps = "60", d.widescreen = "match", d.hud_edges = "1";
     d.bloom = d.motion_blur = d.depth_of_field = d.radial_blur = d.haze = "on";
-    d.dither = render_scale_times(d.scale) > 1 ? "off" : "on";  // (a grid above 1x)
+    d.dither = render_scale_used(d.scale, d.adreno_fix) > 1 ? "off" : "on";  // (a grid above 1x)
     d.antialiasing = "on", d.fov = "1";
     d.steady = "off";
     d.kick = "ZR", d.target = "ZL", d.skip = "ZR", d.skip_end = "ZL+ZR", d.skip_end_hold = "1.0";
+    d.qol_gather = d.qol_flex = d.qol_sharpen = d.qol_rewards = "off";
     for (int i = 0; i < TB; i++) d.show[i] = TOUCH_BUTTONS[i].on;
     return d;
 }
@@ -197,7 +237,7 @@ int index_of(const char* const (&keys)[N], const std::string& value) {
 
 // ---------------------------------------------------------------- the menu's state
 enum class View { Main, Buttons, ComboEdit, Keyboard, CloseChanges, Restart, Exit, Reset, RemoveDriver, RemoveMod, RemoveCheat, Conflicts,
-                  PadList, PadMap };
+                  PadList, PadMap, OpenSite, OpenDiscord };
 struct Row {
     std::string id, title, value;
     std::string key, help;  // its option's name (the explanation: HELP), or an explanation of its own
@@ -213,6 +253,7 @@ struct Row {
     ImU32 ink = 0;                         // a note's colour, a row's value's (0: as the others)
     std::function<void(int)> adjust;
     std::function<void()> activate;
+    std::function<void()> remove;          // a picker's remembered choice: the x at its right takes it out of the list
 };
 // The text being typed (View::Keyboard): the keys a filter lets in, at most `capacity` bytes; commit takes it (or
 // says why not, and the view stays)
@@ -242,6 +283,8 @@ struct Dropdown {
     std::vector<std::string> names;
     int selected = 0;
     std::function<void(int)> set;
+    std::vector<char> removable;      // the choices remembered (the lobbies typed): an x at the right of each
+    std::function<void(int)> remove;  // takes one of them out of its list
 };
 // The sizes, from the screen's height (touch_panel, each frame): a row, a tab and a button about 0.09 of it
 struct Metrics {
@@ -264,6 +307,7 @@ struct State {
     Keyboard keyboard;
     std::vector<Target> targets;
     unsigned seen_line = 0;  // the room's last line shown in the menu (no notice over the game for it)
+    std::string lobby_asked;  // the lobby the Multiplayer tab asked by itself since the menu opened
     bool restore_scroll = false;
     float scroll = 0;
     int focus_scroll_frames = 0;
@@ -292,6 +336,9 @@ struct State {
     // opened it reaches ImGui a frame or two late (the button lies under a tab), as the Back key's does (back_keys)
     double opened_at = 0;
     bool armed = false;
+    // A remembered lobby taken out of the picker (its x): the picker of that row opened again, fresh, at that place
+    std::string reopen;
+    int reopen_at = 0;
 } s;
 std::atomic<bool> request_back{false}, request_close{false}, closed_now{false}, is_dirty{false};
 bool settled() { return ImGui::GetTime() - s.opened_at > .25; }
@@ -419,6 +466,80 @@ void sign(ImDrawList* dl, ImVec2 c, float r, bool plus, ImU32 col, float thick) 
     dl->AddRectFilled(ImVec2(c.x - r, c.y - thick * .5f), ImVec2(c.x + r, c.y + thick * .5f), col);
     if (plus) dl->AddRectFilled(ImVec2(c.x - thick * .5f, c.y - r), ImVec2(c.x + thick * .5f, c.y + r), col);
 }
+// The header's button to the project's page: GitHub's mark, a disc with the cat cut out of it, drawn here in the
+// glyphs' colour (no artwork, no brand colours; the same in the MHGU port). r: the disc's radius
+void github_mark(ImDrawList* dl, ImVec2 c, float r, ImU32 col) {
+    // (the cat's outline in the disc's radius, y down: from the right of its body, where it leaves the disc at the
+    // bottom, up over the head and the ears and down the left with its arm; the disc's edge closes it from the left of
+    // the body round to the right, clockwise as ImGui fills: one shape, its edges smoothed)
+    static const float cat[][2] = {
+        {.25f, .72f}, {.244f, .575f}, {.22f, .5f}, {.18f, .44f}, {.263f, .428f}, {.345f, .405f},
+        {.422f, .375f}, {.49f, .33f}, {.55f, .265f}, {.595f, .18f}, {.625f, .077f}, {.635f, -.05f},
+        {.61f, -.2f}, {.53f, -.32f}, {.552f, -.411f}, {.549f, -.49f}, {.52f, -.585f}, {.457f, -.583f},
+        {.371f, -.554f}, {.245f, -.485f}, {.125f, -.51f}, {0, -.52f}, {-.125f, -.51f}, {-.245f, -.485f},
+        {-.371f, -.554f}, {-.457f, -.583f}, {-.52f, -.585f}, {-.549f, -.49f}, {-.552f, -.411f}, {-.53f, -.32f},
+        {-.61f, -.2f}, {-.635f, -.05f}, {-.625f, .077f}, {-.595f, .18f}, {-.55f, .265f}, {-.49f, .33f},
+        {-.422f, .375f}, {-.345f, .405f}, {-.263f, .428f}, {-.18f, .44f}, {-.22f, .5f}, {-.244f, .575f},
+        {-.3f, .594f}, {-.377f, .6f}, {-.46f, .573f}, {-.535f, .49f}, {-.59f, .43f}, {-.69f, .39f},
+        {-.733f, .416f}, {-.6875f, .456f}, {-.624f, .525f}, {-.585f, .598f}, {-.56f, .646f}, {-.5f, .695f},
+        {-.4f, .724f}, {-.25f, .715f}};
+    const float bx = .25f, by = std::sqrt(1 - bx * bx);  // (where the body leaves the disc)
+    dl->PathArcTo(c, r, std::atan2(by, -bx), std::atan2(by, bx) + 2 * IM_PI, 40);
+    for (const auto& p : cat) dl->PathLineTo(ImVec2(c.x + p[0] * r, c.y + p[1] * r));
+    dl->PathFillConcave(col);
+}
+// The header's button to the community's Discord: Discord's mark, the controller-shaped face with its two eyes, drawn
+// like GitHub's in the glyphs' colour (no artwork, no brand colours; the same in the MHGU port). r: as GitHub's disc's
+// radius; the face a little wider than that disc and shorter
+void discord_mark(ImDrawList* dl, ImVec2 c, float r, ImU32 col) {
+    // (the face's left half in its half-width, y down: from the middle of its top along the top and down the left side
+    // to the eyes' line (upper), then on round the left horn and along the mouth to the middle of its bottom (lower); the
+    // right half mirrors it. ImGui fills no holes, so the face is two shapes, above and below the eyes' line, each with
+    // its halves of the eyes cut out of that edge, clockwise as ImGui fills; the upper one reaches a pixel below the
+    // line, so no seam shows between them)
+    static const float upper[][2] = {{0, -.668f},    {-.229f, -.65f},  {-.282f, -.758f}, {-.493f, -.708f}, {-.695f, -.631f},
+                                     {-.8f, -.457f}, {-.881f, -.285f}, {-.94f, -.115f},  {-.981f, .076f}};
+    static const float lower[][2] = {{-.981f, .076f}, {-.999f, .28f},  {-.992f, .504f}, {-.882f, .578f}, {-.766f, .644f},
+                                     {-.628f, .707f}, {-.485f, .758f}, {-.377f, .583f}, {-.548f, .502f}, {-.506f, .47f},
+                                     {-.393f, .516f}, {-.259f, .555f}, {-.122f, .577f}, {0, .583f}};
+    const int nu = IM_ARRAYSIZE(upper), nl = IM_ARRAYSIZE(lower);
+    const float w = r * 1.08f, ex = .332f * w, ey = .076f * w, rx = .18f * w, ry = .2f * w, under = 1;
+    auto at = [&](float x, float y) { return ImVec2(c.x + x * w, c.y + y * w); };
+    for (int i = nu - 1; i >= 0; i--) dl->PathLineTo(at(upper[i][0], upper[i][1]));  // (up the left side and along the top,
+    for (int i = 1; i < nu; i++) dl->PathLineTo(at(-upper[i][0], upper[i][1]));       // then down the right side)
+    dl->PathLineTo(ImVec2(c.x - upper[nu - 1][0] * w, c.y + ey + under));
+    for (float x : {ex, -ex}) {  // (back along the line, over the top of each eye)
+        dl->PathLineTo(ImVec2(c.x + x + rx, c.y + ey + under));
+        dl->PathEllipticalArcTo(ImVec2(c.x + x, c.y + ey), ImVec2(rx, ry), 0, 0, -IM_PI);
+        dl->PathLineTo(ImVec2(c.x + x - rx, c.y + ey + under));
+    }
+    dl->PathLineTo(ImVec2(c.x + upper[nu - 1][0] * w, c.y + ey + under));
+    dl->PathFillConcave(col);
+    for (float x : {-ex, ex})  // (along the line, under each eye, then down the right side and back round the left)
+        dl->PathEllipticalArcTo(ImVec2(c.x + x, c.y + ey), ImVec2(rx, ry), 0, IM_PI, 0);
+    for (int i = 0; i < nl; i++) dl->PathLineTo(at(-lower[i][0], lower[i][1]));
+    for (int i = nl - 2; i >= 0; i--) dl->PathLineTo(at(lower[i][0], lower[i][1]));
+    dl->PathFillConcave(col);
+}
+// The project's official page and its community's Discord, the only links the project gives: in the phone's browser
+// (SDL_OpenURL: an Android VIEW intent, which the Discord app takes if it is there), from the header's GitHub and
+// Discord buttons once View::OpenSite's or View::OpenDiscord's Open says so (the browser can make Android close the
+// game on a phone with little memory). With nothing to open it (a handheld or a TV box with no browser) the menu says
+// so, as in the MHGU port
+constexpr const char* OFFICIAL_PAGE = "https://github.com/khorne-hub/4u-native";
+constexpr const char* DISCORD_INVITE = "https://discord.gg/sk5xEjEMwF";  // (an invite that never expires)
+constexpr const char* NO_BROWSER = "No app here can open web pages.";
+void open_link(const char* what, const char* url) {
+    if (SDL_OpenURL(url)) {
+        std::fprintf(stderr, "[Info] App: the %s went to the browser (%s)\n", what, url);
+        if (s.error == tr(NO_BROWSER)) s.error.clear();
+    } else {
+        std::fprintf(stderr, "[Info] App: the %s could not be opened (%s): %s\n", what, url, SDL_GetError());
+        s.error = tr(NO_BROWSER);
+    }
+}
+void open_official_page() { open_link("official page", OFFICIAL_PAGE); }
+void open_discord() { open_link("community's Discord", DISCORD_INVITE); }
 // On / Off: a slot whose stud slides to the right and lights it green when on
 void switch_mark(ImDrawList* dl, const ImRect& r, bool on) {
     const Look k = touch_look();
@@ -456,6 +577,15 @@ void draw_frame(ImGuiWindow* w) {
 }
 
 // ---------------------------------------------------------------- the draft
+// [Network] RecentLobby1..: the lobbies typed and saved, as written (doubles, Off and the short list's left out)
+std::vector<std::string> saved_lobbies() {
+    std::vector<std::string> out;
+    for (int i = 1; i <= kRecentLobbies; i++) {
+        const std::string v = app_setting("Network", ("RecentLobby" + std::to_string(i)).c_str());
+        if (typed_lobby(v) && !has_lobby(out, v)) out.push_back(v);
+    }
+    return out;
+}
 // The options as they are now: mh4u.ini's, mh4u-app.ini's, the touch controls'
 Draft load() {
     const Draft f = defaults();  // (a key the files lack: as the app comes, which android_main.cpp makes it at the start)
@@ -476,8 +606,13 @@ Draft load() {
     d.skip = game_option_get("skip", f.skip);
     d.skip_end = game_option_get("skip_end", f.skip_end);
     d.skip_end_hold = game_option_get("skip_end_hold", f.skip_end_hold);
+    d.qol_gather = game_option_get("qol_hold_gather", f.qol_gather);
+    d.qol_flex = game_option_get("qol_flex_cancel", f.qol_flex);
+    d.qol_sharpen = game_option_get("qol_sharpen_cancel", f.qol_sharpen);
+    d.qol_rewards = game_option_get("qol_rewards_no_limit", f.qol_rewards);
     d.scale = std::clamp(app_setting_int("Graphics", "RenderScale", kRenderScaleDefault), 0, 100);
-    d.dither = game_option_get("dither", render_scale_times(d.scale) > 1 ? "off" : "on");  // (android_main.cpp)
+    d.adreno_fix = app_adreno_fix();
+    d.dither = game_option_get("dither", render_scale_used(d.scale, d.adreno_fix) > 1 ? "off" : "on");  // (android_main.cpp)
     d.low_end = app_low_end_level(app_setting("Graphics", "LowEnd", "off"));
     d.stats = app_setting_bool("Graphics", "FpsCounter", false);
     d.shadows = app_setting_bool("Graphics", "Shadows", true);
@@ -498,10 +633,14 @@ Draft load() {
     d.town = std::max(0, index_of(TOWN_KEYS, app_setting("Controls", "TownMenu", "select")));
     d.deadzone = std::clamp(app_setting_int("Controls", "Deadzone", 10), 0, 30);
     d.lock_on = app_setting_bool("Controls", "LockOn", true);
+    d.gyro_aim = app_setting_bool("Controls", "GyroAim", false);
+    d.gyro_sens = std::clamp((int)std::lround(std::strtof(app_setting("Controls", "GyroSensitivity", "1.0").c_str(), nullptr) * 10), 2, 30);
     d.language = std::max(0, index_of(LANGUAGE_KEYS, app_setting("Interface", "Language", "auto")));
     d.theme = std::max(0, index_of(THEME_KEYS, app_setting("Interface", "Theme", "hunter")));
     d.menu_scale = std::clamp(app_setting_int("Interface", "Scale", 100), 50, 200);
     d.pause_background = app_setting_bool("Interface", "PauseInBackground", true);
+    d.updates = app_setting_bool("Interface", "Updates", true);
+    d.pause_menu = app_setting_bool("Interface", "PauseInMenu", true);
     std::string v = touch_setting("controls");
     d.controls = std::max(0, index_of(CONTROLS_KEYS, v));
     v = touch_setting("opacity");
@@ -519,6 +658,7 @@ Draft load() {
     d.address = app_setting("Network", "Address");
     d.password = app_setting("Network", "Password");
     d.lobby = app_setting("Network", "Lobby");
+    d.lobbies = saved_lobbies();
     d.host_port = std::to_string(std::clamp(app_setting_int("Network", "HostPort", rooms::kDefaultPort), 1, 65535));
     d.slots = std::clamp(app_setting_int("Network", "Slots", 4), 2, 16);
     d.notices = app_setting_bool("Network", "Notices", true);
@@ -557,6 +697,11 @@ void set_network(const Draft& d) {
     app_setting_set("Network", "Address", d.address);
     app_setting_set("Network", "Password", d.password);
     app_setting_set("Network", "Lobby", d.lobby);
+    for (int i = 0; i < kRecentLobbies; i++) {  // (only those there are)
+        const std::string key = "RecentLobby" + std::to_string(i + 1);
+        if (i < (int)d.lobbies.size()) app_setting_set("Network", key.c_str(), d.lobbies[i]);
+        else app_setting_remove("Network", key.c_str());
+    }
     app_setting_set("Network", "HostPort", d.host_port);
     app_setting_set_int("Network", "Slots", d.slots);
     app_setting_set("Network", "Notices", d.notices ? "on" : "off");
@@ -586,7 +731,9 @@ void frame_cap(float fps) {
     env->DeleteLocalRef(activity);
 }
 
+void remember_typed(Draft& d, const Draft& before);  // (the lobbies typed and saved: with the Lobby row, further down)
 bool save() {
+    remember_typed(s.draft, s.saved);
     const Draft &d = s.draft, &o = s.saved;
     // the port's: each one changed (they apply on the game's thread at its next frame, or at the next start)
     const std::pair<const char*, std::string Draft::*> game[] = {
@@ -596,18 +743,23 @@ bool save() {
         {"radial_blur", &Draft::radial_blur}, {"haze", &Draft::haze},     {"dither", &Draft::dither},
         {"antialiasing", &Draft::antialiasing}, {"fov", &Draft::fov},
         {"kick", &Draft::kick},     {"target", &Draft::target},           {"skip", &Draft::skip},
-        {"skip_end", &Draft::skip_end}, {"skip_end_hold", &Draft::skip_end_hold}};
+        {"skip_end", &Draft::skip_end}, {"skip_end_hold", &Draft::skip_end_hold},
+        {"qol_hold_gather", &Draft::qol_gather}, {"qol_flex_cancel", &Draft::qol_flex},
+        {"qol_sharpen_cancel", &Draft::qol_sharpen}, {"qol_rewards_no_limit", &Draft::qol_rewards}};
     for (const auto& [key, field] : game)
         if (d.*field != o.*field) game_option_set(key, d.*field);
     // the app's
     static const char* const LOW_END_KEYS[] = {"off", "on", "toaster"};
     app_setting_set_int("Graphics", "RenderScale", d.scale);
+    if (d.adreno_fix != o.adreno_fix) app_setting_set("Graphics", "AdrenoFix", d.adreno_fix ? "auto" : "off");
     app_setting_set("Graphics", "LowEnd", LOW_END_KEYS[std::clamp(d.low_end, 0, 2)]);
     app_setting_set("Graphics", "FpsCounter", d.stats ? "on" : "off");
     app_setting_set("Graphics", "Shadows", d.shadows ? "on" : "off");
     app_setting_set_int("Audio", "Volume", d.volume);
     app_setting_set("Audio", "Reverb", d.reverb ? "on" : "off");
     app_setting_set("Interface", "PauseInBackground", d.pause_background ? "on" : "off");
+    app_setting_set("Interface", "Updates", d.updates ? "on" : "off");
+    app_setting_set("Interface", "PauseInMenu", d.pause_menu ? "on" : "off");
     app_setting_set("Display", "TouchScreen", d.screen_shown ? "shown" : "hidden");
     app_setting_set("Display", "Layout", LAYOUT_KEYS[d.layout]);
     app_setting_set("Display", "Corner", CORNER_KEYS[d.corner]);
@@ -623,6 +775,12 @@ bool save() {
     app_setting_set("Controls", "TownMenu", TOWN_KEYS[d.town]);
     app_setting_set_int("Controls", "Deadzone", d.deadzone);
     app_setting_set("Controls", "LockOn", d.lock_on ? "on" : "off");
+    app_setting_set("Controls", "GyroAim", d.gyro_aim ? "on" : "off");
+    {
+        char sens[16];
+        std::snprintf(sens, sizeof sens, "%.1f", d.gyro_sens / 10.0f);
+        app_setting_set("Controls", "GyroSensitivity", sens);
+    }
     app_setting_set("Interface", "Language", LANGUAGE_KEYS[d.language]);
     app_setting_set("Interface", "Theme", THEME_KEYS[d.theme]);
     app_setting_set_int("Interface", "Scale", d.menu_scale);
@@ -673,9 +831,10 @@ bool save() {
 
 // A room joined or hosted: the Multiplayer tab's options it was done with are kept at once (the others wait for Save)
 void remember_network() {
+    remember_typed(s.draft, s.saved);
     Draft& o = s.saved;
     const Draft& d = s.draft;
-    o.nick = d.nick, o.address = d.address, o.password = d.password, o.lobby = d.lobby;
+    o.nick = d.nick, o.address = d.address, o.password = d.password, o.lobby = d.lobby, o.lobbies = d.lobbies;
     o.host_port = d.host_port, o.slots = d.slots;
     set_network(o);
     if (!app_settings_save()) s.error = tr("Could not save the settings.");
@@ -737,7 +896,8 @@ void first_page(int page) {
 }
 bool confirmation() {
     return s.view == View::CloseChanges || s.view == View::Restart || s.view == View::Exit || s.view == View::Reset ||
-           s.view == View::RemoveDriver || s.view == View::RemoveMod || s.view == View::RemoveCheat;
+           s.view == View::RemoveDriver || s.view == View::RemoveMod || s.view == View::RemoveCheat || s.view == View::OpenSite ||
+           s.view == View::OpenDiscord;
 }
 void close_menu(bool* open) {
     *open = false;
@@ -881,9 +1041,12 @@ void accept_keyboard() {
 }
 
 // ---------------------------------------------------------------- the rows
-void choices(const Row& row, std::vector<std::string> names, int selected, std::function<void(int)> set) {
+// A row's choices in the picker; selected: the one it has now (-1: none of them). removable: those remembered, which
+// remove takes out of their list (an x beside each)
+void choices(const Row& row, std::vector<std::string> names, int selected, std::function<void(int)> set,
+             std::vector<char> removable = {}, std::function<void(int)> remove = {}) {
     int first = std::clamp(selected, 0, (int)names.size() - 1);
-    s.dropdown = {true, false, row.id, row.title, std::move(names), selected, std::move(set)};
+    s.dropdown = {true, false, row.id, row.title, std::move(names), selected, std::move(set), std::move(removable), std::move(remove)};
     focus("choice." + std::to_string(first));
 }
 void add_bool(std::vector<Row>& rows, const char* id, const char* name, bool* value, const char* key = nullptr) {
@@ -994,6 +1157,7 @@ void reset_page() {
     switch (s.page) {
     case PAGE_GRAPHICS:
         c.fps = f.fps, c.scale = f.scale, c.widescreen = f.widescreen, c.hud_edges = f.hud_edges, c.low_end = f.low_end;
+        c.adreno_fix = f.adreno_fix;
         c.bloom = f.bloom, c.motion_blur = f.motion_blur, c.depth_of_field = f.depth_of_field;
         c.radial_blur = f.radial_blur, c.haze = f.haze, c.dither = f.dither, c.volume = f.volume, c.stats = f.stats;
         c.antialiasing = f.antialiasing, c.shadows = f.shadows, c.reverb = f.reverb;
@@ -1005,7 +1169,7 @@ void reset_page() {
         break;
     case PAGE_CONTROLS:
         c.controls = f.controls, c.touch_opacity = f.touch_opacity, c.camera = f.camera, c.attack_style = f.attack_style;
-        c.show = f.show, c.haptics = f.haptics, c.lock_on = f.lock_on;
+        c.show = f.show, c.haptics = f.haptics, c.lock_on = f.lock_on, c.gyro_aim = f.gyro_aim, c.gyro_sens = f.gyro_sens;
         for (int k = 0; k < 6; k++) c.combo[k] = f.combo[k];
         c.face = f.face, c.right_stick = f.right_stick, c.stick_speed = f.stick_speed, c.r3 = f.r3, c.deadzone = f.deadzone;
         c.town = f.town;
@@ -1024,9 +1188,11 @@ void reset_page() {
         break;
     case PAGE_CHEATS:
         for (char& on : c.cheats) on = 0;
+        c.qol_gather = f.qol_gather, c.qol_flex = f.qol_flex, c.qol_sharpen = f.qol_sharpen, c.qol_rewards = f.qol_rewards;
         break;
     case PAGE_MENU:
         c.language = f.language, c.theme = f.theme, c.menu_scale = f.menu_scale, c.pause_background = f.pause_background;
+        c.updates = f.updates, c.pause_menu = f.pause_menu;
         break;
     case PAGE_ABOUT:  // (nothing to set)
         break;
@@ -1164,7 +1330,26 @@ bool check_port(const std::string& typed, std::string& error) {
     return false;
 }
 
+// An address of a local network (or of this phone): no notice about playing online for it
+bool local_address(const std::string& address) {
+    std::string host;
+    std::uint16_t port;
+    if (!net_parse_address(address, &host, &port)) return true;  // (net_join says what is wrong with it)
+    unsigned a = 0, b = 0, c = 0, d = 0;
+    if (std::sscanf(host.c_str(), "%u.%u.%u.%u", &a, &b, &c, &d) != 4) return !strcasecmp(host.c_str(), "localhost");
+    return a == 10 || a == 127 || (a == 192 && b == 168) || (a == 172 && b >= 16 && b < 32) || (a == 169 && b == 254) ||
+           (a == 100 && b >= 64 && b < 128);  // (the last: a carrier's or a VPN's shared addresses, Tailscale's)
+}
+void join_room_now();
 void join_room() {
+    const std::string address = s.draft.address;
+    if (address.empty() || s.draft.nick.empty() || local_address(address)) {
+        join_room_now();
+        return;
+    }
+    online_then(address, []() { join_room_now(); });
+}
+void join_room_now() {
     Draft& d = s.draft;
     switch (net_join(d.address, d.nick, d.password)) {
     case NetProblem::Nickname: s.error = tr("Choose a nickname first."); focus("net.nick"); return;
@@ -1234,6 +1419,130 @@ void lan_rows(std::vector<Row>& r) {
         };
         r.push_back(std::move(row));
     }
+}
+
+// A lobby the player typed to the front of the list (once; the last one out when it is full)
+void remember_lobby(std::vector<std::string>& list, const std::string& v) {
+    if (!typed_lobby(v)) return;
+    for (auto it = list.begin(); it != list.end(); ++it)
+        if (!strcasecmp(it->c_str(), v.c_str())) {
+            list.erase(it);
+            break;
+        }
+    list.insert(list.begin(), v);
+    if ((int)list.size() > kRecentLobbies) list.resize(kRecentLobbies);
+}
+// Save applies a lobby (or a room joined or hosted does): one the player typed (or picked from the list) goes to the
+// front of the list, only when it changes. The one it replaces is never put back: one taken out of the list stays out,
+// in use or not (the one typed in an older version went in once, at this version's first start: list_older_lobby).
+// The same as MHGU's hub servers and keys (runtime/settings_panel.cpp remember_typed)
+void remember_typed(Draft& d, const Draft& before) {
+    if (d.lobby != before.lobby) remember_lobby(d.lobbies, d.lobby);
+}
+// The lobby typed in an older version, the one in use: in the list once, as if typed and saved now, at this version's
+// first start ([Network] OlderLobbyListed marks it done, written at once); from then on only what is typed and saved
+// goes in. MHGU does the same with its hub server and key, for a file of an older version (runtime/config.c config_load)
+void list_older_lobby() {
+    if (app_setting_bool("Network", "OlderLobbyListed", false)) return;
+    std::vector<std::string> list = saved_lobbies();
+    remember_lobby(list, app_setting("Network", "Lobby"));
+    for (int i = 0; i < kRecentLobbies; i++) {  // (as set_network writes them)
+        const std::string key = "RecentLobby" + std::to_string(i + 1);
+        if (i < (int)list.size()) app_setting_set("Network", key.c_str(), list[i]);
+        else app_setting_remove("Network", key.c_str());
+    }
+    app_setting_set("Network", "OlderLobbyListed", "1");
+    std::string error;
+    if (!app_settings_save(&error)) std::fprintf(stderr, "[Info] App: mh4u-app.ini: %s\n", error.c_str());
+}
+// A remembered lobby out of the list (its x in the picker), at once and in mh4u-app.ini too: it is no option, so Save and
+// leaving without it have nothing to do with it. Then the row's picker again, as the list is now (reopen_picker). The
+// file not written: it stays in the list, as MHGU's forget
+void forget_lobby(const std::string& v, const char* row, int at) {
+    auto out = [&v](Draft& d) {
+        for (auto it = d.lobbies.begin(); it != d.lobbies.end(); ++it)
+            if (!strcasecmp(it->c_str(), v.c_str())) {
+                d.lobbies.erase(it);
+                break;
+            }
+    };
+    Draft saved = s.saved;
+    out(saved);
+    set_network(saved);
+    if (!app_settings_save()) {
+        set_network(s.saved);  // (the file's as it was: in memory too)
+        s.error = tr("Could not save the settings.");
+        return;
+    }
+    out(s.saved);
+    out(s.draft);
+    s.reopen = row, s.reopen_at = at;
+}
+// A remembered choice was taken out: the row's picker opens again with the list as it is now, at the same place
+void reopen_picker(std::vector<Row>& rows) {
+    if (s.reopen.empty()) return;
+    const std::string id = s.reopen;
+    s.reopen.clear();
+    auto it = std::find_if(rows.begin(), rows.end(), [&](const Row& r) { return r.id == id; });
+    if (it == rows.end() || !it->activate) {
+        close_dropdown();
+        return;
+    }
+    auto fn = it->activate;
+    fn();
+    if (s.dropdown.open && !s.dropdown.names.empty())
+        focus("choice." + std::to_string(std::clamp(s.reopen_at, 0, (int)s.dropdown.names.size() - 1)));
+}
+// The lobby: the short list (LOBBY_LIST, the default first), the lobbies typed and saved (the last first: [Network]
+// RecentLobby1..; an x takes one out), Custom... (typed on the keyboard, the last one offered again) and Off, as MHGU's
+// hub server row
+std::string g_custom_lobby;
+void lobby_row(std::vector<Row>& rows) {
+    const std::vector<std::string> used = s.draft.lobbies;
+    const int n = (int)std::size(LOBBY_LIST), m = (int)used.size(), custom = n + m, off = custom + 1;
+    const std::string now = s.draft.lobby;
+    int selected = now.empty() ? 0 : lobby_off(now) ? off : custom;
+    for (int i = 0; i < n; i++)  // (one typed as it is in the list: that one)
+        if (!strcasecmp(now.c_str(), LOBBY_LIST[i])) selected = i;
+    for (int i = 0; i < m && selected == custom; i++)  // (or as one remembered)
+        if (!strcasecmp(now.c_str(), used[i].c_str())) selected = n + i;
+    // (a typed one in use, remembered or not: Custom... starts from it, as MHGU's hub server and key)
+    if (selected >= n && selected <= custom) g_custom_lobby = now;
+    std::vector<std::string> names;
+    std::vector<char> removable(n, 0);
+    for (int i = 0; i < n; i++) names.push_back(i ? std::string(LOBBY_LIST[i]) : std::string(LOBBY_LIST[i]) + "  (" + tr("Default") + ")");
+    for (const auto& v : used) names.push_back(v), removable.push_back(1);
+    names.push_back(selected == custom ? fmt("Custom: %s", now.c_str()) : std::string(tr("Custom...")));
+    names.push_back(tr("Off: no list of public rooms"));
+    removable.resize(names.size(), 0);
+    Row r;
+    r.id = "net.lobby", r.title = tr("Lobby"), r.key = "Lobby";
+    r.value = selected < n ? std::string(LOBBY_LIST[selected]) : selected == off ? std::string(tr("No lobby")) : now;
+    auto set = [n, used, custom, off](int i) {
+        if (i == custom) {
+            open_keyboard(tr("Lobby"), g_custom_lobby, KB_ANY, 200, tr("A lobby's address, as http://name:port."),
+                          [](const std::string& typed, std::string&) {
+                              s.draft.lobby = typed;
+                              if (!typed.empty() && !lobby_off(typed)) g_custom_lobby = typed;
+                              return true;
+                          });
+            return;
+        }
+        s.draft.lobby = i == off ? "Off" : i >= n ? used[i - n] : i ? LOBBY_LIST[i] : "";
+    };
+    // (left / right go through the list, the remembered ones and Off, not Custom..., which opens the keyboard)
+    r.adjust = [selected, custom, off, set](int d) {
+        int at = selected >= custom ? custom : selected;  // (Off, or a custom one, is Custom...'s place here)
+        at = (at + d + custom + 1) % (custom + 1);
+        set(at == custom ? off : at);
+    };
+    Row copy = r;
+    r.menu = true;
+    auto remove = [n, used](int i) {
+        if (i >= n && i - n < (int)used.size()) forget_lobby(used[i - n], "net.lobby", i);
+    };
+    r.activate = [copy, names, selected, set, removable, remove]() { choices(copy, names, selected, set, removable, remove); };
+    rows.push_back(std::move(r));
 }
 
 void network_rows(std::vector<Row>& r) {
@@ -1327,12 +1636,20 @@ void network_rows(std::vector<Row>& r) {
     }
     add_bool(r, "net.notices", "Room messages over the game", &c.notices, "Notices");
     header(r, "net.lobby.head", tr("Public rooms"));
-    add_text(r, "net.lobby", "Lobby", &c.lobby, KB_ANY, 200, "Lobby", c.lobby.empty() ? tr("No lobby") : c.lobby,
-             tr("A lobby's address, as http://name:port. None comes with the app."));
+    lobby_row(r);
+    const std::string url = lobby_url(c.lobby);
     const NetLobby lobby = net_lobby();
-    const bool answered = lobby.done && lobby.url == c.lobby;
+    const bool answered = lobby.done && lobby.url == url;
+    // (asked as the tab shows it, once the notice about playing online was closed: once a menu for each lobby)
+    if (!url.empty() && !lobby.busy && !answered && s.lobby_asked != url && g_online_seen) {
+        s.lobby_asked = url;
+        net_lobby_fetch(url);
+    }
     // (enabled while it asks, or the picked row would vanish under the finger: a second tap waits for the same answer)
-    action(r, "net.refresh", tr("Show its rooms"), []() { net_lobby_fetch(s.draft.lobby); }, !c.lobby.empty(), "Refresh");
+    action(r, "net.refresh", tr("Show its rooms"), []() {
+        const std::string u = lobby_url(s.draft.lobby);
+        online_then(u, [u]() { net_lobby_fetch(u); });
+    }, !url.empty(), "Refresh");
     r.back().value = lobby.busy ? tr("Asking...") : !answered ? "" : lobby.list.ok ? fmt("%d room(s)", (int)lobby.list.rooms.size()) : tr("No answer");
     if (lobby.busy) r.back().ink = touch_look().glow;
     if (answered && !lobby.list.ok) {  // (the runtime's reason, in English, goes to the log)
@@ -1770,8 +2087,8 @@ void mods_rows(std::vector<Row>& r) {
         } else {
             row.value = tr("Doesn't match");
             row.ink = theme().warn;
-            row.help = say("With the code mods turned on here, the game's code is not the code your library was made from: the game won't start. Make the library again on the PC with the same code mods on (step 1 of the guide, answering Yes and choosing the mods), or turn them back as they were.",
-                           "Con los mods de código activados aquí, el código del juego no es el código con que se hizo tu librería: el juego no arranca. Haz la librería de nuevo en la PC con los mismos mods de código activados (el paso 1 de la guía, respondiendo Sí y eligiendo los mods), o déjalos como estaban.");
+            row.help = say("With the code mods turned on here, the game's code is not the code your library was made from: the game won't start. Make the library again on the PC with the same code mods on (step 3 of the guide, answering Yes and choosing the mods), or turn them back as they were.",
+                           "Con los mods de código activados aquí, el código del juego no es el código con que se hizo tu librería: el juego no arranca. Haz la librería de nuevo en la PC con los mismos mods de código activados (el paso 3 de la guía, respondiendo Sí y eligiendo los mods), o déjalos como estaban.");
         }
         r.push_back(std::move(row));
     }
@@ -1848,6 +2165,15 @@ void cheat_rows(std::vector<Row>& r) {
                });
            },
            !list.empty(), "CheatRemove");
+    // jM5557's MH4U QOL mods, done by the port's hooks (hooks.cpp Qol*): no code mod and no new code library
+    header(r, "qol.head", tr("Comforts"));
+    note(r, "qol.note", say("Ideas from jM5557's MH4U QOL mods, done by the app: no mod and no new code library. Off unless you turn them on.",
+                            "Ideas de los mods MH4U QOL de jM5557, hechas por la app: sin mods y sin hacer otra librería de código. Apagadas salvo que las actives."),
+         touch_look().dim);
+    add_switch(r, "qol.gather", "Hold A to gather", &c.qol_gather, "qol_hold_gather");
+    add_switch(r, "qol.flex", "Move to skip the flex", &c.qol_flex, "qol_flex_cancel");
+    add_switch(r, "qol.sharpen", "B cancels sharpening", &c.qol_sharpen, "qol_sharpen_cancel");
+    add_switch(r, "qol.rewards", "No time limit on rewards", &c.qol_rewards, "qol_rewards_no_limit");
 }
 
 std::vector<Row> main_rows(bool* open) {
@@ -1860,7 +2186,7 @@ std::vector<Row> main_rows(bool* open) {
         // (the help of the mode it shows: what each one trades)
         r.back().help = help_of(c.low_end == LOW_END_TOASTER ? "LowEnd.toaster" : c.low_end == LOW_END_ON ? "LowEnd.on" : "LowEnd.off");
         {  // as MHGU's limit row: left / right one frame a second more or less, a tap the common ones
-            static const int presets[] = {30, 60, 90, 120, 144};
+            static const int presets[] = {30, 60, 90, 120, 144, 240};  // (MHGU's same list)
             const int now = fps_of(c.fps);
             Row row;
             row.id = "fps", row.title = tr("Frame rate limit"), row.key = "fps", row.value = std::to_string(now);
@@ -1893,8 +2219,20 @@ std::vector<Row> main_rows(bool* open) {
                 names.push_back(p == 0 ? tr("3DS (1x)") : std::to_string(p) + "% (" + std::to_string(render_scale_times(p)) + "x)");
             add_choice(r, "scale", "3D resolution", pick, names, [](int v) { s.draft.scale = kPercents[v]; }, "RenderScale");
             if (pick < 0) r.back().value = std::to_string(c.scale) + "% (" + std::to_string(render_scale_times(c.scale)) + "x)";
+            r.back().cold = true;
+            // the Adreno fix (first_run.h): only where it applies. While it raises the choice, the row says what is drawn
+            if (adreno_fix_applies()) {
+                const int used = render_scale_used(c.scale, c.adreno_fix);
+                if (used != render_scale_times(c.scale)) {
+                    // ("3DS (1x) · 3x": the row below says why, and the help)
+                    r.back().value += " \xC2\xB7 " + std::to_string(used) + "x";
+                    r.back().help = help_of("RenderScale") + " " + help_of("RenderScale.adreno");
+                }
+                add_choice(r, "adrenofix", "Adreno fix", c.adreno_fix ? 0 : 1, {tr("Auto"), tr("Off")},
+                           [](int v) { s.draft.adreno_fix = v == 0; }, "AdrenoFix");
+                r.back().cold = true;
+            }
         }
-        r.back().cold = true;
         int wide = index_of(WIDE_KEYS, c.widescreen);
         add_choice(r, "wide", "Widescreen", wide, {tr("Match the screen"), "16:9", tr("Off")},
                    [](int v) { s.draft.widescreen = v == 0 ? "match" : v == 1 ? "16:9" : "off"; }, "widescreen", c.widescreen);
@@ -1973,7 +2311,7 @@ std::vector<Row> main_rows(bool* open) {
             for (char on : c.show) shown += on != 0;
             r.back().value = std::to_string(shown) + " / " + std::to_string(TB);
         }
-        action(r, "touch.edit", tr("Customize the layout"),
+        action(r, "touch.edit", tr("Customize controls and HUD"),
                [open]() {
                    if (s.draft == s.saved) {
                        s.closing = true;  // (the editor opens as the menu closes: settings_panel)
@@ -1988,6 +2326,16 @@ std::vector<Row> main_rows(bool* open) {
                            "stamina bars, the sharpness, the name plates, the area's map, the target camera and the item bar.");
         add_bool(r, "haptics", "Vibrate on touch", &c.haptics, "Haptics");
         add_bool(r, "lock_on", "Lock-on (hold L)", &c.lock_on, "LockOn");
+        add_bool(r, "gyro.aim", "Aim with the gyro", &c.gyro_aim, "GyroAim");  // (the MHGU port's the same: names, range, default)
+        if (c.gyro_aim) {
+            Row row;
+            char text[32];
+            snprintf(text, sizeof text, "%.1fx", c.gyro_sens / 10.f);
+            row.id = "gyro.sens", row.title = tr("Gyro sensitivity"), row.key = "GyroSensitivity", row.value = text;
+            row.number = true;
+            row.adjust = [](int d) { s.draft.gyro_sens = std::clamp(s.draft.gyro_sens + d, 2, 30); };
+            r.push_back(std::move(row));
+        }
         // a controller's (controls.h): read as soon as they are saved
         header(r, "pad.head", tr("Controller"));
         add_choice(r, "pad.face", "Face buttons", c.face, {tr("Position"), tr("Label")}, [](int v) { s.draft.face = v; },
@@ -2061,10 +2409,13 @@ std::vector<Row> main_rows(bool* open) {
                    [](int v) { s.draft.theme = v; }, "Theme");
         add_number(r, "menu.scale", "Menu size", &c.menu_scale, 50, 200, 10, "%d%%", "MenuScale");
         add_bool(r, "pause.bg", "Pause in the background", &c.pause_background, "PauseInBackground");
+        add_bool(r, "pause.menu", "Pause in this menu", &c.pause_menu, "PauseInMenu");
+        add_bool(r, "updates", "Check for updates", &c.updates, "Updates");
         header(r, "data.head", tr("Your game"));
+        action(r, "game.folder", tr("Game folder"), []() { app_call_activity("showGameFolder"); }, true, "folder");
+        action(r, "save.folder", tr("Save folder"), []() { app_call_activity("showSaveFolder"); }, true, "savefolder");
         action(r, "save.import", tr("Import save"), []() { app_call_activity("showSaveImport"); }, true, "import");
         action(r, "save.export", tr("Export save"), []() { app_call_activity("showSaveExport"); }, true, "export");
-        action(r, "game.folder", tr("Game folder"), []() { app_call_activity("showGameFolder"); }, true, "folder");
         action(r, "log.share", tr("Share log"), []() { app_call_activity("showShareLog"); }, true, "log");
         header(r, "app.head", tr("The app"));
         action(r, "restart", tr("Restart"), []() { push(View::Restart, "dialog.cancel"); }, true, "restart");
@@ -2254,7 +2605,7 @@ std::vector<Row> rows_for_view(bool* open) {
                 push(View::ComboEdit, "ce.0");
             });
             r.back().value = s.draft.combo[k].empty() ? tr("Empty") : s.draft.combo[k];
-            r.back().help = tr("A button of your own presses several of the game's together (A+X, say). Place it with Customize the layout.");
+            r.back().help = tr("A button of your own presses several of the game's together (A+X, say). Place it with Customize controls and HUD.");
         }
         action(r, "tb.back", tr("Back"), []() { pop(); });
         r.back().arrow = false;
@@ -2307,6 +2658,16 @@ std::vector<Row> rows_for_view(bool* open) {
         pop();
     });
     if (s.view == View::Reset) action(r, "dialog.reset", tr("Reset"), []() { reset_page(); });
+    if (s.view == View::OpenSite)  // (back to where the button was, then the browser: a notice there without one)
+        action(r, "dialog.open", tr("Open"), []() {
+            pop();
+            open_official_page();
+        });
+    if (s.view == View::OpenDiscord)
+        action(r, "dialog.open", tr("Open"), []() {
+            pop();
+            open_discord();
+        });
     if (s.view == View::RemoveMod)
         action(r, "dialog.remove", tr("Remove"), []() { remove_mod(); });
     if (s.view == View::RemoveCheat)
@@ -2360,6 +2721,11 @@ std::vector<Row> dropdown_rows() {
         });
         r.back().current = i == s.dropdown.selected;
         r.back().arrow = false;
+        if (i < (int)s.dropdown.removable.size() && s.dropdown.removable[i] && s.dropdown.remove)
+            r.back().remove = [i]() {
+                auto remove = s.dropdown.remove;
+                remove(i);
+            };
     }
     return r;
 }
@@ -2386,6 +2752,10 @@ const Help HELP[] = {
      "Las sombras de los cazadores, los monstruos y el escenario. Apagado: no se dibujan, más rápido en un teléfono débil. Se aplica al momento."},
     {"RenderScale", "The resolution the 3D picture is drawn at: 100 % is your phone's own, as sharp as its screen shows; less is lighter on the phone. In brackets, the times the 3DS's (400x240) it comes to. 3DS: the console's own, for the weakest phones.",
      "La resolución con que se dibuja la imagen 3D: 100 % es la del teléfono, tan nítida como la muestra su pantalla; menos le exige menos al teléfono. Entre paréntesis, cuántas veces la de la 3DS (400x240) resulta. 3DS: la de la consola, para los teléfonos más débiles."},
+    {"RenderScale.adreno", "With this phone's Adreno driver it is drawn at 3x at least while the Adreno fix is on Auto.",
+     "Con el driver Adreno de este teléfono se dibuja al menos a 3x mientras la corrección de Adreno está en Automático."},
+    {"AdrenoFix", "Some old Adreno drivers draw coloured flashes over the 3D picture at a low 3D resolution: Auto draws it at 3x at least there. If your phone shows no flashes, or for more speed, choose Off.",
+     "Algunos drivers viejos de Adreno dibujan destellos de colores sobre la imagen 3D con una resolución 3D baja: Automático la dibuja al menos a 3x en ese caso. Si tu teléfono no los muestra, o para ganar velocidad, elige No."},
     {"widescreen", "Match the screen: the top screen as wide as your phone's, with nothing left over. 16:9: that shape, with bars on a wider screen. Off: the 3DS's own shape.",
      "Igual a la pantalla: la pantalla superior tan ancha como la del teléfono, sin bordes. 16:9: esa forma, con barras en una pantalla más ancha. No: la forma de la 3DS."},
     {"hud_edges", "On a wide picture the hunting HUD's sides go to the screen's edges: health, stamina and sharpness at the left, the items at the right. Off: it stays in the middle.",
@@ -2393,8 +2763,8 @@ const Help HELP[] = {
     {"bloom", "The glow over the bright parts of the picture. Off: sharper, with more contrast, and a little faster.",
      "El resplandor sobre las partes brillantes de la imagen. Apagado: más nítida, con más contraste, y un poco más rápido."},
     {"motion_blur", "The blending of earlier frames that some effects add.", "La mezcla con cuadros anteriores que agregan algunos efectos."},
-    {"depth_of_field", "The focus blur of cutscenes. It can blur more than it should: off keeps them sharp.",
-     "El desenfoque de las escenas. Puede desenfocar más de la cuenta: apagado las deja nítidas."},
+    {"depth_of_field", "The focus blur of cutscenes. For now they stay sharp with it: the original blurs what is far from the camera's focus, and that part isn't drawn yet. Off skips its work, a little faster.",
+     "El desenfoque de las escenas. Por ahora quedan nítidas con él: el original desenfoca lo que está lejos del foco de la cámara, y esa parte aún no se dibuja. Apagado se ahorra su trabajo, un poco más rápido."},
     {"radial_blur", "The zoom blur around a roaring monster, and in the cutscenes that use it.",
      "El desenfoque radial alrededor de un monstruo que ruge, y en las escenas que lo usan."},
     {"haze", "The heat shimmer of hot areas.", "La reverberación del calor en las zonas calientes."},
@@ -2415,8 +2785,8 @@ const Help HELP[] = {
      "La pantalla táctil de la 3DS: el mapa, los atajos de objetos y los menús del juego. Su botón en la pantalla también la muestra y la oculta."},
     {"Layout", "In a corner: over the picture, which fills the screen. Stacked: under the top screen, as on a 3DS, for a 4:3 screen. Side by side: beside it, for a wide screen.",
      "En una esquina: sobre la imagen, que llena la pantalla. Apiladas: debajo de la pantalla superior, como en la 3DS, para una pantalla 4:3. Lado a lado: al costado, para una pantalla ancha."},
-    {"Corner", "Where the touch screen goes over the picture. The item bar is at the bottom right of the top screen, unless you moved it (Customize the layout).",
-     "Dónde va la pantalla táctil sobre la imagen. La barra de objetos está abajo a la derecha de la pantalla superior, salvo que la hayas movido (Personalizar el diseño)."},
+    {"Corner", "Where the touch screen goes over the picture. The item bar is at the bottom right of the top screen, unless you moved it (Customize controls and HUD).",
+     "Dónde va la pantalla táctil sobre la imagen. La barra de objetos está abajo a la derecha de la pantalla superior, salvo que la hayas movido (Personalizar controles y HUD)."},
     {"Size", "Its height, in percent of the screen's.", "Su altura, en porcentaje de la de la pantalla."},
     {"Opacity", "How solid the touch screen looks over the picture.", "Qué tan sólida se ve la pantalla táctil sobre la imagen."},
     {"fov", "How much of the scene you see: higher shows more around the hunter, lower less. 1.00 is the 3DS's. It applies at once.",
@@ -2430,6 +2800,10 @@ const Help HELP[] = {
     {"editor", "Move and resize each control: drag one, pinch it or use - and + for its size, then Save. Holding the settings button opens it too.",
      "Mueve y cambia el tamaño de cada control: arrástralo, pellízcalo o usa - y + para su tamaño, y luego Guardar. Mantener apretado el botón de opciones también lo abre."},
     {"Haptics", "A short vibration when you press a touch control.", "Una vibración corta al tocar un control."},
+    {"GyroAim", "Aiming a bow or a bowgun (a gun's aim, its scope, crouching fire; a bow's aiming mode), turning the phone turns the aim too, from where it was as the aim began, with what your fingers or the sticks do. A controller with a gyro is read instead of the phone. The gyroscope is read only while you aim.",
+     "Al apuntar con un arco o una ballesta (la mira de la ballesta, su visor, el disparo agachado; el modo de apuntar del arco), girar el teléfono también mueve la mira, desde donde estaba al empezar a apuntar, junto con lo que hagan tus dedos o las palancas. Si el mando tiene giroscopio, se usa el del mando en vez del teléfono. El giroscopio solo se lee mientras apuntas."},
+    {"GyroSensitivity", "How far the aim turns for a turn of the phone or the controller: 1.0x the same angle.",
+     "Cuánto gira la mira por cada giro del teléfono o del mando: 1.0x, el mismo ángulo."},
     {"FaceButtons", "How A, B, X and Y are read on a controller. Position: as on the 3DS, A is the right button and B the bottom one. Label: by the letter printed on each button (on a PlayStation controller, Cross is A). A controller you mapped is read as you mapped it.",
      "Cómo se leen A, B, X e Y en un mando. Posición: como en la 3DS, A es el botón derecho y B el de abajo. Etiqueta: por la letra impresa en cada botón (en un mando de PlayStation, la X es A). Un mando que mapeaste se lee como lo mapeaste."},
     {"RightStick", "Camera: the right stick turns the camera smoothly, as far as you tilt it, without the game's Circle Pad Pro option. C-stick: it is the New 3DS's C-stick, which the game reads only with that option on and turns in steps.",
@@ -2460,8 +2834,16 @@ const Help HELP[] = {
     {"show_ranged_special", "A bowgun's crouching fire. A bow applies its coating.", "El fuego agachado de la ballesta. El arco aplica su capa."},
     {"show_ammo", "Change the ammo or the coating. A swipe up or down on the item bar does it too.",
      "Cambian la munición o la capa. También se puede deslizar hacia arriba o abajo sobre la barra de objetos."},
-    {"show_select", "SELECT during a hunt. MH4U's hunts do without it.", "SELECT durante una cacería. Las cacerías de MH4U no lo necesitan."},
-    {"show_dpad", "The D-pad during a hunt. The game's menus have their own.", "La cruceta durante una cacería. Los menús del juego tienen la suya."},
+    {"show_stick_run", "On: push the movement stick past its edge to run, as before. Slide it up onto the small circle with a padlock that shows above it, which lights up, and lift your thumb there: the run locks and the hunter keeps running forward (steer with the camera), until you touch the stick or the circle again, draw the weapon or open a menu. Off: the stick only walks, and a Run button shows above the attacks instead: it runs while held.",
+     "Activado: empuja la palanca de movimiento más allá de su borde para correr, como siempre. Deslízala hacia arriba hasta el círculo chico con un candado que aparece encima, que se ilumina, y levanta el pulgar ahí: la carrera se fija y el cazador sigue corriendo hacia adelante (giras con la cámara), hasta que vuelvas a tocar la palanca o el círculo, desenvaines o abras un menú. Desactivado: la palanca solo camina, y aparece un botón Correr sobre los ataques: corre mientras lo mantienes."},
+    {"show_guard_slide", "On: with the weapon out, a thumb that lands on Guard and slides onto the attacks keeps guarding (R held), for the moves that need R and an attack together, like a lance's counter or a shield's thrust. Off: the slide lets go of R.",
+     "Activado: con el arma desenvainada, un pulgar que se apoya en Guardia (R) y se desliza a los ataques sigue en guardia (R mantenido), para los movimientos que piden R junto con un ataque, como el contraataque de la lanza o el empujón del escudo. Desactivado: al deslizar se suelta R."},
+    {"show_select", "SELECT during a hunt. MH4U's hunts do without it. While it is off, the menu pad has a small SELECT below it.",
+     "SELECT durante una cacería. Las cacerías de MH4U no lo necesitan. Mientras está desactivado, el pad de menú tiene un SELECT chico debajo."},
+    {"show_dpad", "The D-pad during a hunt. In the game's menus the menu pad takes its place.",
+     "La cruceta durante una cacería. En los menús del juego la reemplaza el pad de menú."},
+    {"show_menu_dpad", "While a menu of the game's is open, a small pad under your right thumb moves its cursor, with L and R above it to turn the pages (and a small SELECT below it while SELECT in hunts is off). The movement stick moves the cursor too. If the pad covers a combined button, move it with Customize controls and HUD.",
+     "Mientras hay un menú del juego abierto, un pad chico bajo el pulgar derecho mueve su cursor, con L y R encima para pasar las páginas (y un SELECT chico debajo mientras SELECT en cacerías está desactivado). La palanca de movimiento también mueve el cursor. Si el pad tapa un botón combinado, muévelo con Personalizar controles y HUD."},
     {"kick", "A button for the kick, which on a 3DS only the touch screen's panel does. The touch controls' kick button is ZR.",
      "Un botón para la patada, que en la 3DS solo hace el panel de la pantalla táctil. El botón de patada de los controles táctiles es ZR."},
     {"target", "A button for the target camera panel: a press puts the camera on the monster, or goes through the large monsters and then off. L then turns the camera to it.",
@@ -2491,16 +2873,22 @@ const Help HELP[] = {
     {"Say", "Writes a line to everyone in the room.", "Escribe una línea para todos los de la sala."},
     {"Notices", "The room's chat, and who comes and goes, show for a few seconds at the top of the screen while you play.",
      "El chat de la sala, y quién entra y sale, se ven unos segundos arriba de la pantalla mientras juegas."},
-    {"Lobby", "The address of a lobby that lists rooms (Azahar's web API), to pick a room from its list. None comes with the app. Empty: none.",
-     "La dirección de un lobby que lista salas (la API web de Azahar), para elegir una sala de su lista. La app no trae ninguno. Vacío: ninguno."},
+    {"Lobby", "The lobby that lists public rooms (Azahar's web API): a tap on a room joins it. The default, http://88.198.47.46:5000, is where most of the game's players list their rooms; it is run by players, not by this project. Custom: type another, as http://name:port. Off: no list (rooms by address and on this Wi-Fi still work). The lobbies you type and save stay in this list, the last one first (up to 24): the × beside one takes it out (with a controller, the button that saves).",
+     "El lobby que lista las salas públicas (la API web de Azahar): un toque en una sala entra. El predeterminado, http://88.198.47.46:5000, es donde la mayoría de los jugadores del juego listan sus salas; lo mantienen jugadores, no este proyecto. Otro: escribe otro, como http://nombre:puerto. Ninguno: sin lista (las salas por dirección y en esta Wi-Fi siguen funcionando). Los lobbies que escribes y guardas quedan en esta lista, el último primero (hasta 24): la × a su lado lo quita (con un mando, el botón que guarda)."},
     {"LanSearch", "Looks for rooms hosted by phones on the same Wi-Fi as this one (Host a room, on the other phone), so there is no address to type. It takes a second and a half. A tap on a room found joins it.",
      "Busca salas creadas por teléfonos en la misma Wi-Fi que este (Crear una sala, en el otro teléfono), así no hay que escribir ninguna dirección. Tarda un segundo y medio. Un toque en una sala encontrada entra."},
-    {"Refresh", "Asks the lobby above for its rooms. A tap on one joins it.", "Le pide sus salas al lobby de arriba. Un toque en una entra."},
+    {"Refresh", "Asks the lobby above for its rooms again (the tab asks it by itself as it opens). A tap on one joins it.", "Le vuelve a pedir sus salas al lobby de arriba (la pestaña se las pide sola al abrirse). Un toque en una entra."},
     {"Language", "The language of this menu. Phone's: the one your phone uses.", "El idioma de este menú. Del teléfono: el que usa tu teléfono."},
     {"Theme", "The colours of this menu.", "Los colores de este menú."},
     {"MenuScale", "The size of this menu, 50 % to 200 %.", "El tamaño de este menú, de 50 % a 200 %."},
     {"PauseInBackground", "The game stops while you are in another app, and goes on where it was when you come back. Off: it keeps running, as a hunt with others online needs; it uses battery meanwhile.",
      "El juego se detiene mientras estás en otra app, y sigue donde estaba al volver. Apagado: sigue corriendo, como lo necesita una cacería en línea con otros; mientras tanto gasta batería."},
+    {"PauseInMenu", "The game waits while this menu is open, when you play alone. With others in a room it goes on.",
+     "El juego espera mientras este menú está abierto, cuando juegas solo. Con otros en una sala, sigue."},
+    {"Updates", "At most once a day the app asks GitHub for the latest version (nothing else is sent) and tells you at the next start when there is a new one. It never downloads or installs anything by itself.",
+     "Como mucho una vez al día la app le pregunta a GitHub cuál es la última versión (no se envía nada más) y te avisa al abrir el juego cuando hay una nueva. Nunca descarga ni instala nada por su cuenta."},
+    {"savefolder", "Where your save is kept. Choose a folder that a sync app shares with your other devices to carry your hunt between them. Your save is copied there first, and the game restarts to use it. The guild cards, event quests and the Palico go with it.",
+     "Dónde se guarda tu partida. Elige una carpeta que una app de sincronización comparta con tus otros dispositivos para llevar tu cacería entre ellos. Antes se copia ahí tu partida, y el juego se reinicia para usarla. Las tarjetas de gremio, las misiones de evento y el Felyne van con ella."},
     {"import", "Brings your save from an emulator or another device. It replaces the one on this device, and the current save is kept in a copy.",
      "Trae tu partida desde un emulador o desde otro dispositivo. Reemplaza la de este dispositivo, y la partida actual queda guardada en una copia."},
     {"export", "Copies your save to a folder you choose, to take it to an emulator or another device.",
@@ -2520,8 +2908,8 @@ const Help HELP[] = {
      "Agrega un mod desde su .zip: un mod para MH4U de EE. UU., con una carpeta romfs, una carpeta exefs o las dos, o con la estructura de los emuladores de 3DS, con una carpeta 0004000000126300. Se copia dentro de la app: después puedes borrar el .zip."},
     {"ModFolderImport", "Adds a mod from its folder, unpacked: the folder with romfs and exefs in it, or the one that holds 0004000000126300. It is copied into the app.",
      "Agrega un mod desde su carpeta, ya descomprimida: la que tiene romfs y exefs adentro, o la que contiene 0004000000126300. Se copia dentro de la app."},
-    {"CodeLibrary", "A mod with an exefs folder changes the game's code, and this port runs that code translated ahead of time: your code library has to be made on the PC with the same code mods turned on (step 1 of the guide, answering Yes and choosing the mod). If they don't match, the game won't start.",
-     "Un mod con carpeta exefs cambia el código del juego, y este port ejecuta ese código traducido de antemano: tu librería de código tiene que hacerse en la PC con los mismos mods de código activados (el paso 1 de la guía, respondiendo Sí y eligiendo el mod). Si no coinciden, el juego no arranca."},
+    {"CodeLibrary", "A mod with an exefs folder changes the game's code, and this port runs that code translated ahead of time: your code library has to be made on the PC with the same code mods turned on (step 3 of the guide, answering Yes and choosing the mod). If they don't match, the game won't start.",
+     "Un mod con carpeta exefs cambia el código del juego, y este port ejecuta ese código traducido de antemano: tu librería de código tiene que hacerse en la PC con los mismos mods de código activados (el paso 3 de la guía, respondiendo Sí y eligiendo el mod). Si no coinciden, el juego no arranca."},
     {"ModConflicts", "Mods that change the same game files: where both are on, the one lower in the list is used. Select it to see each pair and choose which mod is used.",
      "Mods que cambian los mismos archivos del juego: donde los dos están activados, se usa el de más abajo en la lista. Selecciónalo para ver cada par y elegir qué mod se usa."},
     {"ModSuggest", "Orders the mods that change the same files from the biggest to the smallest, so a small tweak wins over a large overhaul. The others keep their places.",
@@ -2531,6 +2919,14 @@ const Help HELP[] = {
     {"CheatImport", "Adds the cheats of a .txt file in the format of Azahar and Citra ([Name] and the code lines), for MH4U USA 1.3.0. They come off: turn on the ones you want and save. A cheat with the same name is replaced.",
      "Agrega los trucos de un archivo .txt en el formato de Azahar y Citra ([Nombre] y las líneas de código), para MH4U de EE. UU. 1.3.0. Llegan apagados: activa los que quieras y guarda. Un truco con el mismo nombre se reemplaza."},
     {"CheatRemove", "Deletes a cheat from the cheats file.", "Borra un truco del archivo de trucos."},
+    {"qol_hold_gather", "Hold A to carve, gather, mine and catch bugs again and again, as in later Monster Hunter games, until you let go. jM5557's idea.",
+     "Mantén A para tallar, recolectar, minar y atrapar insectos una y otra vez, como en los Monster Hunter más nuevos, hasta que lo sueltes. Idea de jM5557."},
+    {"qol_flex_cancel", "After a potion or a ration, moving, rolling or any other action ends the flex at once. What you drank still works; standing still, the flex plays whole. jM5557's idea.",
+     "Después de una poción o una ración, moverte, rodar o cualquier otra acción corta la pose enseguida. Lo que tomaste sigue haciendo efecto; si te quedas quieto, la pose se ve entera. Idea de jM5557."},
+    {"qol_sharpen_cancel", "B while sharpening rolls out of it, as in later Monster Hunter games. jM5557's idea.",
+     "B mientras afilas rueda y deja de afilar, como en los Monster Hunter más nuevos. Idea de jM5557."},
+    {"qol_rewards_no_limit", "The rewards screen after a quest no longer counts down: take your time choosing. jM5557's idea.",
+     "La pantalla de recompensas después de una misión ya no tiene cuenta regresiva: elige con calma. Idea de jM5557."},
     {"reset", "Puts this tab's options back as they come. Nothing changes until you save.",
      "Devuelve las opciones de esta pestaña a como vienen. Nada cambia hasta que guardes."},
 };
@@ -2544,8 +2940,8 @@ std::string help_text(const Row& r) {
     for (const Help& h : HELP)
         if (r.key == h.key) return spanish() ? h.es : h.en;
     if (!r.key.compare(0, 5, "show_"))  // (a touch control without words of its own)
-        return spanish() ? "Muestra este botón en la pantalla, o lo oculta. Se ubica con Personalizar el diseño."
-                         : "Shows this button on the screen, or hides it. Customize the layout places it.";
+        return spanish() ? "Muestra este botón en la pantalla, o lo oculta. Se ubica con Personalizar controles y HUD."
+                         : "Shows this button on the screen, or hides it. Customize controls and HUD places it.";
     return "";
 }
 
@@ -2658,6 +3054,22 @@ void keyboard_keys() {
         accept_keyboard();
     }
 }
+// The picker's remembered choice picked by a controller or the keys: X (the button that saves elsewhere) or Delete
+// takes it out, as its x does
+bool picker_removable() {
+    if (!s.dropdown.open || s.focus.compare(0, 7, "choice.")) return false;
+    int i = std::atoi(s.focus.c_str() + 7);
+    return i >= 0 && i < (int)s.dropdown.removable.size() && s.dropdown.removable[i] && s.dropdown.remove;
+}
+void picker_keys(const std::vector<Row>& options) {
+    if (!s.dropdown.open || !(pressed(face_key(2)) || pressed(ImGuiKey_Delete))) return;
+    for (const Row& o : options)
+        if (o.id == s.focus && o.remove) {
+            auto fn = o.remove;
+            fn();
+            return;
+        }
+}
 // X saves (not while a question or the keyboard is up), L / R the tab before / after
 void page_keys() {
     if (confirmation() || s.view == View::Keyboard) return;
@@ -2678,6 +3090,16 @@ void fit(std::string& value, float available) {
     } while (!value.empty() && ImGui::CalcTextSize((value + "...").c_str()).x > available);
     value += "...";
 }
+// A name cut to fit at a space, never inside a word (room: its width in font at size), "..." at its end; empty when not
+// even its first word fits
+std::string whole_words(ImFont* font, float size, const std::string& name, float room) {
+    if (font->CalcTextSizeA(size, FLT_MAX, 0, name.c_str()).x <= room) return name;
+    for (size_t n = name.rfind(' '); n != std::string::npos && n; n = name.rfind(' ', n - 1)) {
+        std::string cut = name.substr(0, n) + "...";
+        if (font->CalcTextSizeA(size, FLT_MAX, 0, cut.c_str()).x <= room) return cut;
+    }
+    return "";
+}
 // An invisible button over r for a finger (the controller never lands on it); true when tapped
 bool touch_button(const char* id, const ImRect& r, bool enabled, bool* held) {
     ImGui::SetCursorScreenPos(r.Min);
@@ -2687,6 +3109,8 @@ bool touch_button(const char* id, const ImRect& r, bool enabled, bool* held) {
     ImGui::EndDisabled();
     return tapped && taps_ok();
 }
+// The side of the x that takes a remembered choice out of the picker
+float forget_side() { return std::min(s.m.row * .72f, ImGui::GetFontSize() * 2.f); }
 // A row: lit gold when it is the one picked (a diamond at its left, as the game's cursor), lighter while a finger holds
 // it; its title at the left, at the right an On / Off switch, the value between - and + (stepper: draw_rows' buttons,
 // room their width), or the value, marked when a tap lists its choices. plated: a question's answer, a plate with its
@@ -2712,7 +3136,7 @@ void touch_row(ImDrawList* dl, const Row& r, const ImRect& rect, bool lit, bool 
     ImU32 ink = !r.enabled ? t.text_off : lit ? IM_COL32(255, 248, 232, 255) : r.current ? k.glow : k.ink;
     float x = plated ? rect.GetCenter().x - label.x * .5f : rect.Min.x + font * 1.1f;
     shadow_text(dl, font, ImVec2(x, cy - label.y * .5f), ink, r.title.c_str(), wrap);
-    float right = rect.Max.x - font * .6f;
+    float right = rect.Max.x - font * .6f - (r.remove ? forget_side() + font * .4f : 0);  // (draw_rows' x at the right)
     if (r.current) diamond(dl, ImVec2(right - font * .3f, cy), font * .24f, k.glow);  // (the picker: the choice it has now)
     if (toggle) {
         ImRect slot(right - font * 2.6f, cy - font * .6f, right, cy + font * .6f);
@@ -2738,7 +3162,8 @@ void touch_row(ImDrawList* dl, const Row& r, const ImRect& rect, bool lit, bool 
     }
     dl->PopClipRect();
 }
-// list: the picker's choices; else the view's rows (while the picker is open they keep its row marked)
+// list: the picker's choices, a remembered one with an x at its right that takes it out; else the view's rows (while
+// the picker is open they keep its row marked)
 void draw_rows(std::vector<Row>& rows, bool list = false) {
     auto* w = ImGui::GetCurrentWindow();
     float font = ImGui::GetFontSize(), width = ImGui::GetContentRegionAvail().x - s.m.line * 3;  // (the scroll mark)
@@ -2748,6 +3173,8 @@ void draw_rows(std::vector<Row>& rows, bool list = false) {
     float gap = ImGui::GetStyle().ItemSpacing.x;
     std::function<void()> activate;
     std::function<void(int)> adjust;  // (a - or + tapped: its row's, by step)
+    std::function<void()> remove;     // (a remembered choice's x tapped)
+    const float xs = forget_side();   // (that x's side)
     int step = 0, column = 0;
     if (!list) s.targets.clear();
     float key_h = s.m.row * .82f;  // (the keyboard's keys share the list's height, a line each)
@@ -2803,7 +3230,7 @@ void draw_rows(std::vector<Row>& rows, bool list = false) {
         bool toggle = r.toggle >= 0 && r.enabled;
         bool plate_row = plated || r.grid;
         // (the title wraps before the value's room: a switch, - value +, or the value)
-        float room = r.grid ? 0 : toggle ? font * 3.6f : stepper ? bs * 2 + font * 5.2f : r.value.empty() ? (r.arrow ? font * 1.2f : 0) : rw * .42f;
+        float room = r.grid ? 0 : r.remove ? xs + font * .6f : toggle ? font * 3.6f : stepper ? bs * 2 + font * 5.2f : r.value.empty() ? (r.arrow ? font * 1.2f : 0) : rw * .42f;
         float wrap = std::max(font, rw - font * (plate_row ? 1.2f : 1.9f) - room);
         ImVec2 label = ImGui::CalcTextSize(r.title.c_str(), nullptr, false, wrap);
         float h = r.grid ? key_h : std::max(s.m.row, label.y + font * .9f);
@@ -2815,7 +3242,7 @@ void draw_rows(std::vector<Row>& rows, bool list = false) {
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, clear);
         ImGui::PushStyleColor(ImGuiCol_ButtonActive, clear);
         ImGui::BeginDisabled(!r.enabled);
-        if (stepper) ImGui::SetNextItemAllowOverlap();  // (its - and + are over it)
+        if (stepper || r.remove) ImGui::SetNextItemAllowOverlap();  // (its - and +, or its x, are over it)
         bool clicked = ImGui::Button("###row", ImVec2(rw, h));
         bool held = ImGui::IsItemActive();
         ImGui::EndDisabled();
@@ -2844,11 +3271,26 @@ void draw_rows(std::vector<Row>& rows, bool list = false) {
             }
             ImGui::SetCursorScreenPos(next);
         }
+        if (r.remove) {  // (a remembered choice: its x, a plate of its own at the right, takes it out of the list)
+            ImVec2 next = ImGui::GetCursorScreenPos();
+            float right = rect.Max.x - font * .6f, cy = rect.GetCenter().y;
+            ImRect b(right - xs, cy - xs * .5f, right, cy + xs * .5f);
+            bool down = false;
+            if (touch_button("###forget", b, true, &down)) remove = r.remove;
+            plate(w->DrawList, b, s.m.line * .8f, down, true);
+            cross(w->DrawList, b.GetCenter(), xs * .2f, down || selected ? touch_look().glow : touch_look().ink,
+                  std::max(2.f, s.m.line * 1.3f));
+            ImGui::SetCursorScreenPos(next);
+        }
         ImGui::PopID();
         if (clicked && r.enabled && taps_ok()) {
             focus(r.id);
             activate = r.activate;
         }
+    }
+    if (remove) {  // (the list changes under it: the picker opens again, reopen_picker)
+        remove();
+        return;
     }
     if (adjust) adjust(step);
     if (activate) activate();
@@ -2977,7 +3419,8 @@ void touch_picker(std::vector<Row>& options) {
     float band = std::max(f * 2.4f, s.m.row * .95f), side = band * .74f, title = std::floor(f * 1.05f);
     float frame = std::max(2.f, f * .14f) * 1.7f;  // (draw_frame's rules at the bottom)
     float longest = tf->CalcTextSizeA(title, FLT_MAX, 0, s.dropdown.title.c_str()).x + side + pad * 3;
-    for (const auto& o : options) longest = std::max(longest, font->CalcTextSizeA(f, FLT_MAX, 0, o.title.c_str()).x + f * 3.4f);
+    for (const auto& o : options)  // (a remembered one: and its x)
+        longest = std::max(longest, font->CalcTextSizeA(f, FLT_MAX, 0, o.title.c_str()).x + f * 3.4f + (o.remove ? forget_side() + f * .6f : 0));
     float w = std::clamp(longest + pad * 2, vp->WorkSize.x * .32f, vp->WorkSize.x * .62f);
     float h = std::min(band + line * 2 + pad * 2 + options.size() * (s.m.row + spacing) + pad + frame, vp->WorkSize.y * .86f);
     ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + (vp->WorkSize.x - w) * .5f, vp->WorkPos.y + (vp->WorkSize.y - h) * .5f),
@@ -3032,7 +3475,8 @@ void draw_guides(ImDrawList* dl, float x, float y, float right, float size) {
     const Item items[] = {{SettingsIcons::Dpad, "Move", true},
                           {SettingsIcons::A, keys ? "Type" : "Confirm", true},
                           {SettingsIcons::B, "Back", true},
-                          {SettingsIcons::X, keys ? "Delete" : "Save", keys || (dirty() && !confirmation())},
+                          {SettingsIcons::X, keys ? "Delete" : picker_removable() ? "Remove" : "Save",
+                           keys || picker_removable() || (dirty() && !confirmation())},
                           {SettingsIcons::Y, keys ? "Space" : "", keys},
                           {SettingsIcons::L, "", s.view == View::Main || keys},
                           {SettingsIcons::R, keys ? "Cursor" : "Tabs", s.view == View::Main || keys}};
@@ -3109,12 +3553,15 @@ void touch_panel(bool* open) {
     s.typed_enter = false;
     if (s.view == View::Keyboard && !s.dropdown.open) keyboard_keys();
     auto rows = rows_for_view(open);
+    reopen_picker(rows);
     std::vector<Row> options;  // (the picker open: its choices, the controller moves in them)
     if (s.dropdown.open) options = dropdown_rows();
     navigate(s.dropdown.open ? options : rows, s.dropdown.open);
+    picker_keys(options);
     bool dialog = confirmation();
     bool picking = s.dropdown.open && !options.empty();
-    // The header: Back at its left, Save and Close at its right, the title between
+    // The header: Back at its left, the community's Discord and the official page (their marks), Save and Close at its
+    // right, the title between
     float x0 = window->Pos.x, y0 = window->Pos.y, x1 = x0 + window->Size.x, y1 = y0 + window->Size.y;
     float band = std::max(.11f * H, f * 2.9f), side = band * .8f, by = y0 + (band - side) * .5f + line * .5f;
     dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y0 + band), k.band);
@@ -3147,12 +3594,25 @@ void touch_panel(bool* open) {
         plate(dl, save_rect, line, held, can);
         shadow_text(dl, f, ImVec2(save_rect.GetCenter().x - ts.x * .5f, save_rect.GetCenter().y - ts.y * .5f),
                     can ? k.glow : look.text_off, label);
-        right = save_rect.Min.x - pad;
+        // (the project's page, a little apart from Save: GitHub's mark, as in the MHGU port)
+        ImRect site(save_rect.Min.x - pad * 1.6f - side, by, save_rect.Min.x - pad * 1.6f, by + side);
+        if (touch_button("###site", site, true, &held))  // (asks first: the browser can make Android close the game)
+            later = []() { push(View::OpenSite, "dialog.cancel"); };
+        plate(dl, site, line, held, true);
+        github_mark(dl, site.GetCenter(), side * .27f, held ? k.glow : k.ink);
+        // (the community's Discord beside it, the same size: the title fits in what is left)
+        ImRect chat(site.Min.x - pad - side, by, site.Min.x - pad, by + side);
+        if (touch_button("###discord", chat, true, &held))  // (asks first, as the page)
+            later = []() { push(View::OpenDiscord, "dialog.cancel"); };
+        plate(dl, chat, line, held, true);
+        discord_mark(dl, chat.GetCenter(), side * .27f, held ? k.glow : k.ink);
+        right = chat.Min.x - pad;
     }
-    {  // (the title; the tab's name or the submenu's after it)
+    {  // (the title; the tab's name or the submenu's after it. Where the header's buttons leave less room (a large Menu
+       // size on a 4:3 screen), both smaller to fit, down to .6 of their size; narrower still, the name alone, its last
+       // words left out if need be: never a word cut in two. The same in the MHGU port)
         const char* title = tr("SETTINGS");
-        float size = std::floor(f * 1.2f), cy = by + side * .5f;
-        ImVec2 ts = tf->CalcTextSizeA(size, FLT_MAX, 0, title);
+        float size = std::floor(f * 1.2f), cy = by + side * .5f, room = right - title_x;
         std::string sub = s.view == View::Main       ? tr(page_names[s.page])
                           : s.view == View::Buttons  ? tr("Buttons on the screen")
                           : s.view == View::Conflicts ? tr("Mod conflicts")
@@ -3160,13 +3620,35 @@ void touch_panel(bool* open) {
                           : s.view == View::ComboEdit ? tr("Combined buttons")
                           : s.view == View::Keyboard ? s.keyboard.title
                                                      : "";
+        auto sized = [](float full, float q) { return q < 1 ? std::floor(full * q) : full; };
+        auto name_w = [&](float q) { return font->CalcTextSizeA(sized(f, q), FLT_MAX, 0, sub.c_str()).x; };
+        auto both_w = [&](float q) {
+            return tf->CalcTextSizeA(sized(size, q), FLT_MAX, 0, title).x + (sub.empty() ? 0 : f * q * 1.4f + name_w(q));
+        };
+        float q = std::clamp(room / both_w(1), .6f, 1.f);
+        while (q > .6f && both_w(q) > room) q = std::max(.6f, q - .02f);
+        bool alone = !sub.empty() && both_w(q) > room;  // (the name without the title before it)
+        if (alone) {
+            q = std::clamp(room / name_w(1), .6f, 1.f);
+            while (q > .6f && name_w(q) > room) q = std::max(.6f, q - .02f);
+            std::string cut = whole_words(font, sized(f, q), sub, room);
+            if (cut.empty())  // (not even its first word: the title as it was, at its size, clipped at the buttons)
+                alone = false, q = 1;
+            else
+                sub = cut;
+        }
         dl->PushClipRect(ImVec2(x0, y0), ImVec2(std::max(title_x, right), y0 + band), true);
-        shadow_text(dl, tf, size, ImVec2(title_x, cy - ts.y * .5f), k.glow, title);
+        float x = title_x;
+        if (!alone) {
+            ImVec2 ts = tf->CalcTextSizeA(sized(size, q), FLT_MAX, 0, title);
+            shadow_text(dl, tf, sized(size, q), ImVec2(x, cy - ts.y * .5f), k.glow, title);
+            x += ts.x + f * q * .7f;
+            if (!sub.empty()) diamond(dl, ImVec2(x, cy), f * q * .18f, k.rule);
+            x += f * q * .7f;
+        }
         if (!sub.empty()) {
-            float dx = title_x + ts.x + f * .7f;
-            diamond(dl, ImVec2(dx, cy), f * .18f, k.rule);
-            ImVec2 ss = ImGui::CalcTextSize(sub.c_str());
-            shadow_text(dl, f, ImVec2(dx + f * .7f, cy - ss.y * .5f), k.ink, sub.c_str());
+            ImVec2 ss = font->CalcTextSizeA(sized(f, q), FLT_MAX, 0, sub.c_str());
+            shadow_text(dl, sized(f, q), ImVec2(x, cy - ss.y * .5f), k.ink, sub.c_str());
         }
         dl->PopClipRect();
     }
@@ -3278,6 +3760,8 @@ void touch_panel(bool* open) {
                                   : s.view == View::RemoveDriver ? "Remove this driver?"
                                   : s.view == View::RemoveMod    ? "Remove this mod?"
                                   : s.view == View::RemoveCheat  ? "Remove this cheat?"
+                                  : s.view == View::OpenSite     ? "Open the project's page?"
+                                  : s.view == View::OpenDiscord  ? "Open the community's Discord?"
                                                                  : "Unsaved changes");
         std::string detail = s.view == View::RemoveDriver
                                  ? fmt("%s: its files are deleted. To use it again, import its .zip again.", s.remove_name.c_str())
@@ -3288,7 +3772,11 @@ void touch_panel(bool* open) {
                                  : tr(s.view == View::Restart ? "The game closes and opens again. Save your hunt in the game first."
                                       : s.view == View::Exit  ? "The game closes. Save your hunt in the game first: what was not saved there is lost."
                                       : s.view == View::Reset ? "Its options go back as they come. Nothing changes until you save."
-                                                              : "Save them before closing?");
+                                      : s.view == View::OpenSite
+                                          ? "It opens in your browser. On phones with little memory, Android may close the game, so save in the game first."
+                                      : s.view == View::OpenDiscord
+                                          ? "It opens in your browser or the Discord app. On phones with little memory, Android may close the game, so save in the game first."
+                                          : "Save them before closing?");
         float size = std::floor(f * 1.25f), y = top + pad * 1.5f;
         diamond(dl, ImVec2(cx, y + f * .2f), f * .26f, k.rule);
         dl->AddLine(ImVec2(cx - cw * .35f, y + f * .2f), ImVec2(cx - f * .6f, y + f * .2f), fade(k.rule, .5f), std::max(1.f, line * .5f));
@@ -3353,6 +3841,7 @@ void start() {  // (the saved options that act outside the menu: the FPS counter
     g_started = true;
     float fps = std::max(1.f, (float)std::atof(game_option_get("fps", "30").c_str()));
     perfstats_set(app_setting_bool("Graphics", "FpsCounter", false), fps, settings_spanish());
+    list_older_lobby();
     s.draft = s.saved = load();
 }
 
@@ -3506,15 +3995,44 @@ void draw_credits() {
 // A card of thanks to the people who made the game and kept it alive, in the credits' style: the first time the app
 // opens, once the credits have gone ([Interface] ThanksShown = 1 in mh4u-app.ini once it is let go), and again from
 // Credits & Licenses. It stays until Continue, a tap, A, B or Back lets it go.
-bool g_thanks_open = false, g_thanks_held = false;
+//
+// The same card tells, once, what playing online means (online_then: before the lobby is first asked for its rooms, or
+// a room on the internet first joined): the server the phone connects to, and that the servers it connects to see the
+// player's IP address. Let go, [Network] OnlineNoticeShown = 1 and what waited for it goes on. MHGU for Android shows
+// the same card with the same text before its first hub search.
+bool g_thanks_open = false, g_thanks_held = false, g_card_online = false;
+bool g_card_press = false;  // (a press made while the card showed has not let go yet: not the menu's)
 double g_thanks_at = 0;
 void thanks_show() {
-    g_thanks_open = true, g_thanks_held = false, g_thanks_at = SDL_GetTicks() / 1000.0;
+    g_thanks_open = true, g_thanks_held = false, g_thanks_at = SDL_GetTicks() / 1000.0, g_card_online = false;
     std::fprintf(stderr, "[Info] App: the thanks\n");
+}
+void online_then(const std::string& server, std::function<void()> fn) {
+    if (g_online_seen || server.empty()) {
+        fn();
+        return;
+    }
+    g_online_then = std::move(fn);
+    g_online_server = server;
+    g_thanks_open = true, g_thanks_held = false, g_thanks_at = SDL_GetTicks() / 1000.0, g_card_online = true;
+    std::fprintf(stderr, "[Info] App: the notice about playing online (%s)\n", server.c_str());
 }
 void thanks_close() {
     if (SDL_GetTicks() / 1000.0 - g_thanks_at < .5) return;  // (the press that opened it, or a finger already down)
     g_thanks_open = g_thanks_held = false;
+    // (ImGui got the tap that closed it too, from SDL's mouse events: over the menu, opened under the notice about playing
+    // online, it reached the row under the finger - Reset this tab under Continue: card_input)
+    s.swallow = true, g_card_press = true;
+    if (g_card_online) {
+        g_card_online = false;
+        g_online_seen = true;
+        app_setting_set("Network", "OnlineNoticeShown", "1");
+        app_settings_save();
+        std::function<void()> then = std::move(g_online_then);
+        g_online_then = nullptr;
+        if (then) then();
+        return;
+    }
     if (!app_setting_bool("Interface", "ThanksShown", false)) {
         app_setting_set("Interface", "ThanksShown", "1");
         app_settings_save();
@@ -3527,6 +4045,17 @@ void thanks_first_run() {
     if (state == 0) state = app_setting_bool("Interface", "ThanksShown", false) ? 2 : 1;
     if (state == 1 && g_credits_at >= 0 && SDL_GetTicks() / 1000.0 - g_credits_at > 8.2) thanks_show(), state = 2;
 }
+// Each frame of the menu's, before its rows: while the card shows, and until the press that closed it has let go, the
+// mouse (a finger, as SDL's mouse events) is the card's, so nothing under it is pressed, held or tapped
+void card_input() {
+    if (g_thanks_open) g_card_press = true;
+    if (!g_card_press) return;
+    ImGui::SetKeyOwner(ImGuiKey_MouseLeft, 0x63617264, ImGuiInputFlags_LockThisFrame);
+    ImGui::GetCurrentContext()->HoveredWindow = nullptr;
+    s.swallow = true;
+    if (!g_thanks_open && !ImGui::IsMouseDown(ImGuiMouseButton_Left) && !ImGui::IsMouseReleased(ImGuiMouseButton_Left))
+        g_card_press = false;
+}
 void draw_thanks() {
     if (!g_thanks_open) return;
     const double t = SDL_GetTicks() / 1000.0 - g_thanks_at;
@@ -3537,9 +4066,10 @@ void draw_thanks() {
     const Theme& th = theme();
     ImFont* font = ImGui::GetFont();
     ImFont* tf = title_font();
-    const char* title = tr("Thank you");
-    const char* body = tr(THANKS_BODY);
-    const char* sign = "\xE2\x80\x94 khorne-hub";
+    const std::string said = g_card_online ? fmt(ONLINE_TEXT, g_online_server.c_str()) : "";
+    const char* title = tr(g_card_online ? "Playing online" : "Thank you");
+    const char* body = g_card_online ? said.c_str() : tr(THANKS_BODY);
+    const char* sign = g_card_online ? "" : "\xE2\x80\x94 khorne-hub";
     const char* cont = tr("Continue");
     dl->AddRectFilled(vp->Pos, ImVec2(vp->Pos.x + vp->Size.x, vp->Pos.y + vp->Size.y), fade(IM_COL32(0, 0, 0, 150), a));
     const float f = std::floor(std::clamp(vp->Size.y * .036f, 12.f, 44.f)), tsz = std::floor(f * 1.5f);
@@ -3547,7 +4077,7 @@ void draw_thanks() {
     const float line = std::max(1.f, std::floor(f * .09f));
     const ImVec2 bs = font->CalcTextSizeA(f, FLT_MAX, w, body);
     const float bh = std::floor(f * 2.1f);
-    const float h = tsz + gap * 3 + bs.y + gap * 2 + f + gap * 2 + bh;
+    const float h = tsz + gap * 3 + bs.y + gap * 2 + (*sign ? f + gap * 2 : 0) + bh;
     const ImVec2 c(vp->Pos.x + vp->Size.x * .5f, vp->Pos.y + vp->Size.y * .5f);
     const ImRect box(ImVec2(std::floor(c.x - w * .5f - pad), std::floor(c.y - h * .5f - pad)),
                      ImVec2(std::floor(c.x + w * .5f + pad), std::floor(c.y + h * .5f + pad)));
@@ -3573,9 +4103,11 @@ void draw_thanks() {
     y += gap * 1.5f;
     shadow_text(dl, font, f, ImVec2(std::floor(c.x - w * .5f), y), fade(th.text, a), body, w);
     y += bs.y + gap * 2;
-    const ImVec2 ss = font->CalcTextSizeA(f, FLT_MAX, 0, sign);
-    shadow_text(dl, font, f, ImVec2(std::floor(c.x + w * .5f - ss.x), y), fade(th.accent, a), sign);
-    y += f + gap * 2;
+    if (*sign) {  // (the thanks' signature; the notice about playing online has none)
+        const ImVec2 ss = font->CalcTextSizeA(f, FLT_MAX, 0, sign);
+        shadow_text(dl, font, f, ImVec2(std::floor(c.x + w * .5f - ss.x), y), fade(th.accent, a), sign);
+        y += f + gap * 2;
+    }
     {  // Continue: a plate as the menu's buttons, the controller's A on it after a controller's press
         const bool pad_last = controls_last_input_pad();
         const ImVec2 cs = font->CalcTextSizeA(f, FLT_MAX, 0, cont);
@@ -3662,6 +4194,9 @@ void settings_panel(bool* open) {
         s.restore_scroll = true;
         s.scroll = 0;
         s.driver_note.clear();
+        s.lobby_asked.clear();
+        s.reopen.clear();
+        if (!g_online_seen) g_online_seen = app_setting_bool("Network", "OnlineNoticeShown", false);
         request_back = false;
         request_close = false;
     }
@@ -3672,6 +4207,7 @@ void settings_panel(bool* open) {
     // (50 % to 200 %: from a small phone's tight fit to a tablet's or a TV's far-away screen)
     float px = std::clamp(.034f * H * s.draft.menu_scale / 100.f, .016f * H, .07f * H);
     ImGui::PushFont(nullptr, px / std::max(.01f, style.FontScaleMain * style.FontScaleDpi));
+    card_input();
     touch_panel(open);
     ImGui::PopFont();
     // (typed text while the keyboard is up, the phone's own keyboard only when asked for; the room's lines: seen)
@@ -3686,7 +4222,7 @@ void settings_panel(bool* open) {
         s.pad_note.clear();
         bool edit = s.closing;
         s.closing = false;
-        if (edit) touch_edit_begin();  // (Customize the layout: the editor, now the menu is gone)
+        if (edit) touch_edit_begin();  // (Customize controls and HUD: the editor, now the menu is gone)
     }
     if (*open && g_credits_asked) draw_credits();
     draw_thanks();

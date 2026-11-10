@@ -39,6 +39,9 @@ import java.io.OutputStream;
 public class GameActivity extends SDLActivity {
     private static final String TAG = "MH4U";
 
+    /** GameFolderActivity, the entry, checked everything in this process and started the game (startGame). */
+    static volatile boolean entered;
+
     @Override
     protected String[] getLibraries() {
         return new String[] { "SDL3", "main" };
@@ -46,7 +49,28 @@ public class GameActivity extends SDLActivity {
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        // (who started it: "com.android.shell" for adb's am start, the test runs' way with a launch.txt of their own)
+        android.net.Uri referrer = getReferrer();
+        String by = referrer != null ? referrer.getHost() : null;
+        if (!entered && !"com.android.shell".equals(by)) {
+            // A start that didn't come through the entry: Android bringing the game's task back after its process ended
+            // (Recents), a controller's USB start, another app. The entry's checks must come first (the app's folder, the
+            // save folder's start gate with its in-use warning, the notices, the game's files and library), and SDL is made
+            // only once in a process: this one ends at once, before the game runs, and PhoenixActivity opens the entry
+            super.onCreate(savedInstanceState);  // (Android wants it; with finish() here no surface comes, so no game)
+            Log.i(TAG, "a start without the entry (" + getIntent().getAction() + ", by " + by + "): through the entry");
+            Intent intent = new Intent(this, PhoenixActivity.class);
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            intent.putExtra(PhoenixActivity.EXTRA_PID, Process.myPid());
+            startActivity(intent);
+            overridePendingTransition(0, 0);
+            finish();
+            new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> Process.killProcess(Process.myPid()), 200);
+            return;
+        }
         getExternalFilesDir(null);  // (makes the folder, so the native side and adb can find it)
+        if (!entered) AppHome.ensure(this);  // (a test run started with adb: the app's folder checked, as the entry does)
+        SaveFolder.applyPending(this);  // (Settings -> Save folder, before the game reads the save: done by the gate already)
         SaveActivity.applyPending(this);  // (an imported save, before the game reads it)
         super.onCreate(savedInstanceState);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
@@ -176,9 +200,13 @@ public class GameActivity extends SDLActivity {
         if (activity != null) activity.startActivity(new Intent(activity, SaveActivity.class));
     }
 
-    /** Ajustes -> Exportar partida. */
+    /** Settings -> Save folder. */
+    public static void showSaveFolder() {
+        SDLActivity activity = mSingleton;
+        if (activity != null) activity.startActivity(new Intent(activity, SaveFolderActivity.class));
+    }
 
-
+    /** Settings -> Export save. */
     public static void showSaveExport() {
         SDLActivity activity = mSingleton;
         if (activity != null) activity.startActivity(new Intent(activity, SaveActivity.class).putExtra(SaveActivity.EXTRA_EXPORT, true));

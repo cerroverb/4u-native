@@ -8,6 +8,8 @@
 #include <glslang/Public/ShaderLang.h>
 #include <SPIRV/GlslangToSpv.h>
 
+#include "mh4n/spirv_target.h"
+
 #include "gpu/shader/vertex_shader.h"
 
 namespace mh4n::gpu::shader {
@@ -33,10 +35,12 @@ bool CompileGlslToSpirv(const std::string& source, std::vector<u32>& spirv, std:
     glslang::TShader shader(stage);
     const char* strings[1] = {source.c_str()};
     shader.setStrings(strings, 1);
-    // Vulkan 1.2 and SPIR-V 1.5 (the backend asks for a Vulkan 1.2 instance).
+    // Vulkan 1.2 and SPIR-V 1.5 (the backend asks for a Vulkan 1.2 instance); 1.1 and 1.3 on a device below Vulkan 1.2
+    // (mh4n/spirv_target.h).
     shader.setEnvInput(glslang::EShSourceGlsl, stage, glslang::EShClientVulkan, 100);
-    shader.setEnvClient(glslang::EShClientVulkan, glslang::EShTargetVulkan_1_2);
-    shader.setEnvTarget(glslang::EShTargetSpv, glslang::EShTargetSpv_1_5);
+    const bool spirv13 = ::mh4n::gpu::SpirvTarget13();
+    shader.setEnvClient(glslang::EShClientVulkan, spirv13 ? glslang::EShTargetVulkan_1_1 : glslang::EShTargetVulkan_1_2);
+    shader.setEnvTarget(glslang::EShTargetSpv, spirv13 ? glslang::EShTargetSpv_1_3 : glslang::EShTargetSpv_1_5);
 
     const EShMessages messages = static_cast<EShMessages>(EShMsgSpvRules | EShMsgVulkanRules);
     if (!shader.parse(GetDefaultResources(), 450, false, messages)) {

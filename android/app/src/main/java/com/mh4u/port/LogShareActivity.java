@@ -102,31 +102,51 @@ public class LogShareActivity extends Activity {
 
         // the code library refused the game's code: a code mod turned on or off since the library was made
         boolean library = crash && logSays("does not match");
+        // a code mod the port can't load at all: one made for the emulators that makes the game's program bigger (as
+        // Heavenfall's does: "code.bin is ... bytes but the exheader's segments take ...", 4u-native #20), or one whose
+        // patch doesn't fit the code it is applied to ("cannot load ...: mods: <name>/exefs/code.ips: patch error")
+        boolean codeMod = crash && !library && logSays("cannot load") && (logSays("Loader: code mod") || logSays(": mods: "));
         if (library) {
             box.addView(text(es ? "La librería de código no coincide con el código del juego y los mods de código que están "
                                   + "activados (los que traen una carpeta exefs). Vuelve a hacer la librería en la PC con esos "
-                                  + "mods (el paso 1 de la guía), o vuelve a los mods del último inicio que funcionó."
+                                  + "mods (el paso 3 de la guía), o vuelve a los mods del último inicio que funcionó."
                                 : "The code library doesn't match the game's code with the code mods that are on (the ones "
-                                  + "with an exefs folder). Make the library again on the PC with those mods (step 1 of the "
+                                  + "with an exefs folder). Make the library again on the PC with those mods (step 3 of the "
                                   + "guide), or go back to the mods of the last start that worked.", 15, GOLD, false), gap);
+        } else if (codeMod) {
+            box.addView(text(es ? "Un mod de código cambió el programa del juego de una forma que este port no puede cargar: "
+                                  + "está hecho para los emuladores. Vuelve a los mods del último inicio que funcionó, o apaga "
+                                  + "los mods de código."
+                                : "A code mod changed the game's program in a way this port can't load: it is made for the "
+                                  + "emulators. Go back to the mods of the last start that worked, or turn the code mods off.",
+                    15, GOLD, false), gap);
         }
 
-        LinearLayout row = new LinearLayout(this);
-        row.setGravity(Gravity.CENTER);
-        row.setPadding(0, dp(18), 0, 0);
-        if (library && new File(modsDir(), "load_order.ok").isFile()) {
-            Button back = button(es ? "Mods del último inicio" : "Mods of the last start", true);
+        // the way back first, alone on its row; then Share log and Close, side by side: nothing wider than the box
+        // (three in one row came out wider than it and were cut on both sides: 4u-native #23)
+        LinearLayout.LayoutParams first = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(46));
+        first.setMargins(dp(8), dp(18), dp(8), 0);
+        if ((library || codeMod) && new File(modsDir(), "load_order.ok").isFile()) {
+            Button back = button(es ? "Volver a los mods del último inicio" : "Back to the mods of the last start", true);
             back.setOnClickListener(v -> {
                 if (restoreMods()) startGame();
                 else finish();
             });
-            LinearLayout.LayoutParams wide = new LinearLayout.LayoutParams(dp(210), dp(46));
-            wide.setMargins(dp(8), 0, dp(8), 0);
-            row.addView(back, wide);
+            box.addView(back, first);
+        } else if (codeMod) {
+            Button off = button(es ? "Apagar los mods de código" : "Turn the code mods off", true);
+            off.setOnClickListener(v -> {
+                if (codeModsOff()) startGame();
+                else finish();
+            });
+            box.addView(off, first);
         }
-        Button share = button(es ? "Compartir registro" : "Share log", true);
+        LinearLayout row = new LinearLayout(this);
+        row.setGravity(Gravity.CENTER);
+        row.setPadding(0, dp(library || codeMod ? 10 : 18), 0, 0);
+        Button share = button(es ? "Compartir registro" : "Share log", !(library || codeMod));
         share.setOnClickListener(v -> share());
-        LinearLayout.LayoutParams size = new LinearLayout.LayoutParams(dp(190), dp(46));
+        LinearLayout.LayoutParams size = new LinearLayout.LayoutParams(0, dp(46), 1);
         size.setMargins(dp(8), 0, dp(8), 0);
         row.addView(share, size);
         Button close = button(es ? "Cerrar" : "Close", false);
@@ -137,6 +157,11 @@ public class LogShareActivity extends Activity {
         ScrollView scroll = new ScrollView(this);
         scroll.setBackgroundColor(PANEL);
         scroll.setFillViewport(true);
+        scroll.setOnApplyWindowInsetsListener((v, insets) -> {  // (the buttons stay above the system's bar)
+            v.setPadding(insets.getSystemWindowInsetLeft(), insets.getSystemWindowInsetTop(), insets.getSystemWindowInsetRight(),
+                    insets.getSystemWindowInsetBottom());
+            return insets;
+        });
         LinearLayout page = new LinearLayout(this);
         page.setGravity(Gravity.CENTER);
         page.setPadding(dp(32), dp(16), dp(32), dp(16));
@@ -146,10 +171,7 @@ public class LogShareActivity extends Activity {
         setContentView(scroll);
     }
 
-    private File home() {
-        File f = getExternalFilesDir(null);
-        return f != null ? f : getFilesDir();
-    }
+    private File home() { return AppHome.home(this); }
 
     /** The user folder the game ran with: launch.txt's user=, else files/user. */
     private File modsDir() {
@@ -213,6 +235,48 @@ public class LogShareActivity extends Activity {
         return true;
     }
 
+    /**
+     * No list of the last start that worked: every code mod (a folder with an exefs folder, or a title folder with one)
+     * turned off in load_order.txt, the rest as they were.
+     */
+    private boolean codeModsOff() {
+        File mods = modsDir(), order = new File(mods, "load_order.txt");
+        java.util.List<String> lines = new java.util.ArrayList<>();
+        try (BufferedReader r = new BufferedReader(new FileReader(order))) {
+            for (String l; (l = r.readLine()) != null; ) lines.add(l);
+        } catch (IOException ignored) {  // (no list yet: every mod was on, in the order of their names)
+        }
+        File[] dirs = mods.listFiles(File::isDirectory);
+        if (dirs == null) return false;
+        int n = 0;
+        for (File d : dirs) {
+            String name = d.getName();
+            if (name.startsWith(".") || name.startsWith("_")) continue;
+            boolean code = new File(d, "exefs").isDirectory() || new File(d, "0004000000126300/exefs").isDirectory()
+                        || new File(d, "0004000E00126300/exefs").isDirectory();
+            if (!code) continue;
+            n++;
+            boolean listed = false;
+            for (int i = 0; i < lines.size(); i++) {
+                String t = lines.get(i).trim();
+                if (t.equals(name)) { lines.set(i, "# off: " + name); listed = true; }
+                else if (t.equals("# off: " + name)) listed = true;
+            }
+            if (!listed) lines.add("# off: " + name);
+        }
+        if (n == 0) return false;
+        StringBuilder text = new StringBuilder();
+        for (String l : lines) text.append(l).append('\n');
+        try (OutputStream out = new FileOutputStream(order)) {
+            out.write(text.toString().getBytes(StandardCharsets.UTF_8));
+        } catch (IOException e) {
+            Log.e(TAG, "mods: " + e);
+            return false;
+        }
+        Log.i(TAG, "mods: " + n + " code mod(s) turned off");
+        return true;
+    }
+
     private void startGame() {
         Intent start = getPackageManager().getLaunchIntentForPackage(getPackageName());
         if (start != null) {
@@ -226,8 +290,7 @@ public class LogShareActivity extends Activity {
         File report = LogProvider.report(this);
         try (OutputStream out = new FileOutputStream(report)) {
             out.write(device().getBytes(StandardCharsets.UTF_8));
-            File home = getExternalFilesDir(null);
-            if (home == null) home = getFilesDir();
+            File home = home();
             append(out, new File(home, "log.txt"), "this session");
             append(out, new File(home, "log_prev.txt"), "the session before");
         } catch (IOException e) {

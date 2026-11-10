@@ -18,6 +18,7 @@
 // object; FindDisplay below is how they look for it.
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 #include <functional>
 #include <memory>
@@ -291,6 +292,40 @@ struct DisplayGpu {};
 
 inline bool IsDisplayGpu(std::string_view name) {
     return Registry<DisplayGpu>::Instance().Find(name) != nullptr;
+}
+
+// ---- pictures that can't be shown --------------------------------------------------------------
+
+namespace detail {
+struct ShowFlags {
+    std::atomic<bool> shared_refused{false};
+    std::atomic<bool> cannot_draw{false};
+};
+inline ShowFlags& Flags() {
+    static ShowFlags* flags = new ShowFlags;  // (never destroyed, as the backend's slot below)
+    return *flags;
+}
+} // namespace detail
+
+// The app's side could not show the renderer's shared pictures (its OpenGL ES refused to import one before it had shown
+// any): from the next VBlank on, a display asks its renderer for the screens as pixels instead (ScaledScreens::
+// SetSharedScreens(false), the path of a sink that never wanted them) and gives no more shared pictures. Set by the app
+// (any thread; false again when a run starts), read by the display at each VBlank.
+inline void SetSharedPicturesRefused(bool refused) {
+    detail::Flags().shared_refused.store(refused, std::memory_order_relaxed);
+}
+inline bool SharedPicturesRefused() {
+    return detail::Flags().shared_refused.load(std::memory_order_relaxed);
+}
+
+// The renderer's check right after it made its device failed: the driver refused the pipelines it built through the
+// path every draw takes (the colour readback and a small graphics one), so nothing it draws can be expected to show. Set
+// by the renderer when it makes its device (true or false), for the app.
+inline void SetRendererCannotDraw(bool cannot) {
+    detail::Flags().cannot_draw.store(cannot, std::memory_order_relaxed);
+}
+inline bool RendererCannotDraw() {
+    return detail::Flags().cannot_draw.load(std::memory_order_relaxed);
 }
 
 // ---- the shared backend -----------------------------------------------------------------------

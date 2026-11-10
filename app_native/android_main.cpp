@@ -3,10 +3,14 @@
 // and its two screens come back here as pictures that this file draws in the window: straight from the buffers the
 // renderer draws them into (shared_screens.cpp, no copy through the CPU) where the device can, else as pixels.
 //
-// The Java side (GameActivity) writes launch.txt in the app's external files folder:
+// The Java side (GameActivity) writes launch.txt in the app's external files folder (the private one when another app
+// made that one and the app can't write it: AppHome.java decides, home.txt in the internal folder says so):
 //   game=<the game folder: exheader.bin, code.bin, romfs.bin, update_romfs.bin, icon.bin>
 //   code=<the game's code library, built on the player's PC>
 //   user=<the user folder: saves, extdata, mh4u.ini>
+// save_folder.txt beside it (Settings -> Save folder, SaveFolder.java): the folder that holds the save's sdmc/, given to
+// the runtime as --saves; there .mh4u-in-use says the save is open here (kept fresh, removed at a clean exit). Only
+// with the app's own user folder: a test run's launch.txt with a user folder of its own never plays with that save.
 // The library is copied into the app's internal storage first: Android runs no code from shared storage.
 #include <filesystem>
 #include <SDL3/SDL.h>
@@ -23,6 +27,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstdio>
+#include <ctime>
 #include <cstring>
 #include <fstream>
 #include <map>
@@ -37,6 +42,7 @@
 #include "app_jni.h"
 #include "app_live.h"
 #include "app_settings.h"
+#include "app_version.h"
 #include "content.h"
 #include "controls.h"
 #include "crash_screen.h"
@@ -60,6 +66,7 @@
 #include "mh4n/pacing_trace.h"
 #include "mh4n/present.h"
 #include "mh4n/registry.h"
+#include "mh4n/rooms.h"
 #include "mh4n/runtime.h"
 
 namespace {
@@ -242,6 +249,50 @@ bool FileExists(const std::string& path) {
     return stat(path.c_str(), &st) == 0;
 }
 
+// Whether two paths name the same folder (through /sdcard's links and a slash at the end); while one of them isn't
+// there, as they are written
+bool SameFolder(const std::string& a, const std::string& b) {
+    struct stat sa{}, sb{};
+    if (stat(a.c_str(), &sa) == 0 && stat(b.c_str(), &sb) == 0) return sa.st_dev == sb.st_dev && sa.st_ino == sb.st_ino;
+    auto trimmed = [](std::string s) {
+        while (s.size() > 1 && s.back() == '/') s.pop_back();
+        return s;
+    };
+    return trimmed(a) == trimmed(b);
+}
+
+// The first line of a small file, trimmed ("" when it can't be read)
+std::string FirstLine(const std::string& path) {
+    std::ifstream in(path);
+    std::string line;
+    std::getline(in, line);
+    while (!line.empty() && (line.back() == '\r' || line.back() == ' ' || line.back() == '\n')) line.pop_back();
+    return line;
+}
+
+// The save folder's in-use mark (SaveFolder.java's MARKER): this device has the game open with that save. Written at
+// the start (by the start gate, SaveFolder.started, and here at the first tick: every start marks it, whatever opened the
+// game), again every 5 minutes, removed at a clean exit; another device's start warns while it is younger than 15.
+struct SaveFolderMark {
+    std::string folder, id, name;
+    u64 next_ms = 0;
+    void Write() {
+        if (folder.empty() || id.empty()) return;
+        std::ofstream out(folder + "/.mh4u-in-use", std::ios::trunc);
+        out << "id=" << id << "\nname=" << name << "\ntime=" << static_cast<long long>(std::time(nullptr)) << "\n";
+    }
+    void Tick(u64 now_ms) {
+        if (folder.empty() || (next_ms != 0 && now_ms < next_ms)) return;
+        Write();
+        next_ms = now_ms + 5 * 60 * 1000;
+    }
+    void Remove() {
+        if (folder.empty() || id.empty()) return;
+        auto kv = ReadKeyValues(folder + "/.mh4u-in-use");
+        if (kv["id"] == id) std::remove((folder + "/.mh4u-in-use").c_str());
+    }
+};
+
 // Copies `from` to `to` unless `to` already has the same size and is not older.
 bool CopyIfChanged(const std::string& from, const std::string& to) {
     struct stat a{}, b{};
@@ -365,19 +416,23 @@ int main(int argc, char* argv[]) {
     (void)argv;
     SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight");
     SDL_SetHint(SDL_HINT_ANDROID_TRAP_BACK_BUTTON, "1");
-    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD | SDL_INIT_AUDIO | SDL_INIT_EVENTS)) {
+    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD | SDL_INIT_AUDIO | SDL_INIT_EVENTS | SDL_INIT_SENSOR)) {  // (sensors: the gyro's aim)
         Logf("SDL_Init: %s", SDL_GetError());
         return 1;
     }
     const std::string internal = SDL_GetAndroidInternalStoragePath() ? SDL_GetAndroidInternalStoragePath() : "";
     // the app's own folder: the external one, or the internal one when the system has no external storage for it, as
     // GameFolderActivity.home() does (a Redmi Note 8: launch.txt was written there and never read, "No game folder at /game")
-    const std::string ext = SDL_GetAndroidExternalStoragePath() ? SDL_GetAndroidExternalStoragePath() : internal;
+    std::string ext = SDL_GetAndroidExternalStoragePath() ? SDL_GetAndroidExternalStoragePath() : internal;
+    // (the private folder instead when another app made the external one: AppHome.java, MHGU's gu-native #176)
+    if (const std::string moved = FirstLine(internal + "/home.txt"); !moved.empty()) ext = moved;
     // the runtime logs to stderr: into log.txt in the app's external folder (Share log reads it there)
     if (!ext.empty()) {
         std::freopen((ext + "/log.txt").c_str(), "w", stderr);
         std::setvbuf(stderr, nullptr, _IOLBF, 0);
     }
+    // (the first line: which version a shared log comes from)
+    std::fprintf(stderr, "[Info] App: MH4U for Android %s\n", MH4U_APP_VERSION);
     auto launch = ReadKeyValues(ext + "/launch.txt");
     // env=NAME=value NAME2=value: variables for this run (test runs over adb: MH4U_ADPF=0, MH4N_GPU_COUNTERS=1, ...)
     if (launch.count("env")) {
@@ -391,6 +446,23 @@ int main(int argc, char* argv[]) {
     const std::string game = launch.count("game") ? launch["game"] : ext + "/game";
     const std::string code_src = launch.count("code") ? launch["code"] : ext + "/libmh4u_code_native.so";
     const std::string user = launch.count("user") ? launch["user"] : ext + "/user";
+    // Settings -> Save folder: the folder that holds the save's sdmc/ (the runtime opens no save there, and makes no new
+    // one, while it can't be reached; SaveFolderActivity's start gate says so before the game starts). Only with the
+    // app's own user folder, the one the entry's launch.txt always names: a test run's launch.txt names a user folder of
+    // its own (a copy of a save) and plays with that, never with the player's save in the chosen folder. Its
+    // save_folder= can name a folder of its own (a copy that holds sdmc/), to try the save folder without the player's
+    const bool own_user = SameFolder(user, ext + "/user");
+    const std::string save_folder =
+        own_user ? FirstLine(ext + "/save_folder.txt") : (launch.count("save_folder") ? launch["save_folder"] : "");
+    if (!own_user && FileExists(ext + "/save_folder.txt")) {
+        Logf("a test run's user folder (%s): the player's save folder is not used", user.c_str());
+    }
+    SaveFolderMark mark;
+    if (!save_folder.empty()) {
+        auto device = ReadKeyValues(ext + "/device.txt");
+        mark = SaveFolderMark{save_folder, device["id"], device["name"]};
+        Logf("the save folder: %s%s", save_folder.c_str(), FileExists(save_folder + "/sdmc") ? "" : " (its sdmc folder is not there now)");
+    }
     // settings=<folder>: the app's own options (mh4u-app.ini) of this run, a test run's (the player's are in the external
     // files folder)
     app_settings_init(launch.count("settings") ? launch["settings"] : ext);
@@ -410,6 +482,13 @@ int main(int argc, char* argv[]) {
     mkdir(user.c_str(), 0770);
     game_options_init(user);
     content_init(user);  // (the settings' Mods and Cheats pages)
+    {  // the app's own cheats (faster eating and drinking, as MHGU's), off, the first time
+        size_t size = 0;
+        if (void* data = SDL_LoadFile("cheats/comer_rapido.txt", &size)) {  // (the APK's assets)
+            content_add_port_cheats(std::string(static_cast<const char*>(data), size));
+            SDL_free(data);
+        }
+    }
     // the port's options (the hooks read <user>/mh4u.ini): the first start writes this phone's (first_run.h: a weak
     // phone in Low-end mode at 30 FPS, the others at 60; the picture as wide as the screen); afterwards the player's own
     // file only gets a key the settings show with the app's default that the app's own file lacks (first_run_fill)
@@ -470,6 +549,8 @@ int main(int argc, char* argv[]) {
         g_publish_event = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
         if (g_publish_event >= 0) SDL_AddEventWatch(WakeMainLoop, nullptr);
         Logf("screens: %s", g_want_shared ? "straight from the renderer's buffers" : "pixels read back and uploaded");
+        std::fprintf(stderr, "[Info] App: screens: %s\n",
+                     g_want_shared ? "straight from the renderer's buffers" : "pixels read back and uploaded");
     }
     // the controllers and a keyboard (the maps of controllers the player made are kept beside mh4u-app.ini); the touch
     // screen for the input script of a test run (MH4U_TEST_INPUT)
@@ -509,6 +590,10 @@ int main(int argc, char* argv[]) {
                                          "--input-source", "live", "--audio", "sdl",
                                          // (--frames without --ms: no time limit; this frame is years away)
                                          "--frames", "4000000000"};
+        if (!save_folder.empty()) {
+            args.push_back("--saves");
+            args.push_back(save_folder + "/sdmc");
+        }
         // the settings that apply at start (mh4u-app.ini): the sound's volume, the 3D resolution, the renderer's thread
         std::string render_thread = "on";
         int render_percent = kRenderScaleDefault;  // (the phone's own resolution unless the player chose less)
@@ -536,22 +621,25 @@ int main(int argc, char* argv[]) {
                 }
             }
         }
-        int scale_times = render_scale_times(render_percent);
-        // an Adreno with a Vulkan 1.1 driver misdraws the 3D picture below 720 lines (coloured bands, an Adreno 630's
-        // 2018 driver, 4u-native #7; our MHGU port saw it too): 3x at least there
+        // the 3D resolution, and the Adreno fix's floor (first_run.h: an Adreno on a system driver older than 1.1.128
+        // misdraws below 720 lines, 4u-native #7), both told in log.txt: what a shared log has to show
+        const int asked_times = render_scale_times(render_percent);
+        const int scale_times = render_scale_used(render_percent, app_adreno_fix());
         {
-            const std::string gpu = first_run_gpu_name();
             const uint32_t api = first_run_gpu_api();
-            if (gpu.find("Adreno") != std::string::npos && api != 0 && api < ((1u << 22) | (2u << 12)) && scale_times < 3) {
-                Logf("%s with a Vulkan 1.1 driver: 3D resolution 3x at least (%dx misdraws there)", gpu.c_str(), scale_times);
-                scale_times = 3;
+            std::fprintf(stderr, "[Info] App: 3D resolution %d %% of %dx%d: %dx the 3DS's\n", render_percent, screen_w, screen_h,
+                         asked_times);
+            if (adreno_fix_applies()) {
+                std::fprintf(stderr, "[Info] App: Adreno fix %s: %s on a Vulkan %u.%u.%u driver%s\n",
+                             app_adreno_fix() ? "auto" : "off", first_run_gpu_name().c_str(), (api >> 22) & 0x7Fu,
+                             (api >> 12) & 0x3FFu, api & 0xFFFu,
+                             scale_times != asked_times ? ": drawn at 3x (it misdraws below 720 lines)" : "");
             }
         }
         args.push_back("--scale");
         args.push_back(std::to_string(scale_times));
-        Logf("3D resolution %d %% of %dx%d: %dx the 3DS's", render_percent, screen_w, screen_h, render_scale_times(render_percent));
         // the game's dither pattern is a fine grid over everything above 1x: off there unless mh4u.ini says otherwise
-        if (render_scale_times(render_percent) > 1) {
+        if (scale_times > 1) {
             bool dither_set = false;
             for (const auto& [k, v] : ReadKeyValues(user + "/mh4u.ini")) {
                 std::string key = k;
@@ -570,6 +658,9 @@ int main(int argc, char* argv[]) {
             args.push_back("--no-ubershader");
             args.push_back("--no-pipeline-list");
             Logf("PowerVR: pipelines built one at a time when first drawn, no ubershader, no list at start");
+            // (in log.txt too: what a shared log has to show, 4u-native #31)
+            std::fprintf(stderr, "[Info] App: PowerVR (%s): pipelines built one at a time when first drawn, no ubershader, "
+                                 "no list at start\n", first_run_gpu_name().c_str());
         }
         // the renderer's thread joins the performance-hint session as the game's does (it carries the frame as much;
         // PERF_SUBMIT would join only after reporting frame after frame)
@@ -626,6 +717,7 @@ int main(int argc, char* argv[]) {
     bool running = true;
     bool quitting = false;  // (the player closed the app: the game's end is no error)
     bool paused_in_background = false;  // (the game's clock stopped while the app was away)
+    bool paused_for_menu = false;       // (and while the settings are open, playing alone: [Interface] PauseInMenu)
     SDL_FingerID touch_finger = 0;
     bool touching = false;
     DisplayOptions display = ReadDisplayOptions(app_settings_path());
@@ -703,6 +795,7 @@ int main(int argc, char* argv[]) {
     bool new_frame = false;     // (the top screen's picture changed since the last present: a new game frame)
     bool bottom_dirty = false;  // (the touch screen changed and is not presented yet)
     while (running) {
+        mark.Tick(SDL_GetTicks());
         bool had_events = false;
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
@@ -742,7 +835,7 @@ int main(int argc, char* argv[]) {
                 break;
             case SDL_EVENT_DID_ENTER_FOREGROUND:
                 display_frame_rate_refresh();  // (the surface may be a new one)
-                if (auto* rt = g_runtime.load(); rt != nullptr && paused_in_background) rt->Clock().Resume();
+                if (auto* rt = g_runtime.load(); rt != nullptr && paused_in_background && !paused_for_menu) rt->Clock().Resume();
                 paused_in_background = false;
                 break;
             case SDL_EVENT_FINGER_DOWN: {
@@ -782,6 +875,30 @@ int main(int argc, char* argv[]) {
         }
         if (g_game_done.load()) {
             running = false;
+        }
+        // the settings open while playing alone: the game waits, as on the console's HOME menu (gu-native #94, the same
+        // in MHGU for Android); in a room it goes on, as the others' games do
+        if (auto* rt = g_runtime.load()) {
+            const auto room = mh4n::rooms::GetStatus().state;
+            const bool alone = room != mh4n::rooms::State::Joined && room != mh4n::rooms::State::Moderator;
+            static unsigned read_version = ~0u;
+            static bool pause_in_menu = true;
+            if (read_version != app_settings_version()) {
+                read_version = app_settings_version();
+                pause_in_menu = app_setting_bool("Interface", "PauseInMenu", true);
+            }
+            const bool want = (ui_settings_open() || touch_editor_holds()) && alone && pause_in_menu;  // (the layout editor too)
+            static bool said_in_editor = false;  // (the editor's steps while a part is dragged: logged once)
+            if (want && !paused_for_menu) {
+                rt->Clock().Pause();
+                paused_for_menu = true;
+                if (!touch_editing() || !said_in_editor) Logf("the game waits while the menu is open");
+                said_in_editor = touch_editing();
+            } else if (!want && paused_for_menu) {
+                paused_for_menu = false;
+                if (!paused_in_background) rt->Clock().Resume();
+                if (!touch_editing()) Logf("the game goes on"), said_in_editor = false;
+            }
         }
         // the controls to the game now, before this turn draws and presents (a present can wait for a buffer of the
         // window's: the press would wait with it)
@@ -860,6 +977,7 @@ int main(int argc, char* argv[]) {
             state.item_bar_shown = game.item_bar_shown;
             state.top_width = game.top_width;
             state.place = game.place;
+            state.front_end = game.front_end;
             state.action = game.action;
             const SDL_FRect& t = layout.top;  // (fractions of the top screen's picture, to the window's pixels)
             const auto to_window = [&t](const float* f) {
@@ -1006,6 +1124,7 @@ int main(int argc, char* argv[]) {
         g_screens.bottom = ScreenPicture{};
     }
     if (game_thread.joinable()) game_thread.join();
+    mark.Remove();
     // the game stopped by itself with an error: the screen that shares the log, in its own process
     if (!quitting && (g_game_status.load() != 0 || !problem.empty())) {
         std::fflush(stderr);

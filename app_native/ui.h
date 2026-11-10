@@ -24,9 +24,8 @@ struct UiInput {
 // What the game is doing, as far as android_main.cpp can tell; the touch controls change with it. Every field has a
 // default that works without it (the state android_main.cpp doesn't feed yet).
 struct UiGameState {
-    // A menu of the game's is open (1: the menu layout, where the stick moves the cursor and the attack pill confirms
-    // and goes back) or the hunter is being played (0: the hunt layout). -1, not known: the on-screen layout button
-    // chooses (the hunt layout to begin with). A change of a known value takes over from the button.
+    // A menu of the game's is open (1: the touch controls fade and the menu pad comes in, its d-pad and L and R tabs;
+    // the stick moves the cursor too) or the hunter is being played (0). -1, not known: as it was.
     int menu = -1;
     // The weapon: 1 drawn, 0 sheathed, -1 not known. The thumb past the stick's rim holds R (the dash) unless drawn.
     int weapon_drawn = -1;
@@ -41,10 +40,11 @@ struct UiGameState {
     SDL_FRect item_bar{};
     int top_width = 400;  // the top screen's picture in the game's pixels (the editor moves the HUD's parts in them)
     int place = -1;       // where the game is: 0 another place (the title, the Arena's equipment), 1 a town, 2 a quest
+    int front_end = 0;    // 1 the intro and the title, the choice of a save, the character's creation (no menu pad)
     int action = -1;      // in a quest: the hunter's action (a number of the game's; it changes as one move ends)
     // The parts of the game's hunting HUD (Port::Hooks::HudPartKey's order: the clock, the health and stamina bars, the
-    // sharpness, the name plates, the area's map, the target camera, the item bar): the layout editor moves them, and a
-    // tap on the target camera's icon turns it
+    // sharpness, the name plates, the area's map, the target camera, the item bar): the layout editor moves them, and
+    // the lock-on's ring goes round the target camera's icon
     struct HudPart {
         int shown = 0;    // drawn now
         int seen = 0;     // drawn at least once since the game started
@@ -82,4 +82,8 @@ void ui_set_game_state(const UiGameState& state);
 // neither drawn nor fed, and the panel takes the fingers, the controller's presses and the keys (ui_event).
 void ui_open_settings();
 bool ui_settings_open();
+// The touch controls' layout editor is open (touch.cpp; the game waits meanwhile, as in the settings, playing alone).
+bool touch_editing();
+// ...and holds the game now: not for a moment of every 100 ms while a part of the game's HUD is dragged (touch.cpp).
+bool touch_editor_holds();
 void ui_shutdown();

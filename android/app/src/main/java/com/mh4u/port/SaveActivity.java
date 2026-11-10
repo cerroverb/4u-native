@@ -8,6 +8,7 @@ import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
 import android.os.Process;
@@ -37,8 +38,11 @@ import java.util.Locale;
  * the guild cards, event quests and the Palico in its extra data (extdata/00000000/00001263/). The same layout as
  * Citra and Azahar, and as Checkpoint's backups on a 3DS (the save files alone).
  *
- * Import: the source is checked and copied into save_import/, then the app restarts. GameActivity applies it before
- * the game starts (applyPending): it keeps a copy of the current save in save_backups/<date>, then replaces it.
+ * Import: the source is found by a search of the storage, or chosen with the folder browser (an emulator's whole user
+ * folder, its sdmc folder or the one inside it, a save's own folder, an Export folder: 4u-native #16); it is checked and
+ * copied into save_import/, then the app restarts. GameActivity applies it before the game starts (applyPending): a
+ * copy of the current save goes to save_backups/<date>, then it is replaced whole (SaveFolder.copySave: staged, then
+ * renamed into place), in the save folder when one is chosen.
  * Export: a copy of the save in a folder the player chooses (the system's folder picker, as MHGU's SaveExportActivity):
  * a new folder "MH4U save <date>" in it, in Azahar's layout (sdmc/...), for an emulator or a 3DS.
  */
@@ -58,46 +62,46 @@ public class SaveActivity extends Activity {
     private Button exportButton;
     private LinearLayout list;
 
-    static File home(Context c) {
-        File f = c.getExternalFilesDir(null);
-        return f != null ? f : c.getFilesDir();
-    }
+    static File home(Context c) { return AppHome.home(c); }
     static File userDir(Context c) { return new File(home(c), "user"); }
-    private static File sdmc(Context c) { return new File(userDir(c), "sdmc/Nintendo 3DS/" + ZEROS + "/" + ZEROS); }
-    static File saveDir(Context c, String title) { return new File(sdmc(c), "title/00040000/" + title + "/data/00000001"); }
-    static File extDir(Context c, String title) {
-        return new File(sdmc(c), "extdata/00000000/" + (title.equals("00126100") ? "00001261" : "00001263"));
-    }
+    // (the save is where Settings -> Save folder says: the user folder's sdmc/, or the chosen folder's)
+    static File saveDir(Context c, String title) { return SaveFolder.dataDir(SaveFolder.active(c), title); }
+    static File extDir(Context c, String title) { return SaveFolder.extDir(SaveFolder.active(c), title); }
     private static File importDir(Context c) { return new File(home(c), "save_import"); }
 
     // ---- applying an import before the game starts (GameActivity.onCreate)
+    /**
+     * The save staged in save_import/<title>/{data, extdata} takes the current one's place, which is copied to
+     * save_backups first. Nothing is deleted before the new save is copied whole and checked: the staged files are
+     * laid out as a save root of their own and SaveFolder.copySave moves them in by renames. If anything fails, the
+     * current save stays as it was and the import is tried again at the next start.
+     */
     static void applyPending(Context c) {
         File staged = importDir(c), ready = new File(staged, "ready");
         if (!ready.exists()) return;
-        String title = "00126300";
-        File[] titles = staged.listFiles(File::isDirectory);
-        String stamp = new SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", Locale.ROOT).format(new Date());
-        File backup = new File(home(c), "save_backups/" + stamp);
-        for (String t : new String[] {"00126300", "00126100"}) {
-            File src = new File(staged, t);
-            if (!src.isDirectory()) continue;
-            title = t;
-            File save = saveDir(c, t), ext = extDir(c, t);
-            copyTree(save, new File(backup, "data"));
-            copyTree(ext, new File(backup, "extdata"));
-            if (new File(src, "data").isDirectory()) {
-                deleteTree(save);
-                copyTree(new File(src, "data"), save);
-                File meta = new File(save.getParentFile(), "00000001.metadata");
-                if (!meta.exists()) writeBytes(meta, METADATA);
+        File root = SaveFolder.active(c), from = new File(staged, "root");
+        try {
+            SaveFolder.deleteTree(from);
+            int titles = 0;
+            for (String t : SaveFolder.TITLES) {
+                File src = new File(staged, t);
+                if (!new File(src, "data/system").isFile()) continue;
+                titles++;
+                SaveFolder.copyTree(new File(src, "data"), SaveFolder.dataDir(from, t));
+                File meta = SaveFolder.metaFile(root, t);
+                if (meta.isFile()) SaveFolder.copyChecked(meta, SaveFolder.metaFile(from, t));
+                else writeBytes(SaveFolder.metaFile(from, t), METADATA);
+                if (new File(src, "extdata").isDirectory()) SaveFolder.copyTree(new File(src, "extdata"), SaveFolder.extDir(from, t));
             }
-            if (new File(src, "extdata").isDirectory()) {
-                deleteTree(ext);
-                copyTree(new File(src, "extdata"), ext);
-            }
+            if (titles == 0) throw new IOException("nothing staged");
+            File backup = SaveFolder.describe(root).valid ? SaveFolder.backup(c, root, "import") : null;
+            SaveFolder.copySave(from, root);
+            SaveFolder.deleteTree(staged);
+            android.util.Log.i("MH4U", "save import applied in " + root + (backup != null ? ", the old save in " + backup : ""));
+        } catch (IOException e) {  // (the save stays as it was, the import is tried again at the next start)
+            SaveFolder.deleteTree(from);
+            android.util.Log.e("MH4U", "save import: " + e.getMessage());
         }
-        deleteTree(staged);
-        android.util.Log.i("MH4U", "save import applied for " + title + ", the old save in " + backup);
     }
 
     // ---- the screen
@@ -189,9 +193,94 @@ public class SaveActivity extends Activity {
                 say(es ? "Todavía no hay una partida para exportar." : "There is no save to export yet.", true);
             }
         } else {
+            // (4u-native #16: a save the search doesn't reach, in any folder the player can point at)
+            Button folder = button(es ? "Elegir carpeta" : "Choose a folder", true);
+            folder.setOnClickListener(v -> browse());
+            list.addView(folder, row());
             status.setText(es ? "Buscando partidas..." : "Looking for saves...");
             new Thread(this::findSources).start();
         }
+    }
+
+    // ---- choosing the folder the save is in (the game's folder browser, as MHGU's import has a picker)
+    private void browse() {
+        if (Build.VERSION.SDK_INT >= 30 ? !Environment.isExternalStorageManager()
+                : checkSelfPermission(android.Manifest.permission.READ_EXTERNAL_STORAGE) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            say(es ? "El juego no tiene permiso para leer tus carpetas: elige otra vez la carpeta del juego en Ajustes para darlo."
+                   : "The game has no permission to read your folders: choose the game folder again in Settings to give it.", true);
+            return;
+        }
+        FolderBrowser.open(this, null, es ? "ELIGE LA CARPETA DE TU PARTIDA" : "CHOOSE YOUR SAVE'S FOLDER",
+                dir -> source(dir, 0) != null,
+                (dir, holds) -> holds ? (es ? "✓ Aquí hay una partida." : "✓ There is a save here.")
+                                      : (es ? "Entra a la carpeta de tu partida (system, user1...) o a la de tu emulador (sdmc)."
+                                            : "Go into your save's folder (system, user1...) or your emulator's (sdmc)."),
+                dir -> {
+                    Source s = source(dir, 0);
+                    if (s != null && inUse(s.data)) {
+                        say(es ? "Esa es la partida que el juego usa ahora." : "That is the save the game uses now.", true);
+                        return;
+                    }
+                    if (s == null) {
+                        say(es ? "En esa carpeta no hay una partida de MH4U. Elige la que tiene system y user1, o la carpeta sdmc de tu emulador."
+                               : "There is no MH4U save in that folder. Choose the one with system and user1, or your emulator's sdmc folder.", true);
+                        return;
+                    }
+                    stage(s);
+                }, null, false);
+    }
+
+    /**
+     * The save in a folder the player chose: the folder of the save's files itself (system and a user file: a
+     * Checkpoint backup, Azahar's "Open Save Data Location"), or one with the emulators' layout under it (an emulator's
+     * user folder, its sdmc folder or the one inside it, an Export folder), a few levels down. null: none.
+     */
+    private Source source(File dir, int depth) {
+        if (dir == null || depth > 4) return null;
+        if (looksLikeSave(dir)) {
+            Source s = new Source();
+            s.data = dir;
+            s.title = "00126300";
+            File data = dir.getParentFile(), titleDir = data != null ? data.getParentFile() : null;
+            String t = titleDir != null ? titleDir.getName().toLowerCase(Locale.ROOT) : "";
+            if (dir.getName().equals("00000001") && data.getName().equals("data") && (t.equals("00126300") || t.equals("00126100"))) {
+                s.title = t;
+                File id1 = titleDir.getParentFile() != null ? titleDir.getParentFile().getParentFile() : null;
+                File ext = id1 == null ? null : new File(id1, "extdata/00000000/" + (t.equals("00126100") ? "00001261" : "00001263"));
+                s.ext = ext != null && ext.isDirectory() ? ext : null;
+            }
+            s.label = describe(dir);
+            return s;
+        }
+        if (dir.getName().equals("Nintendo 3DS")) {
+            Source best = null;
+            File[] ids0 = dir.listFiles(File::isDirectory);
+            if (ids0 != null)
+                for (File id0 : ids0) {
+                    File[] ids1 = id0.listFiles(File::isDirectory);
+                    if (ids1 == null) continue;
+                    for (File id1 : ids1)
+                        for (String t : SaveFolder.TITLES) {
+                            Source s = source(new File(id1, "title/00040000/" + t + "/data/00000001"), 4);
+                            if (s != null && (best == null || new File(s.data, "system").lastModified() > new File(best.data, "system").lastModified()))
+                                best = s;
+                        }
+                }
+            return best;
+        }
+        File n3ds = new File(dir, "Nintendo 3DS"), sdmc = new File(dir, "sdmc");
+        if (n3ds.isDirectory()) return source(n3ds, depth + 1);
+        if (sdmc.isDirectory()) return source(sdmc, depth + 1);
+        if (depth >= 2) return null;
+        File[] kids = dir.listFiles(f -> f.isDirectory() && !f.getName().startsWith("."));
+        if (kids == null || kids.length > 40) return null;
+        for (File k : kids) {  // (an emulator's folder: azahar-emu/sdmc, citra-emu/sdmc, an Export folder's sdmc)
+            if (new File(k, "sdmc").isDirectory() || new File(k, "Nintendo 3DS").isDirectory()) {
+                Source s = source(k, depth + 1);
+                if (s != null) return s;
+            }
+        }
+        return null;
     }
 
     private LinearLayout.LayoutParams row() {
@@ -226,6 +315,11 @@ public class SaveActivity extends Activity {
     private void scan(File dir, int depth, List<Source> out) {
         if (depth > 6 || out.size() > 20) return;
         String name = dir.getName();
+        if (name.equals("Nintendo 3DS")) {  // (an emulator's: the save is 6 levels further, past the search's depth)
+            Source s = source(dir, 0);
+            if (s != null && !inUse(s.data)) out.add(s);
+            return;
+        }
         if (name.equals("00000001") && dir.getParentFile() != null && dir.getParentFile().getName().equals("data")) {
             File titleDir = dir.getParentFile().getParentFile();
             String t = titleDir != null ? titleDir.getName().toLowerCase(Locale.ROOT) : "";
@@ -238,11 +332,11 @@ public class SaveActivity extends Activity {
                 File ext = id1 == null ? null : new File(id1, "extdata/00000000/" + (t.equals("00126100") ? "00001261" : "00001263"));
                 s.ext = ext != null && ext.isDirectory() ? ext : null;
                 s.label = describe(dir);
-                if (!dir.getAbsolutePath().startsWith(userDir(this).getAbsolutePath())) out.add(s);
+                if (!inUse(dir)) out.add(s);
                 return;
             }
         }
-        if (depth > 0 && new File(dir, "system").isFile() && new File(dir, "user1").isFile() && looksLikeSave(dir)) {
+        if (depth > 0 && looksLikeSave(dir)) {
             Source s = new Source();  // a Checkpoint backup, or the files copied by hand
             s.data = dir;
             s.title = "00126300";
@@ -263,15 +357,33 @@ public class SaveActivity extends Activity {
         }
     }
 
+    /** A save the game itself uses (its own folder, or the save folder chosen): not something to import. */
+    private boolean inUse(File dir) {
+        String p = dir.getAbsolutePath();
+        return p.startsWith(userDir(this).getAbsolutePath() + "/") || p.startsWith(SaveFolder.active(this).getAbsolutePath() + "/");
+    }
+
+    /** system (512 bytes) and at least one hunter's file. */
     private static boolean looksLikeSave(File dir) {
-        File system = new File(dir, "system"), user = new File(dir, "user1");
-        return system.length() == 512 && user.length() > 0 && user.length() < 512 * 1024;
+        if (new File(dir, "system").length() != 512) return false;
+        for (int i = 1; i <= 3; i++) {
+            long n = new File(dir, "user" + i).length();
+            if (n > 0 && n < 512 * 1024) return true;
+        }
+        return false;
     }
 
     private String describe(File dir) {
         String p = dir.getAbsolutePath();
         String where = p.contains("citra") ? "Citra" : p.contains("azahar") || p.contains("Azahar") ? "Azahar"
-                     : p.contains("lime3ds") ? "Lime3DS" : p.contains("Checkpoint") ? "Checkpoint" : dir.getParentFile().getName();
+                     : p.contains("lime3ds") ? "Lime3DS" : p.contains("Checkpoint") ? "Checkpoint" : null;
+        if (where == null) {  // (the folder the player would know it by: the one that holds sdmc, else the save's own)
+            String root = Environment.getExternalStorageDirectory().getAbsolutePath();
+            int cut = p.indexOf("/sdmc/");
+            String place = cut > 0 ? p.substring(0, cut) : dir.getName().equals("00000001") || dir.getName().equals("data")
+                    ? dir.getParent() : p;
+            where = place.startsWith(root + "/") ? place.substring(root.length() + 1) : new File(place).getName();
+        }
         int users = 0;
         for (int i = 1; i <= 3; i++) if (new File(dir, "user" + i).exists()) users++;
         String date = new SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.ROOT).format(new Date(new File(dir, "system").lastModified()));
@@ -280,9 +392,9 @@ public class SaveActivity extends Activity {
 
     private void show(List<Source> found) {
         status.setText(found.isEmpty()
-                ? (es ? "No se encontró ninguna partida de MH4U. Copia la carpeta de la partida (system, user1...) al teléfono y vuelve a abrir esto."
-                      : "No MH4U save was found. Copy the save's folder (system, user1...) to the phone and open this again.")
-                : (es ? "Toca la partida que quieres traer." : "Tap the save to bring in."));
+                ? (es ? "La búsqueda no encontró ninguna partida de MH4U. Usa Elegir carpeta y entra a la carpeta de tu partida (system, user1...) o a la de tu emulador. Una partida dentro de Android/data de otra app hay que copiarla afuera primero."
+                      : "The search found no MH4U save. Use Choose a folder and go to your save's folder (system, user1...) or your emulator's. A save inside another app's Android/data has to be copied out first.")
+                : (es ? "Toca la partida que quieres traer, o elige su carpeta." : "Tap the save to bring in, or choose its folder."));
         for (Source s : found) {
             Button b = button("▸  " + s.label, true);
             b.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
@@ -297,11 +409,19 @@ public class SaveActivity extends Activity {
         File to = new File(staged, s.title);
         File data = new File(to, "data");
         data.mkdirs();
-        for (String f : SAVE_FILES) {
-            File from = new File(s.data, f);
-            if (from.exists()) copyTree(from, new File(data, f));
+        try {
+            for (String f : SAVE_FILES) {
+                File from = new File(s.data, f);
+                if (from.exists()) SaveFolder.copyChecked(from, new File(data, f));
+            }
+            if (s.ext != null) SaveFolder.copyTree(s.ext, new File(to, "extdata"));
+        } catch (IOException e) {
+            deleteTree(staged);
+            android.util.Log.e("MH4U", "save import: " + e.getMessage());
+            say(es ? "No se pudo copiar esa partida. Cópiala a la memoria del teléfono y vuelve a intentarlo."
+                   : "That save could not be copied. Copy it to the phone's storage and try again.", true);
+            return;
         }
-        if (s.ext != null) copyTree(s.ext, new File(to, "extdata"));
         writeBytes(new File(staged, "ready"), new byte[0]);
         status.setText(es ? "Listo. El juego se reinicia y carga la partida." : "Done. The game restarts and loads the save.");
         list.removeAllViews();

@@ -8,6 +8,8 @@ sobre un runtime propio que hace el trabajo de la consola, con los gráficos dib
 
 [Read this guide in English](README.md)
 
+Habla con otros jugadores y pide ayuda en el [Discord](https://discord.gg/sk5xEjEMwF) de la comunidad.
+
 ## Qué ofrece
 
 ### Imagen y rendimiento
@@ -33,15 +35,30 @@ sobre un runtime propio que hace el trabajo de la consola, con los gráficos dib
 
 - Una palanca de movimiento, la cámara arrastrando en cualquier parte de la pantalla, los ataques como píldora, dos botones
   o una banda en la esquina, y botones para esquivar, cubrirse, envainar, patear, el objetivo y la cámara
+- **Correr con la palanca:** empújala más allá de su borde para correr. Desliza el pulgar hacia arriba hasta el círculo
+  chico con un candado que hay encima de la palanca, que se ilumina, y levántalo ahí: la carrera se fija y el cazador sigue
+  corriendo, y giras con la cámara, hasta que vuelvas a tocar la palanca o el círculo, desenvaines o abras un menú. Para
+  correr solo mientras mantienes un botón: engranaje, **Controles**, **Botones en la pantalla**, desactiva **Correr con la
+  palanca**, y aparece un botón **Correr**
 - **Fijar objetivo:** mantén el botón de la cámara (L)
 - **Barra de objetos sin cruceta:** toca la barra de objetos del juego para usar el objeto, deslízala para cambiarlo
 - **Arcos y ballestas** tienen su propio diseño: un disparo grande, recarga, apuntar, fuego agachado o capas, y flechas
-  para la munición
+  para la munición. Un toque en apuntar deja la mira puesta hasta el próximo toque; mantenlo y desliza para apuntar, y el
+  deslizamiento gira la mira como arrastrar la vista
+- **Apuntar con giroscopio:** engranaje, **Controles**, **Apuntar con giroscopio** (desactivado por defecto) y
+  **Sensibilidad del giroscopio**. Mientras un arco o una ballesta apunta, girar el teléfono gira la mira, desde como lo
+  tenías al empezar a apuntar, sumado a tu dedo. También sirve un mando con giroscopio. El sensor solo se lee mientras
+  apuntas
 - Los controles siguen al juego: la cacería, los menús, y los arcos y ballestas tienen cada uno su diseño
+- **Menús pensados para tu pulgar:** al abrirse un menú del juego los controles táctiles se atenúan y aparece un pad chico
+  bajo el pulgar derecho, con los botones de página L y R encima. La palanca de movimiento y arrastrar en la pantalla
+  también mueven el cursor, y A y B quedan donde están. Para ocultarlo: engranaje, **Controles**, **Botones en la
+  pantalla**, **Pad de menú**
 - **Botones combinados:** hasta seis botones propios que aprietan varios a la vez, como A+X
 - **El editor del diseño:** una pulsación larga en el engranaje. Mueve y cambia el tamaño de cada botón, y mueve el HUD del
   propio juego: el reloj, las barras de vida y aguante, el filo, los nombres, el mapa de la zona, la cámara de objetivo y
-  la barra de objetos
+  la barra de objetos. El pad de menú y el círculo del candado de carrera también se mueven y cambian de tamaño ahí. El
+  panel del editor se aparta si arrastras su título, y se achica hasta un 60 %
 - El teclado de tu teléfono para el nombre de tu cazador y el chat
 - Vibración al tocar, opacidad y velocidad de la cámara ajustables
 
@@ -64,8 +81,15 @@ sobre un runtime propio que hace el trabajo de la consola, con los gráficos dib
 - Mods, con orden de carga y conflictos, y trucos en el formato de Azahar: mira [Mods y trucos](#mods-y-trucos)
 - Jugar con otros en salas de red, y buscar salas en la misma Wi-Fi: mira [Jugar con otros](#jugar-con-otros)
 - Importa tu partida de Azahar, Citra o un respaldo de Checkpoint, y expórtala para ellos
+- Guarda tu partida en una carpeta que una app de sincronización comparta con tus otros dispositivos: mira
+  [Elegir dónde se guarda tu partida](#elegir-dónde-se-guarda-tu-partida)
+- Trucos para **comer y beber más rápido**, y **Comodidades** según los mods QOL de jM5557: mira
+  [Mods y trucos](#mods-y-trucos)
+- Jugando solo, el juego espera mientras las opciones o el editor del diseño están abiertos
 - El juego se pausa cuando sales de la app
 - Si el juego se cierra por un error, una pantalla te avisa y te deja compartir el registro
+- Un aviso cuando sale una versión nueva, y cuando una copia no es la oficial: mira
+  [Descargas oficiales](#descargas-oficiales)
 
 ## ¿Qué tan bien anda?
 
@@ -194,15 +218,36 @@ por ti.
 1. Copia al dispositivo la carpeta con los archivos de tu partida (`system`, `user1`...), por ejemplo a `Download`. En Azahar
    o Citra: clic derecho en el juego, **Open Save Data Location**. Desde una 3DS: un respaldo de Checkpoint del juego.
 2. En el juego, engranaje, **Opciones del menú**, **Importar partida**. La app busca partidas en el dispositivo (también las
-   de una app de Azahar en el mismo dispositivo): toca la que quieras traer.
+   de una app de Azahar en el mismo dispositivo): toca la que quieras traer. Si no aparece, **Elegir carpeta** y elige la
+   carpeta de tu partida (`system`, `user1`...), la carpeta `sdmc` de un emulador o una carpeta hecha con **Exportar
+   partida**.
 
-El juego se reinicia con ella. La partida que tenías queda guardada en `Android/data/com.mh4u.native/files/save_backups`.
+El juego se reinicia con ella. La partida que tenías queda guardada en `Android/data/com.mh4u.native/files/save_backups`,
+y nunca se borra antes de que la nueva esté en su lugar.
 
 ## Exportar tu partida
 
 Primero guarda en el juego. Después engranaje, **Opciones del menú**, **Exportar partida**, y elige una carpeta: ahí se crea
 una carpeta nueva llamada `MH4U save` con la fecha, con la forma que usan Azahar y Citra, con la partida, las tarjetas de
 gremio, las misiones de evento y el Felyne.
+
+## Elegir dónde se guarda tu partida
+
+La partida está en la carpeta propia de la app, salvo que elijas otra; por ejemplo, una carpeta que una app de
+sincronización (Syncthing, FolderSync y similares) comparta con tus otros dispositivos. Ve al engranaje, **Opciones del
+menú**, **Carpeta de partidas**, y elige la carpeta:
+
+- Tu partida, con sus datos extra, va en una carpeta llamada `MH4U save` dentro de la que elijas, así una sola carpeta
+  compartida sirve para la de MH4U y la de MHGU para Android (`MHGU save`). Una carpeta que ya tiene una partida, como la
+  que hace **Exportar partida**, se usa tal cual.
+- Tu partida se copia ahí antes de cambiar nada. Si la carpeta ya tiene una partida, eliges cuál se queda; la otra queda
+  guardada en una copia, en `save_backups`, en la carpeta propia de la app.
+- El juego se reinicia para usar la carpeta: guarda antes. **Usar la carpeta propia del juego**, en la misma pantalla, vuelve
+  atrás.
+- En dos dispositivos, caza en uno a la vez y deja que la app de sincronización termine antes de abrir el juego en el otro.
+
+Al arrancar, el juego revisa la carpeta. Si no llega a ella, si la app de sincronización guardó dos versiones de la
+partida o si otro dispositivo tiene el juego abierto, te lo dice y te deja elegir qué hacer.
 
 ## Mods y trucos
 
@@ -222,19 +267,54 @@ formato de Azahar y Citra (cada truco es su `[Nombre]` y sus líneas de código)
 y guarda. Funcionan al momento. Guarda tu partida antes de probar uno, y úsalos en línea solo si todos en la sala están de
 acuerdo.
 
+**Comer y beber más rápido:** la app trae dos trucos, apagados, al final de la lista, como el port del MHGU. **Comer rapido
+siempre (beber x1.7, carne x1.8)** da el efecto de la habilidad Comer rápido sin tenerla; **Beber muy rapido (x2.5)** bebe
+todavía más rápido (la carne x1.8). Usa uno de los dos. Aceleran la animación, pero no dejan caminar mientras bebes. Al
+apagarlos, el efecto dura hasta la próxima misión.
+
+### Comodidades
+
+Debajo de los trucos, **Comodidades** tiene cuatro ideas de los [mods MH4U QOL](https://github.com/jM5557/MH4U-QOL-Cheats) de
+jM5557, hechas por la propia app: sin mods y sin hacer otra librería de código. Vienen apagadas hasta que las actives, y
+funcionan en el acto:
+
+- **Mantener A para recolectar:** mantén A para tallar, recolectar, minar y atrapar insectos una y otra vez, hasta que lo
+  sueltes.
+- **Moverse corta la pose:** después de una poción o una ración, moverte, rodar o cualquier otra acción corta la pose. Lo
+  que tomaste sigue haciendo efecto; si te quedas quieto, la pose se ve entera.
+- **B cancela el afilado:** B mientras afilas rueda y deja de afilar.
+- **Recompensas sin tiempo:** la pantalla de recompensas no tiene cuenta regresiva.
+
+La espera después de una misión ya se puede terminar antes: mantén ZL y ZR (engranaje, **Juego**, **Terminar la
+espera**), como hace con A y B el *Skip Quest End Timer* de jM5557.
+
+Los otros mods de jM5557 cambian el código del juego, así que van como mods de código: *Full Item Box In Villages And
+Hubs* (el cofre completo de la casa, con equipo y apariencia, en los cofres de la aldea y del salón), *Send All Rewards To
+Item Box (Hold X+Y)* y la versión *Hide Number* del de las recompensas. Bájalos del
+[repositorio de jM5557](https://github.com/jM5557/MH4U-QOL-Cheats), de su carpeta **USA v1.1** (hecha para la actualización
+1.3.0), y crea tu librería de código con el que quieras (paso 3, con la carpeta de ese mod, la que tiene `exefs` adentro,
+en la carpeta `mods`). La librería lleva un solo mod de código, como Azahar (el mod de una sola pantalla también es uno);
+*ALL Cheats* los tiene todos juntos, comodidades incluidas, así que con él deja apagadas las comodidades de la app.
+
 ## Jugar con otros
 
 El modo local del juego pasa por una sala de red, del mismo tipo que usa Azahar: jugadores de esta app y de Azahar pueden
-compartir una. La app no trae una sala ni un servidor propios.
+compartir una.
 
 1. Engranaje, **Multijugador**: elige un **Apodo**.
-2. En la misma Wi-Fi: un jugador toca **Crear una sala**; los demás tocan **Buscar en esta Wi-Fi**, en **Salas en esta
+2. **Salas públicas** muestra las salas de un lobby de la comunidad, `http://88.198.47.46:5000`, que mantienen jugadores
+   (no este proyecto); las de MH4U primero. Todos los de tu grupo tocan la misma sala para entrar (una vacía, así quedan
+   solos).
+3. O, en la misma Wi-Fi: un jugador toca **Crear una sala**; los demás tocan **Buscar en esta Wi-Fi**, en **Salas en esta
    Wi-Fi**, y entran. Por internet, el anfitrión abre el puerto UDP 24872 de su router hacia el teléfono, o todos entran a
    una sala que alguien mantiene; los demás escriben su **Dirección de la sala** (y la **Contraseña**, si tiene) y tocan
    **Entrar a la sala**.
-3. En el juego: World Map, Solo/Multiplayer, **Local Play**. Un jugador crea un Gathering Hall y los demás lo encuentran.
+4. En el juego: World Map, Solo/Multiplayer, **Local Play**. Un jugador crea un Gathering Hall y los demás lo encuentran.
 
-Entra a la sala antes de ir al Gathering Hall. El chat de la sala está en la misma página.
+Entra a la sala antes de ir al Gathering Hall. El chat de la sala está en la misma página. **Lobby** elige otro lobby
+(**Otro...**) o ninguno (**Ninguno**); los lobbies que escribes y guardas quedan en su lista, el último primero (hasta 24),
+y la **×** a su lado lo quita. La primera vez que juegas en línea, un cartel dice a qué servidor se conecta la app: como
+cualquier servidor de internet, ve tu dirección IP.
 
 ## Samsung: Game Booster
 
@@ -259,8 +339,10 @@ Usa el nombre del APK que descargaste. Es opcional: el juego anda igual sin esto
 | El juego se detiene al arrancar después de agregar o quitar un mod | Un mod con carpeta `exefs` necesita la librería creada con él (paso 3). En la pantalla de error, **Mods del último inicio** deja los mods como estaban |
 | Anda lento o el teléfono se calienta | Baja el **Límite de cuadros por segundo** o la **Resolución 3D**, o activa el **Modo gama baja**; en los teléfonos más débiles, **Tostadora** |
 | El juego se cierra solo | Cierra otras apps: suele ser falta de memoria. Después comparte el registro |
+| Pantalla negra al arrancar, con la música del menú sonando (algunas GPU Mali viejas) | Cuando los gráficos del teléfono rechazan la forma habitual de mostrar la imagen, la app ahora pasa sola a otra. Si sigue negra, adjunta a un issue el `log.txt` de `Android/data/com.mh4u.native/files` (lo copia un explorador de archivos o una PC) |
 
-Si sigue fallando, abre un [issue](../../issues) con el modelo de tu dispositivo y el registro. Si el juego se cierra por un
+Si sigue fallando, pregunta en el [Discord](https://discord.gg/sk5xEjEMwF) o abre un [issue](../../issues) con el modelo de tu dispositivo y el
+registro. Si el juego se cierra por un
 error, una pantalla te deja compartirlo; si no, está en el engranaje, **Opciones del menú**, **Compartir registro**. No
 adjuntes archivos del juego.
 
@@ -297,6 +379,8 @@ Titulares de derechos: abran un issue para ponerse en contacto.
   recompilado para Android de la misma forma.
 - El mod de una sola pantalla es de [jM5557](https://github.com/jM5557/mh4u-single-screen-mod), y no es parte de este
   proyecto.
+- Las **Comodidades** siguen los [mods MH4U QOL](https://github.com/jM5557/MH4U-QOL-Cheats) de jM5557; este proyecto no
+  tiene código de ellos.
 - Las librerías que usa este proyecto, con sus licencias, están en [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES). Sus licencias
   también están en la app: engranaje, **Créditos y licencias**, **Licencias**.
 
@@ -304,7 +388,8 @@ Titulares de derechos: abran un issue para ponerse en contacto.
 
 MH4U para Android es gratis. Las únicas descargas oficiales son los links que da khorne-hub, empezando por las
 [Releases](https://github.com/khorne-hub/4u-native/releases) de este repositorio. Si la bajaste de otro lado, pagaste por
-ella o tu copia vino con publicidad, no es la oficial.
+ella o tu copia vino con publicidad, no es la oficial. En la app, el botón de GitHub arriba en el menú de opciones, junto a
+**Guardar**, abre esta página en tu navegador, y el botón de Discord a su lado el [Discord](https://discord.gg/sk5xEjEMwF) de la comunidad.
 
 Todos los APK oficiales están firmados con la misma clave. La huella SHA-256 de su certificado es:
 
@@ -313,7 +398,13 @@ Todos los APK oficiales están firmados con la misma clave. La huella SHA-256 de
 ```
 
 Para revisar un APK: `apksigner verify --print-certs MH4U-<versión>.apk` (build-tools del SDK de Android). Una copia
-firmada con otra clave tampoco se puede instalar encima de la app oficial.
+firmada con otra clave tampoco se puede instalar encima de la app oficial. Desde la 0.1.9 la app también lo revisa: una
+copia firmada con otra clave lo avisa una vez al arrancar.
+
+La app también te avisa cuando sale una versión nueva. Como mucho una vez al día le pregunta a GitHub cuál es la última
+versión de este repositorio (no se envía nada más, ni siquiera el modelo del teléfono), y al abrir el juego te ofrece abrir
+su página. Nunca descarga ni instala nada por su cuenta. Engranaje, **Opciones del menú**, **Buscar actualizaciones** lo
+apaga.
 
 ## Licencia
 

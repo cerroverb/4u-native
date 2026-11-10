@@ -6,16 +6,22 @@
 //   [Graphics]  RenderScale = 100|75|50|0 (the 3D resolution, as MHGU's: a percent of the phone's own, 0 the 3DS's;
 //               render_scale_times makes it the runtime's --scale; next start)
 //               LowEnd = off|on|toaster (the preset's choice, as the panel last set it), FpsCounter = on|off,
-//               Shadows = on|off (at once: app_live.h)
+//               Shadows = on|off (at once: app_live.h), AdrenoFix = auto|off (first_run.h adreno_fix_applies; next start)
 //   [Audio]     Volume = 0..100, Reverb = on|off (at once: app_live.h)
 //   [Display]   Layout = overlay|stacked|side, Corner = bottom-right|bottom-left|top-right|top-left,
 //               Size = 20..60 (% of the window's height), Opacity = 30..100, TouchScreen = shown|hidden
 //   [Controls]  Haptics = on|off (a short vibration for a pressed touch control)
 //   [Interface] Language = auto|en|es (auto: the phone's), Theme = hunter|gold|blue, Scale = 50..200 (the menu's size, %),
-//               PauseInBackground = on|off (the game stops while the app is away; off: it goes on, a room's hunt too)
+//               PauseInBackground = on|off (the game stops while the app is away; off: it goes on, a room's hunt too),
+//               PauseInMenu = on|off (the game waits while the settings are open, playing alone: android_main.cpp),
+//               Updates = on|off (the start looks for a newer release once a day: Notices.java)
 //   [Network]   Nickname (the room's), Address = host[:port] (the room to join; empty: none), Password,
 //               HostPort = 1..65535 (24872), Slots = 2..16 (a room hosted on the phone), Lobby (a lobby's address;
-//               empty: none: the app has no lobby of its own), Notices = on|off (the room's lines over the game)
+//               empty: the default, a community lobby: settings_panel.cpp DEFAULT_LOBBY; Off: none), Notices = on|off
+//               (the room's lines over the game), OnlineNoticeShown = 1 (the notice about playing online was let go),
+//               RecentLobby1..24 (the lobbies typed and saved, the last first: the Lobby row's list, as MHGU's
+//               RecentServer1..), OlderLobbyListed = 1 (the lobby typed in an older version went into that list, once,
+//               at this version's first start: settings_panel.cpp list_older_lobby)
 //
 // Any thread (one lock); the file is read the first time it is asked for, and again by app_settings_reload().
 #pragma once
@@ -36,6 +42,8 @@ bool app_setting_bool(const char* section, const char* key, bool fallback);
 
 // Sets a value in memory (app_settings_save writes it): under its section, where it was, else at the section's end.
 void app_setting_set(const char* section, const char* key, const std::string& value);
+// Takes a key out (each line of it), in memory too; nothing when the file doesn't have it.
+void app_setting_remove(const char* section, const char* key);
 void app_setting_set_int(const char* section, const char* key, int value);
 // Writes the file (a temporary file renamed over it). False, with *error, when it can't.
 bool app_settings_save(std::string* error = nullptr);
@@ -50,6 +58,11 @@ unsigned app_settings_version();
 inline constexpr int kRenderScaleDefault = 100;
 void app_set_window_size(int w, int h);
 int render_scale_times(int percent);
+// What the renderer draws a 3D resolution at, the Adreno fix's floor taken in (first_run.h; `adreno_fix`: AdrenoFix is
+// auto). The dither's default follows it: the game's grid over a picture above 1x
+int render_scale_used(int percent, bool adreno_fix);
+// AdrenoFix as mh4u-app.ini has it: auto (true) unless "off"
+bool app_adreno_fix();
 
 // Low-end mode, as MHGU's ([Graphics] LowEnd; the settings' preset, and a weak phone's first start, first_run.h). On: frames
 // before looks: low_end_fps() (60, or 30 on a phone without a fast core), the 3D resolution at most kLowEndScale %, the

@@ -60,13 +60,21 @@
 //                     that the last segment is extended to t = 1 (as the fog table is) are [unverified].
 //                     position = 8 t, segment = min(floor(position), 7), colour = (value[segment] + difference[segment] *
 //                     (position - segment)) / 255, clamped.
-//     S6 [unverified] the output RGB is the table colour; alpha is the TEV output's; depth, blending and the logic op follow as for
-//                     any fragment.
+//     S6 [unverified] the output RGB is the table colour; alpha is 0, Azahar's (its hardware renderers write a transparent black
+//                     fragment for gas, which MH games draw well with); depth, blending and the logic op follow as for any
+//                     fragment. MH4U's only gas is the depth of field (uDOFFilter, MH4N_GAS_LOG): a density pass with no colour
+//                     buffer (address 0), then a shading pass over the scene that writes alpha alone (colour mask 0x8), with the
+//                     depth density source (0xE0 bit 3), GAS_DELTAZ_DEPTH 10.0 "always" and a gas table of zeros; the blurred
+//                     quarter of the scene is then laid over the scene by that alpha. On the console the alpha must follow each
+//                     pixel's depth (the subject sharp, the far scene blurred); the TEV's alpha, 1.0 there, blurred every pixel of
+//                     every cutscene (4u-native #18). Until the depth density is modelled (it needs the scene's depth in the
+//                     shading pass) alpha 0 leaves them sharp, as Azahar shows them. MH4N_GAS_ALPHA=tev: the TEV's alpha again.
 //   A fragment with both modes set runs the density pass only [unverified].
 //   Not modelled (the registers are copied raw into the gas region, so a later model needs no new key field or uniform):
 //   GPUREG_GAS_ATTENUATION, GPUREG_GAS_LIGHT_XY/Z, the low byte of GPUREG_GAS_LIGHT_Z_COLOR, GPUREG_GAS_DELTAZ_DEPTH, the shading
 //   density source (GPUREG_TEXENV_UPDATE_BUFFER bit 3), and the maximum the hardware tracks (GPUREG_GAS_ACCMAX_FEEDBACK bits
 //   16-31: reading it back needs a GPU-to-CPU path that does not exist, N2-04 does not render).
+#include <cstdlib>
 #include <cstring>
 
 #include "gpu/backend/rhi.h"
@@ -192,8 +200,14 @@ public:
               "    gas_t = clamp(unpackHalf2x16(gas_density).x / unpackHalf2x16(gas_max).x, 0.0, 1.0);\n"
               "}\n");
         e.If(e.Eq(e.Field(kw::kGas, 1, 1), 1), [&] { e.Raw("gas_t = 1.0;\n"); });
-        e.Raw("combiner_output.rgb = mh4n_gas_color(gas_t);\n"
-              "}\n");
+        e.Raw("combiner_output.rgb = mh4n_gas_color(gas_t);\n");
+        // S6: alpha 0 (MH4N_GAS_ALPHA=tev: the TEV's, as before; the same text either way for a process)
+        static const bool tev_alpha = [] {
+            const char* v = std::getenv("MH4N_GAS_ALPHA");
+            return v != nullptr && std::strcmp(v, "tev") == 0;
+        }();
+        if (!tev_alpha) e.Raw("combiner_output.a = 0.0;\n");
+        e.Raw("}\n");
     }
 
     // ---- the draw's needs --------------------------------------------------------------------------------------------

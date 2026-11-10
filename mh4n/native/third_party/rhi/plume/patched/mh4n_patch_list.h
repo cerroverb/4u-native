@@ -3,7 +3,7 @@
 
 namespace mh4n_rhi_plume {
 inline constexpr const char* kPlumeCommit = "0ce184b19270e49236afbb74052a6b267494b86b";
-inline constexpr unsigned kPatchCount = 20;
+inline constexpr unsigned kPatchCount = 22;
 inline constexpr const char* kPatchFiles[] = {
     "01-p7-mutable-format-zero-attachment.diff",
     "02-p2-fragment-shader-interlock.diff",
@@ -24,6 +24,8 @@ inline constexpr const char* kPatchFiles[] = {
     "17-depth-clear-load-op.diff",
     "18-allocator-block-size.diff",
     "19-queue-global-priority.diff",
-    "20-color-clear-load-op.diff"
+    "20-color-clear-load-op.diff",
+    "21-implied-transfer-queue.diff",
+    "22-pipeline-results.diff"
 };
 }  // namespace mh4n_rhi_plume

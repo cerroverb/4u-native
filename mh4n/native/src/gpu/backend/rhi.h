@@ -1105,6 +1105,9 @@ public:
     // `scale` > 1: the image is the target drawn at that scale and `rect` is in 1x pixels; each pixel is
     // the middle sample of its scale x scale block (a nearest downscale).
     Result<void> ReadbackToGuest(const Image& image, Rect rect, PicaFormat format, std::span<u8> dest, u32 scale = 1);
+    // The compute pipeline of a colour readback made now (and kept for ReadbackToGuest) rather than at the first one: a
+    // check right after the device is made that the driver takes the renderer's SPIR-V (the error names its VkResult).
+    Result<void> PrepareReadback();
     // A region of any backend image in the image's own format, row by row without padding.
     Result<std::vector<u8>> ReadImage(const Image& image, u32 x, u32 y, u32 width, u32 height);
     // The GPU time between the two MarkFrame marks of the last frame whose submission has passed.

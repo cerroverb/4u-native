@@ -123,6 +123,8 @@ struct GameState {
                                 // inside those (docs/research/game-state.md); -1 not known
     int menu = -1;              // 1 a menu or a window of the game's has the buttons (the START menu,
                                 // a talk, the World Map, a list), 0 the hunter is played
+    int front_end = 0;          // 1 the intro and the title, the choice of a save, the character's
+                                // creation (lists the stick moves through: no menu pad there)
     int weapon = -1;            // in a quest: the hunter's class, uWeaponNN in the game's weapon
                                 // numbers (1 the sword and shield, 4 the bowguns, 10 the bow)
     int weapon_drawn = -1;      // in a quest: 1 the weapon is out, 0 sheathed

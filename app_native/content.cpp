@@ -3,6 +3,7 @@
 
 #include <android/log.h>
 #include <strings.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -103,6 +104,53 @@ void content_init(const std::string& user_dir) {
 }
 
 const std::string& content_user_dir() { return g_user; }
+
+void content_add_port_cheats(const std::string& text) {
+    // (once per user folder: a marker beside the cheats file, so a test run's folder or another one gets its own)
+    const std::string marker = CheatsDir() + "/app_cheats_added.txt";
+    if (g_user.empty() || text.empty() || access(marker.c_str(), F_OK) == 0) return;
+    const std::string path = mh4n::cheats::CheatFilePath(g_user, kContentTitle);
+    std::string file;
+    {
+        std::ifstream in(path, std::ios::binary);
+        file.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    }
+    // the asset's blocks: each from its [Name] line to the next one (the asset has nothing before its first)
+    std::vector<std::pair<std::string, std::string>> blocks;
+    size_t at = text.find('[');
+    while (at != std::string::npos) {
+        size_t next = text.find("\n[", at);
+        next = next == std::string::npos ? text.size() : next + 1;
+        const size_t eol = text.find('\n', at);
+        blocks.emplace_back(text.substr(at, (eol == std::string::npos ? text.size() : eol) - at), text.substr(at, next - at));
+        at = next < text.size() ? next : std::string::npos;
+    }
+    std::string add;
+    int count = 0;
+    for (auto& [name, block] : blocks) {
+        std::string line = name;
+        while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
+        if (file.find(line) != std::string::npos) continue;  // (already there, on or off)
+        while (!block.empty() && (block.back() == '\n' || block.back() == '\r')) block.pop_back();
+        add += block + "\n\n";
+        count++;
+    }
+    if (!add.empty()) {
+        mkdir(CheatsDir().c_str(), 0770);
+        std::ofstream out(path, std::ios::binary | std::ios::app);
+        if (!file.empty() && file.back() != '\n') out << "\n";
+        if (!file.empty()) out << "\n";
+        out << add;
+        if (!out) {
+            Log("the app's cheats: could not write %s", path.c_str());
+            return;
+        }
+    }
+    mkdir(CheatsDir().c_str(), 0770);
+    std::ofstream note(marker);
+    note << "The app's own cheats (faster eating and drinking) were added to this folder's cheats file once.\n";
+    Log("the app's cheats: %d added to %s, off", count, path.c_str());
+}
 
 // ---- cheats ---------------------------------------------------------------------------------------------------
 std::vector<ContentCheat> content_cheats(bool* ready) {

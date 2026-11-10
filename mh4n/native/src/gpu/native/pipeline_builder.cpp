@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <cstring>
 #include "mh4n/log.h"
+#include "mh4n/spirv_target.h"
 
 #include "gpu/backend/state/state.h"
 #include "gpu/cpuvertex/trivial_vertex.h"
@@ -71,9 +72,10 @@ u64 VertexSourceVersion() {
 }
 
 u64 SpirvCompilerVersion() {
-    // glslang 16.6.0 (native/third_party/glslang), Vulkan 1.2, SPIR-V 1.5, no optimiser: bump the first number when the
-    // compiler or a setting of gpu/shader/spirv_compile.cpp or gpu/fragment/spirv_compile.cpp changes.
-    return fragment::HashCombine(1, 16, 6, 0, 12, 15);
+    // glslang 16.6.0 (native/third_party/glslang), Vulkan 1.2, SPIR-V 1.5 (1.1 and 1.3 below Vulkan 1.2:
+    // mh4n/spirv_target.h, set before this is asked), no optimiser: bump the first number when the compiler or a
+    // setting of gpu/shader/spirv_compile.cpp or gpu/fragment/spirv_compile.cpp changes.
+    return SpirvTarget13() ? fragment::HashCombine(1, 16, 6, 0, 11, 13) : fragment::HashCombine(1, 16, 6, 0, 12, 15);
 }
 
 PipelineBuilder::PipelineBuilder(std::shared_ptr<rhi::Backend> backend, const fragment::FeatureRegistry& features)

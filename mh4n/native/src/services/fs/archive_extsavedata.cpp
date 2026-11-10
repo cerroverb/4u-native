@@ -137,6 +137,9 @@ public:
         if (type_ == ExtType::Shared) {
             id.save_high = kSharedExtDataHigh;  // "The FS module overwrites the high value of the saveid"
         }
+        if (type_ != ExtType::Shared && SdmcUnreachable(state_)) {
+            return kResultHostFailure;  // (not NotFound: the game would make an empty extdata there)
+        }
         const std::string full = mount_point_.empty() ? std::string()
                                                       : ExtSaveDataFolder(mount_point_, id) +
                                                             (type_ == ExtType::Boss ? "boss/" : "user/");
@@ -157,6 +160,9 @@ public:
         }
         if (mount_point_.empty()) {
             MH4N_LOG(Error, kLog, "CreateExtSaveData: there is no user folder (--user)");
+            return kResultHostFailure;
+        }
+        if (type_ != ExtType::Shared && SdmcUnreachable(state_)) {
             return kResultHostFailure;
         }
         ExtId corrected = id;

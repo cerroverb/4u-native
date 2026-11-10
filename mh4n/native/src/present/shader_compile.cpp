@@ -8,6 +8,8 @@
 #include <glslang/Public/ShaderLang.h>
 #include <SPIRV/GlslangToSpv.h>
 
+#include "mh4n/spirv_target.h"
+
 namespace mh4n::present {
 
 namespace {
@@ -30,8 +32,9 @@ bool CompileGlsl(GlslStage stage, const std::string& source, std::vector<u32>& s
     const char* strings[1] = {source.c_str()};
     shader.setStrings(strings, 1);
     shader.setEnvInput(glslang::EShSourceGlsl, language, glslang::EShClientVulkan, 100);
-    shader.setEnvClient(glslang::EShClientVulkan, glslang::EShTargetVulkan_1_2);
-    shader.setEnvTarget(glslang::EShTargetSpv, glslang::EShTargetSpv_1_5);
+    const bool spirv13 = ::mh4n::gpu::SpirvTarget13();
+    shader.setEnvClient(glslang::EShClientVulkan, spirv13 ? glslang::EShTargetVulkan_1_1 : glslang::EShTargetVulkan_1_2);
+    shader.setEnvTarget(glslang::EShTargetSpv, spirv13 ? glslang::EShTargetSpv_1_3 : glslang::EShTargetSpv_1_5);
 
     const EShMessages messages = static_cast<EShMessages>(EShMsgSpvRules | EShMsgVulkanRules);
     if (!shader.parse(GetDefaultResources(), 450, false, messages)) {

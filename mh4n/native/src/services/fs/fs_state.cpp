@@ -143,6 +143,12 @@ void FsState::Init(ServiceContext& context) {
     if (!user_folder.empty() && !host::IsSeparator(user_folder.back())) {
         user_folder += '/';
     }
+    sdmc_folder = context.GetOptions().GetString("--saves", "");
+    if (!sdmc_folder.empty()) {
+        if (!host::IsSeparator(sdmc_folder.back())) sdmc_folder += '/';
+        MH4N_LOG(Info, kLog, "the save folder (the SD card's): {}{}", sdmc_folder,
+                 host::IsDirectory(sdmc_folder) ? "" : " - not there now");
+    }
 
     const std::string& folder = context.GameFolder();
     game.romfs = OpenGameFile(folder, "romfs.bin");

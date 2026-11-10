@@ -59,7 +59,15 @@ void RemoveStaleFiles(const std::string& folder) {
 }
 
 std::string SdmcDirectory(const FsState& state) {
+    if (!state.sdmc_folder.empty()) return state.sdmc_folder;
     return state.user_folder.empty() ? std::string() : state.user_folder + "sdmc/";
+}
+
+bool SdmcUnreachable(const FsState& state) {
+    if (state.sdmc_folder.empty() || host::IsDirectory(state.sdmc_folder)) return false;
+    MH4N_LOG(Error, kLog, "the save folder {} can't be reached (taken out, moved, not synced yet): the save is not "
+             "opened, and no new one is made", state.sdmc_folder);
+    return true;
 }
 
 std::string NandDirectory(const FsState& state) {
@@ -371,6 +379,9 @@ namespace {
 
 // Opens a title's save: NotFormatted until it has been formatted (Azahar's ArchiveSource_SDSaveData::Open).
 Result OpenSdSave(const FsState& state, u64 program_id, std::unique_ptr<ArchiveBackend>* archive) {
+    if (SdmcUnreachable(state)) {
+        return kResultHostFailure;  // (not NotFormatted: the game would answer by formatting an empty save there)
+    }
     const std::string sdmc = SdmcDirectory(state);
     const std::string concrete = sdmc.empty() ? std::string() : SaveDataPath(sdmc, program_id);
     if (concrete.empty() || !host::Exists(concrete)) {
@@ -388,6 +399,9 @@ Result FormatSdSave(const FsState& state, u64 program_id, const ArchiveFormatInf
     const std::string sdmc = SdmcDirectory(state);
     if (sdmc.empty()) {
         MH4N_LOG(Error, kLog, "FormatSaveData: there is no user folder (--user)");
+        return kResultHostFailure;
+    }
+    if (SdmcUnreachable(state)) {
         return kResultHostFailure;
     }
     const std::string concrete = SaveDataPath(sdmc, program_id);

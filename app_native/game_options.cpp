@@ -21,7 +21,8 @@ std::vector<std::pair<std::string, std::string>> g_queue;  // for the game's thr
 const char* const kLive[] = {"fps", "refresh_rate", "steady", "dither", "antialiasing", "fov", "render_flags_set", "render_flags_clear", "kick",
                              "target", "skip", "skip_panel", "skip_hint", "touch_overlay", "quest_overlay",
                              "target_overlay", "hud_edges", "bloom", "motion_blur", "depth_of_field", "radial_blur",
-                             "haze", "skip_end", "skip_end_hold"};
+                             "haze", "skip_end", "skip_end_hold", "qol_hold_gather", "qol_flex_cancel",
+                             "qol_sharpen_cancel", "qol_rewards_no_limit"};
 
 std::string Trim(std::string s) {
     while (!s.empty() && (s.back() == ' ' || s.back() == '\t' || s.back() == '\r')) s.pop_back();

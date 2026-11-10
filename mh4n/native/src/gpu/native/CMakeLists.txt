@@ -18,6 +18,7 @@ mh4n_module(
         default_provider.cpp
         native_gpu.cpp
         pipeline_builder.cpp
+        process_memory.cpp
         provider_select.cpp
         vertex_input.cpp
     DEPENDS

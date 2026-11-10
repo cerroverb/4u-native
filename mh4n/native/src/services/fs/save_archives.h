@@ -41,6 +41,9 @@ std::array<u8, 16> EncodeFormatInfo(const ArchiveFormatInfo& info);
 
 // "<user>/sdmc/" and "<user>/nand/"; empty without a user folder.
 std::string SdmcDirectory(const FsState& state);
+// --saves was given and its folder isn't there (an SD card taken out, a synced folder moved or not there yet): the
+// save and the extdata on it must fail as the host's error, never look unformatted (logged)
+bool SdmcUnreachable(const FsState& state);
 std::string NandDirectory(const FsState& state);
 
 // Opening a save data or extdata archive removes the files that a Windows delete left behind when the process

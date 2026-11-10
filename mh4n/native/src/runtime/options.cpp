@@ -23,6 +23,9 @@ MH4N_OPTION("runner", "--observable", "FILE",
 MH4N_OPTION("runner", "--slice-us", "N",
             "length of a scheduling slice in microseconds when both virtual cores have work (default 1000)");
 MH4N_OPTION("runner", "--user", "DIR", "the user directory (NAND, SD card, saves) for the services that need one");
+MH4N_OPTION("runner", "--saves", "DIR",
+            "the SD card's folder (the saves and the extra data) when it is not the user directory's sdmc/: a save "
+            "folder the player chose; while it can't be reached the save is a host failure, never an empty one");
 MH4N_OPTION("runner", "--init-time", "SECONDS[.FRACTION]",
             "the date the console starts at, seconds since the Unix epoch, UTC, with up to six decimals "
             "(microseconds); 946684800 to 4102444799.999999 (2000-01-01 to 2099-12-31), anything else "

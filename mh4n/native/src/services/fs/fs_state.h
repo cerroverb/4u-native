@@ -130,6 +130,10 @@ struct FsState {
     // --user, with a slash at the end; empty without it. The save data and extdata archives live under
     // it, in Azahar's layout (N1-13).
     std::string user_folder;
+    // --saves, with a slash at the end: the SD card's folder (save data and extdata) the player chose, in Azahar's
+    // layout; empty: user_folder's sdmc/. The NAND (the console's config: its unique ID, the MAC address) stays in
+    // user_folder, so two devices that share a save folder keep their own.
+    std::string sdmc_folder;
     ArchiveManager archives;
     std::unique_ptr<IoPool> pool;
 
