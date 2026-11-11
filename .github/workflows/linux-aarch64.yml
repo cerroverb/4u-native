@@ -1,0 +1,73 @@
+name: mh4u-linux (Linux AArch64)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [linux-dual-screen-ci]
+
+env:
+  SDL_TAG: release-3.4.20
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build g++ python3 patchelf libvulkan-dev \
+            libwayland-dev wayland-protocols libxkbcommon-dev libdecor-0-dev libegl-dev libgles-dev libdrm-dev libgbm-dev \
+            libpulse-dev libpipewire-0.3-dev libasound2-dev libudev-dev libdbus-1-dev \
+            libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxfixes-dev libxss-dev libxtst-dev
+
+      - name: Build SDL3 ${{ env.SDL_TAG }}
+        run: |
+          git clone --depth 1 --branch "$SDL_TAG" https://github.com/libsdl-org/SDL "$RUNNER_TEMP/SDL"
+          cmake -S "$RUNNER_TEMP/SDL" -B "$RUNNER_TEMP/SDL/build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$RUNNER_TEMP/sdl3" -DSDL_SHARED=ON -DSDL_STATIC=OFF -DSDL_TESTS=OFF -DSDL_EXAMPLES=OFF
+          cmake --build "$RUNNER_TEMP/SDL/build"
+          cmake --install "$RUNNER_TEMP/SDL/build"
+
+      - name: Build mh4u-linux
+        run: |
+          cmake -S linux -B build-linux -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/sdl3"
+          cmake --build build-linux --target mh4u-linux
+
+      - name: Package
+        run: |
+          pkg=mh4u-linux-aarch64
+          mkdir "$pkg"
+          cp build-linux/mh4u-linux "$pkg/"
+          strip -s "$pkg/mh4u-linux"
+          cp -L "$RUNNER_TEMP/sdl3/lib/libSDL3.so.0" "$pkg/"
+          patchelf --set-rpath '$ORIGIN' "$pkg/mh4u-linux"
+          cp linux/README.md LICENSE ADDITIONAL-TERMS THIRD_PARTY_NOTICES "$pkg/"
+          cp README.md "$pkg/README-upstream.md"
+          cp README.es.md "$pkg/README-upstream.es.md"
+          cp "$RUNNER_TEMP/SDL/LICENSE.txt" "$pkg/LICENSE-SDL3.txt"
+          cat > "$pkg/MODIFIED.txt" <<NOTE
+          This is a modified, unofficial build. It is not the official version and is not made or endorsed by
+          khorne-hub. Official project page: https://github.com/khorne-hub/4u-native
+
+          Changed by cerroverb on $(date -u +%Y-%m-%d): an experimental Linux host (linux/) for the native runtime,
+          with the two screens in two windows. Source: https://github.com/cerroverb/4u-native/tree/linux-dual-screen
+          (commit ${GITHUB_SHA}, the branch linux-dual-screen plus this build workflow).
+          NOTE
+          sed -i 's/^          //' "$pkg/MODIFIED.txt"
+          readelf -d "$pkg/mh4u-linux" | grep -E 'RUNPATH|RPATH|NEEDED'
+          file "$pkg/mh4u-linux" "$pkg/libSDL3.so.0"
+          LD_LIBRARY_PATH= "$pkg/mh4u-linux" --help || true
+          ldd "$pkg/mh4u-linux" | grep SDL3
+          tar -czf "$pkg.tar.gz" "$pkg"
+          tar -tzvf "$pkg.tar.gz"
+          sha256sum "$pkg.tar.gz" | tee "$pkg.tar.gz.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mh4u-linux-aarch64
+          path: |
+            mh4u-linux-aarch64.tar.gz
+            mh4u-linux-aarch64.tar.gz.sha256
+          if-no-files-found: error
