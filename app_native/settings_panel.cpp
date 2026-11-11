@@ -168,6 +168,7 @@ struct Draft {
     int face = 0, right_stick = 0, stick_speed = 100, r3 = 0, deadzone = 10, town = 0;
     bool invert_x = false, invert_y = false;
     std::string combo[6];  // the combined buttons: "A+X" (touch.cpp's combo1..combo6)
+    int combo_pad[6] = {};  // and a controller's button for each: [Controls] Combo<n>Pad, kComboPadKeys' index (controls.h)
     // mh4u-app.ini's [Network] (net_rooms.h): no room comes with the app; the lobby: empty the default (lobby_url); the
     // lobbies typed and saved, the last first ([Network] RecentLobby1..: kRecentLobbies of them, none of LOBBY_LIST's;
     // the same in the draft and as saved: taking one out is done at once, forget_lobby)
@@ -238,6 +239,9 @@ int index_of(const char* const (&keys)[N], const std::string& value) {
 // ---------------------------------------------------------------- the menu's state
 enum class View { Main, Buttons, ComboEdit, Keyboard, CloseChanges, Restart, Exit, Reset, RemoveDriver, RemoveMod, RemoveCheat, Conflicts,
                   PadList, PadMap, OpenSite, OpenDiscord };
+// View::Buttons opened from the Controller rows (playing with a controller): its combined buttons alone, as the MHGU
+// port's where there are no touch controls
+bool s_combos_alone = false;
 struct Row {
     std::string id, title, value;
     std::string key, help;  // its option's name (the explanation: HELP), or an explanation of its own
@@ -654,6 +658,8 @@ Draft load() {
         if (!v.empty()) d.show[i] = std::atoi(v.c_str()) != 0;
     }
     for (int k = 0; k < 6; k++) d.combo[k] = touch_setting("combo" + std::to_string(k + 1));
+    for (int k = 0; k < 6; k++)
+        d.combo_pad[k] = std::max(0, index_of(kComboPadKeys, app_setting("Controls", ("Combo" + std::to_string(k + 1) + "Pad").c_str(), "None")));
     d.nick = app_setting("Network", "Nickname");
     d.address = app_setting("Network", "Address");
     d.password = app_setting("Network", "Password");
@@ -776,6 +782,8 @@ bool save() {
     app_setting_set_int("Controls", "Deadzone", d.deadzone);
     app_setting_set("Controls", "LockOn", d.lock_on ? "on" : "off");
     app_setting_set("Controls", "GyroAim", d.gyro_aim ? "on" : "off");
+    for (int k = 0; k < 6; k++)
+        app_setting_set("Controls", ("Combo" + std::to_string(k + 1) + "Pad").c_str(), kComboPadKeys[d.combo_pad[k]]);
     {
         char sens[16];
         std::snprintf(sens, sizeof sens, "%.1f", d.gyro_sens / 10.0f);
@@ -1170,7 +1178,7 @@ void reset_page() {
     case PAGE_CONTROLS:
         c.controls = f.controls, c.touch_opacity = f.touch_opacity, c.camera = f.camera, c.attack_style = f.attack_style;
         c.show = f.show, c.haptics = f.haptics, c.lock_on = f.lock_on, c.gyro_aim = f.gyro_aim, c.gyro_sens = f.gyro_sens;
-        for (int k = 0; k < 6; k++) c.combo[k] = f.combo[k];
+        for (int k = 0; k < 6; k++) c.combo[k] = f.combo[k], c.combo_pad[k] = f.combo_pad[k];
         c.face = f.face, c.right_stick = f.right_stick, c.stick_speed = f.stick_speed, c.r3 = f.r3, c.deadzone = f.deadzone;
         c.town = f.town;
         c.invert_x = f.invert_x, c.invert_y = f.invert_y;
@@ -2304,8 +2312,11 @@ std::vector<Row> main_rows(bool* open) {
         }
         add_choice(r, "touch.style", "Attack buttons", c.attack_style, {tr("Pill"), tr("Two buttons"), tr("Corner band")},
                    [](int v) { s.draft.attack_style = v; }, "attack_style");
-        action(r, "touch.buttons", tr("Buttons on the screen"), []() { push(View::Buttons, "tb.0"); });
-        r.back().help = tr("Choose which of the game's buttons show on the screen.");
+        action(r, "touch.buttons", tr("Buttons on the screen"), []() {
+            s_combos_alone = false;
+            push(View::Buttons, "tb.0");
+        });
+        r.back().help = tr("Choose which of the game's buttons show on the screen, and add buttons of your own that press several at once.");
         {
             int shown = 0;
             for (char on : c.show) shown += on != 0;
@@ -2364,6 +2375,13 @@ std::vector<Row> main_rows(bool* open) {
                    {"SELECT", tr("Left stick click"), tr("Right stick click"), tr("Off")},
                    [](int v) { s.draft.town = v; }, "TownMenu");
         add_number(r, "pad.dead", "Stick dead zone", &c.deadzone, 0, 30, 2, "%d%%", "Deadzone");
+        if (controls_real_pad()) {  // (playing with a controller: Buttons on the screen's combined buttons alone)
+            action(r, "pad.combos", tr("Combined buttons"), []() {
+                s_combos_alone = true;
+                push(View::Buttons, "tc.0");
+            });
+            r.back().help = tr("Buttons of your own that press several of the game's at once, on a controller's button.");
+        }
         action(r, "pad.map", tr("Map a controller"), []() { push(View::PadList, "pad.0"); }, true, "PadMap");
         header(r, "keys.head", tr("Keyboard"));
         note(r, "keys.move", tr("W A S D move, Shift walks, I J K L turn the camera."));
@@ -2581,7 +2599,7 @@ std::vector<Row> rows_for_view(bool* open) {
     }
     if (s.view == View::Buttons) {
         const char* groups[] = {"Hunting", "Bows and bowguns", "Menus and the rest"};
-        for (int g = 0; g < 3; g++) {
+        for (int g = 0; g < 3 && !s_combos_alone; g++) {
             header(r, std::string("tb.head.") + std::to_string(g), tr(groups[g]));
             for (int i = 0; i < TB; i++) {
                 if (TOUCH_BUTTONS[i].group != g) continue;
@@ -2605,7 +2623,8 @@ std::vector<Row> rows_for_view(bool* open) {
                 push(View::ComboEdit, "ce.0");
             });
             r.back().value = s.draft.combo[k].empty() ? tr("Empty") : s.draft.combo[k];
-            r.back().help = tr("A button of your own presses several of the game's together (A+X, say). Place it with Customize controls and HUD.");
+            r.back().help = s_combos_alone ? tr("A button of your own presses several of the game's together (A+X, say). Give it a controller's button here.")
+                                           : tr("A button of your own presses several of the game's together (A+X, say). Place it with Customize controls and HUD.");
         }
         action(r, "tb.back", tr("Back"), []() { pop(); });
         r.back().arrow = false;
@@ -2644,7 +2663,15 @@ std::vector<Row> rows_for_view(bool* open) {
             row.activate = [n, set, has]() { set(n, !has(n)); };
             r.push_back(std::move(row));
         }
-        action(r, "ce.clear", tr("Clear"), [k]() { s.draft.combo[k].clear(); });
+        add_choice(r, "ce.pad", "Controller button", s.draft.combo_pad[k],
+                   {tr("None"), tr("Left stick click"), tr("Right stick click"), "SELECT", "Guide", "Misc", "Paddle 1", "Paddle 2",
+                    "Paddle 3", "Paddle 4", "Touchpad"},
+                   [k](int v) { s.draft.combo_pad[k] = v; });
+        r.back().help = tr("That button of a controller does the same, and no longer does what it did.");
+        action(r, "ce.clear", tr("Clear"), [k]() {
+            s.draft.combo[k].clear();
+            s.draft.combo_pad[k] = 0;
+        });
         action(r, "ce.back", tr("Back"), []() { pop(); });
         r.back().arrow = false;
         return r;
@@ -3614,7 +3641,7 @@ void touch_panel(bool* open) {
         const char* title = tr("SETTINGS");
         float size = std::floor(f * 1.2f), cy = by + side * .5f, room = right - title_x;
         std::string sub = s.view == View::Main       ? tr(page_names[s.page])
-                          : s.view == View::Buttons  ? tr("Buttons on the screen")
+                          : s.view == View::Buttons  ? tr(s_combos_alone ? "Combined buttons" : "Buttons on the screen")
                           : s.view == View::Conflicts ? tr("Mod conflicts")
                           : s.view == View::PadList || s.view == View::PadMap ? tr("Map a controller")
                           : s.view == View::ComboEdit ? tr("Combined buttons")

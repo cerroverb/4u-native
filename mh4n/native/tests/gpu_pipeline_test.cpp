@@ -34,6 +34,7 @@
 #include "gpu/pipeline/caching_provider.h"
 #include "gpu/pipeline/files.h"
 #include "gpu/pipeline/key_codec.h"
+#include "mh4n/log.h"
 #include "support/vulkan_device.h"
 
 using namespace mh4n;
@@ -434,6 +435,51 @@ TEST_CASE("pipeline/the_keys_seen_are_compiled_at_the_next_start_the_fallbacks_f
     pipeline::Records records;
     CHECK(pipeline::ReadRecords(dir.path / "keys.bin", pipeline::kKindKeys, 1, native::kPipelineKeyVersion + 1, records) ==
           pipeline::ReadStatus::Stale);
+}
+
+TEST_CASE("pipeline/a_list_still_compiling_at_the_savers_turn_says_how_far_it_is") {
+    TempDir dir;
+    {
+        FakeHost fake;
+        pipeline::CachingOptions options = NoFiles();
+        options.folder = dir.path;
+        options.driver_cache = false;
+        auto provider = pipeline::MakeCachingProvider(fake.Host(), options);
+        for (u32 k = 1; k <= 8; ++k) REQUIRE(provider->Lookup(SpecialisedKey(k)).ok());
+        pipeline::WaitIdle(*provider);
+    }  // (the list written as the provider goes)
+    std::vector<std::string> lines;
+    std::mutex lines_mutex;
+    SetLogSink([&](const LogRecord& r) {
+        std::lock_guard lock(lines_mutex);
+        lines.emplace_back(r.message);
+    });
+    {
+        FakeHost fake;
+        fake.specialised_ms = 400;  // (a driver that compiles every pipeline anew: one listed key every 400 ms)
+        pipeline::CachingOptions options = NoFiles(2);  // (one worker for the list, one kept for the urgent keys)
+        options.folder = dir.path;
+        options.driver_cache = false;
+        options.save_seconds = 1;
+        auto provider = pipeline::MakeCachingProvider(fake.Host(), options);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1500));  // (the saver's first turn: 2 or 3 keys built of 8)
+        pipeline::WaitIdle(*provider);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1200));  // (a turn after the list: no line, its builds took < 1 s)
+    }
+    SetLogSink({});
+    std::lock_guard lock(lines_mutex);
+    const auto count = [&](const char* needle) {
+        return std::count_if(lines.begin(), lines.end(), [&](const std::string& l) { return l.find(needle) != std::string::npos; });
+    };
+    CHECK(count("the list not compiled yet (") >= 1);
+    CHECK(count("ms each (the longest ") >= 1);
+    CHECK(count("the list is compiled (") == 1);
+    // (the line after the list compiled is not there: once the list is done, a turn's line needs a second of builds)
+    const auto last_progress = std::find_if(lines.rbegin(), lines.rend(), [](const std::string& l) {
+        return l.find("ms each (the longest ") != std::string::npos;
+    });
+    REQUIRE(last_progress != lines.rend());
+    CHECK(last_progress->find("the list not compiled yet") != std::string::npos);
 }
 
 TEST_CASE("pipeline/the_spirv_store_round_trips_and_is_offered_to_the_builder") {

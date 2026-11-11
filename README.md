@@ -50,7 +50,8 @@ Talk with other players and ask for help in the community's [Discord](https://di
 - **Menus made for your thumb:** when a menu of the game's opens, the touch controls fade and a small pad comes in under
   your right thumb, with the page buttons L and R above it. The movement stick and a drag on the screen move the cursor
   too, and A and B stay where they are. To hide it: gear, **Controls**, **Buttons on the screen**, **Menu pad**
-- **Combined buttons:** up to six buttons of your own that press several at once, such as A+X
+- **Combined buttons:** up to six buttons of your own that press several at once, such as A+X. Each one can also go on a
+  controller's button (**Controller button**)
 - **The layout editor:** a long press on the gear. Move and resize every button, and move the game's own HUD: the clock,
   the health and stamina bars, the sharpness, the name plates, the area's map, the target camera and the item bar. The
   menu pad and the run's padlock circle move and resize there too. The editor's panel moves out of the way when you drag
@@ -66,7 +67,8 @@ Talk with other players and ask for help in the community's [Discord](https://di
 - **Town actions without the touch screen:** Guild Cards, Gestures, Friends and Hunters for Hire from a list, with the
   town's touch button or SELECT (Gear, **Controls**, **Town actions button**); what they open shows large in the middle
 - Gear, **Controls**, **Controller**: the face buttons by their place (as on the 3DS) or by their letters, the camera's speed
-  and direction, the sticks' dead zone. A controller the game reads wrong: **Map a controller**, and press each button once
+  and direction, the sticks' dead zone. A controller the game reads wrong: **Map a controller**, and press each button once.
+  While a controller is connected, a **Combined buttons** row there puts your combined buttons on its buttons
 - A keyboard: W A S D move (Shift: walk), I J K L the camera, U X, O or F A, Space B, R Y, Q L, E R, Tab ZL, T ZR,
   Enter START, Backspace SELECT, the arrows the D-pad
 
@@ -118,8 +120,9 @@ Put the game and its update in one folder, for example `C:\MH4U`. Any file names
 
 The 3DS has two screens. The app shows the top one on your whole screen and the touch screen in a corner, which you can
 move, resize, make see-through or hide (gear, **Display**). For a single screen, with the touch screen's menus moved to the
-top one, use **jM5557's single-screen mod** for the USA game. It is not part of this project: download it from its
-author's repository, [github.com/jM5557/mh4u-single-screen-mod](https://github.com/jM5557/mh4u-single-screen-mod)
+top one, use **jM5557's single-screen mod** for the USA game. It is made for the USA game in English: with the game in
+another language its menus overlap ([#30](https://github.com/khorne-hub/4u-native/issues/30)). It is not part of this project: download
+it from its author's repository, [github.com/jM5557/mh4u-single-screen-mod](https://github.com/jM5557/mh4u-single-screen-mod)
 (the green **Code** button, **Download ZIP**), and unzip it into a `mods` folder beside the game:
 
 ```

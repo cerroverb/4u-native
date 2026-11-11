@@ -37,5 +37,8 @@ void touch_set_bottom_default(bool shown);
 std::string touch_setting(const std::string& key);
 // Sets one at once and saves touch_layout.txt (a value out of its range is brought into it).
 void touch_set_setting(const std::string& key, const std::string& value);
+// The game's buttons combined button k (0..5, "combo<k+1>") presses, as mh4n::kPad* bits with ZL 1 << 14 and ZR 1 << 15
+// (controls.cpp's): 0 none. A controller's button presses them too ([Controls] Combo<n>Pad, controls.h).
+std::uint32_t touch_combo_buttons(int k);
 // Opens the layout editor (the settings panel's Customize the layout; a long press on the settings button does too).
 void touch_edit_begin();

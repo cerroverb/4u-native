@@ -16,6 +16,12 @@
 //                                  camera behind the hunter or to the target (L), the target camera (ZL, the port's
 //                                  target button), the kick (ZR), nothing
 //   Deadzone    = 0..30            the sticks' dead zone, % of their reach (10)
+//   Combo1Pad .. Combo6Pad = None|L3|R3|Select|Guide|Misc|Paddle1..Paddle4|Touchpad
+//                                  a controller's button that presses a combined button's buttons (the touch controls'
+//                                  Combo<n>, touch.h touch_combo_buttons) while held, and no longer does what it did
+//                                  (L3 the touch screen or the town's list, R3 the lock-on, Select the town's list and
+//                                  START + SELECT, Guide the settings): one with no buttons leaves it as it was. None by
+//                                  default. The MHGU port's [Touch] Combo<n>Pad, with Select for its Minus
 //
 // The keyboard (MHGU's keys where it has them): W A S D the Circle Pad (Shift held: walking), I J K L the camera (as
 // the right stick), U X, O or F A, Space B, R Y, Q L, E R, Tab ZL, T ZR, Enter START, Backspace SELECT, the arrows the
@@ -62,6 +68,11 @@ bool controls_gyro(bool aiming, float* right_deg, float* up_deg);
 // The game's buttons the controller and the keys held at the last controls_input (mh4n::kPad* bits)
 std::uint32_t controls_buttons();
 constexpr float kGyroSensMin = 0.2f, kGyroSensMax = 3.0f;  // [Controls] GyroSensitivity (1.0 the same angle)
+// [Controls] Combo<n>Pad's values, by their index (the settings' Controller button of a combined button), and how many
+// combined buttons there are
+inline constexpr const char* kComboPadKeys[] = {"None",    "L3",      "R3",      "Select",  "Guide",   "Misc",
+                                                "Paddle1", "Paddle2", "Paddle3", "Paddle4", "Touchpad"};
+constexpr int kCombos = 6;
 
 // Tests (launch.txt's env=):
 //   MH4U_TEST_INPUT=<file>       an input script (the runner's format: f<frame>:<BUTTON>:f<frames>, CIRCLE:x:y,
@@ -70,4 +81,6 @@ constexpr float kGyroSensMin = 0.2f, kGyroSensMax = 3.0f;  // [Controls] GyroSen
 //                                MH4U_TEST_INPUT_UNTIL=<frame>: its presses from that frame on are left out.
 //   MH4U_PAD_DEBUG=1             every controller's press and push in the log.
 //   MH4U_TEST_JOYSTICK=1         a joystick SDL has no map for (a virtual one, "Test Joystick"), for the notice that
-//                                asks to map it.
+//                                asks to map it. MH4U_TEST_JOYSTICK=pad: a virtual controller SDL maps ("Test Gamepad",
+//                                a controller in the player's hands for the app), whose buttons the input script presses
+//                                with f<frame>:PAD:<SDL's name of the button: a, back, leftstick, guide, misc1...>:f<frames>.

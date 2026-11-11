@@ -21,6 +21,7 @@
 #include "town.h"
 #include "padmap.h"
 #include "settings_panel.h"
+#include "touch.h"
 #include "ui.h"
 
 namespace {
@@ -50,6 +51,7 @@ struct Settings {
     float gyro_sens = 1.0f;
     int r3 = R3_LOCKON;
     int town = TOWN_SELECT;
+    int combo_pad[kCombos] = {};  // [Controls] Combo<n>Pad: kComboPadKeys' index (COMBO_PAD's button), 0 none
 };
 Settings g_set;
 unsigned g_set_version = ~0u;
@@ -99,11 +101,36 @@ void read_settings() {
     const std::string town = app_setting("Controls", "TownMenu", "select");
     s.town = !SDL_strcasecmp(town.c_str(), "l3") ? TOWN_L3 : !SDL_strcasecmp(town.c_str(), "r3") ? TOWN_R3
              : !SDL_strcasecmp(town.c_str(), "off") ? TOWN_OFF : TOWN_SELECT;
+    std::string pads;
+    for (int k = 0; k < kCombos; k++) {
+        const std::string v = app_setting("Controls", ("Combo" + std::to_string(k + 1) + "Pad").c_str(), "None");
+        for (int i = 1; i < (int)std::size(kComboPadKeys); i++)
+            if (!SDL_strcasecmp(v.c_str(), kComboPadKeys[i])) s.combo_pad[k] = i;
+        if (s.combo_pad[k]) pads += ", combined button " + std::to_string(k + 1) + " on " + kComboPadKeys[s.combo_pad[k]];
+    }
     g_set = s;
-    std::fprintf(stderr, "[Info] Controls: face buttons by %s, right stick %s, camera %.2fx%s%s, R3 %s, dead zone %.0f%%\n",
+    std::fprintf(stderr, "[Info] Controls: face buttons by %s, right stick %s, camera %.2fx%s%s, R3 %s, dead zone %.0f%%%s\n",
                  s.label ? "label" : "position", s.cstick ? "as the C-stick" : "turns the camera", s.speed,
                  s.invert_x ? ", inverted across" : "", s.invert_y ? ", inverted up and down" : "", r3.c_str(),
-                 s.deadzone * 100);
+                 s.deadzone * 100, pads.c_str());
+}
+
+// ---- the combined buttons on a controller's own buttons ([Controls] Combo<n>Pad), as the MHGU port's (its
+// runtime/host_input.c): while that button is held the game gets the combined button's buttons (touch.h
+// touch_combo_buttons), and the button does nothing else - not the game's button it was, nor the touch screen, the
+// lock-on, the town's list, START + SELECT or the settings. One whose combined button has no buttons is left as it was
+const SDL_GamepadButton COMBO_PAD[] = {
+    SDL_GAMEPAD_BUTTON_INVALID,        SDL_GAMEPAD_BUTTON_LEFT_STICK,     SDL_GAMEPAD_BUTTON_RIGHT_STICK,
+    SDL_GAMEPAD_BUTTON_BACK,           SDL_GAMEPAD_BUTTON_GUIDE,          SDL_GAMEPAD_BUTTON_MISC1,
+    SDL_GAMEPAD_BUTTON_RIGHT_PADDLE1,  SDL_GAMEPAD_BUTTON_LEFT_PADDLE1,   SDL_GAMEPAD_BUTTON_RIGHT_PADDLE2,
+    SDL_GAMEPAD_BUTTON_LEFT_PADDLE2,   SDL_GAMEPAD_BUTTON_TOUCHPAD};
+static_assert(std::size(COMBO_PAD) == std::size(kComboPadKeys), "a button for each of Combo<n>Pad's values");
+// the game's buttons button b presses as a combined button's (more than one on it: all of theirs), 0 none: b is its own
+u32 combo_bits(SDL_GamepadButton b) {
+    u32 bits = 0;
+    for (int k = 0; k < kCombos; k++)
+        if (g_set.combo_pad[k] && COMBO_PAD[g_set.combo_pad[k]] == b) bits |= touch_combo_buttons(k);
+    return bits;
 }
 
 // ---- Aiming with the gyro ([Controls] GyroAim), as the MHGU port's (its runtime/host_input.c gyro_update): while a
@@ -284,7 +311,9 @@ u32 pad_held(SDL_Gamepad* p) {
         SDL_GAMEPAD_BUTTON_RIGHT_STICK};
     u32 b = 0;
     for (SDL_GamepadButton sb : buttons)
-        if (SDL_GetGamepadButton(p, sb)) b |= button_bit(p, sb);
+        if (SDL_GetGamepadButton(p, sb) && !combo_bits(sb)) b |= button_bit(p, sb);  // (a combined button's: below)
+    for (int k = 0; k < kCombos; k++)
+        if (g_set.combo_pad[k] && SDL_GetGamepadButton(p, COMBO_PAD[g_set.combo_pad[k]])) b |= touch_combo_buttons(k);
     if (SDL_GetGamepadAxis(p, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) > kTrigger) b |= ZL_BIT;
     if (SDL_GetGamepadAxis(p, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) > kTrigger) b |= ZR_BIT;
     return b;
@@ -343,6 +372,7 @@ bool chord(SDL_Gamepad* p, SDL_GamepadButton b) {
     if (b != SDL_GAMEPAD_BUTTON_START && b != SDL_GAMEPAD_BUTTON_BACK) return false;
     const SDL_GamepadButton other = b == SDL_GAMEPAD_BUTTON_START ? SDL_GAMEPAD_BUTTON_BACK : SDL_GAMEPAD_BUTTON_START;
     if (!SDL_GetGamepadButton(p, other)) return false;
+    if (!ui_settings_open() && combo_bits(other)) return false;  // (SELECT a combined button's: not SELECT now)
     g_chord = true;
     g_down_at[__builtin_ctz(mh4n::kPadStart)] = g_down_at[__builtin_ctz(mh4n::kPadSelect)] = 0;  // (the first one's press)
     if (ui_settings_open()) {
@@ -389,8 +419,8 @@ Vec keys_stick(SDL_Scancode up, SDL_Scancode down, SDL_Scancode left, SDL_Scanco
 // ---- the test script (MH4U_TEST_INPUT)
 struct Step {
     u32 start = 0, len = 0;
-    int kind = 0;  // 0 buttons, 1 the Circle Pad, 2 the C-stick, 3 a touch
-    u32 bits = 0;
+    int kind = 0;  // 0 buttons, 1 the Circle Pad, 2 the C-stick, 3 a touch, 4 a button of the test controller's
+    u32 bits = 0;  // (4: its SDL_GamepadButton)
     float x = 0, y = 0;
 };
 std::vector<Step> g_script;
@@ -407,6 +437,16 @@ u32 script_button(const std::string& name) {
         if (name == n) return b;
     return 0;
 }
+// (the log's names of the game's buttons: MH4U_PAD_DEBUG)
+std::string script_names(u32 bits) {
+    static const char* const names[16] = {"A", "B", "SELECT", "START", "RIGHT", "LEFT", "UP", "DOWN",
+                                          "R", "L", "X", "Y", "", "", "ZL", "ZR"};
+    std::string t;
+    for (int i = 0; i < 16; i++)
+        if (bits >> i & 1) t += (t.empty() ? "" : "+") + std::string(names[i]);
+    return t.empty() ? "none" : t;
+}
+SDL_Joystick* g_test_pad = nullptr;  // MH4U_TEST_JOYSTICK=pad: the virtual controller the script presses (PAD)
 
 void script_load(const char* path, u32 until) {
     std::ifstream in(path);
@@ -441,6 +481,9 @@ void script_load(const char* path, u32 until) {
                 st.y = static_cast<float>(std::atof(f[3].c_str()));
             } else if (f.size() == 3 && script_button(kind)) {
                 st.bits = script_button(kind);
+            } else if (kind == "PAD" && f.size() == 4 && g_test_pad &&
+                       SDL_GetGamepadButtonFromString(f[2].c_str()) != SDL_GAMEPAD_BUTTON_INVALID) {
+                st.kind = 4, st.bits = static_cast<u32>(SDL_GetGamepadButtonFromString(f[2].c_str()));
             } else {
                 ++bad;
                 continue;
@@ -460,8 +503,10 @@ void script_input(u32 frame, ControlsInput& out) {
     if (g_script_over) return;
     bool touch = false;
     int tx = 0, ty = 0;
+    bool pad[SDL_GAMEPAD_BUTTON_COUNT] = {};
     for (const Step& st : g_script) {
         if (frame < st.start || frame >= st.start + st.len) continue;
+        if (st.kind == 4) pad[st.bits] = true;
         switch (st.kind) {
         case 0: out.buttons |= st.bits & 0xfff, out.zl |= (st.bits & ZL_BIT) != 0, out.zr |= (st.bits & ZR_BIT) != 0; break;
         case 1: out.circle_x = units(st.x), out.circle_y = units(st.y); break;
@@ -473,6 +518,12 @@ void script_input(u32 frame, ControlsInput& out) {
         if (g_set_touch) g_set_touch(touch, tx, ty);
         g_script_touch = touch;
     }
+    static bool pad_was[SDL_GAMEPAD_BUTTON_COUNT] = {};
+    for (int b = 0; g_test_pad && b < SDL_GAMEPAD_BUTTON_COUNT; b++)
+        if (pad[b] != pad_was[b]) {
+            SDL_SetJoystickVirtualButton(g_test_pad, b, pad[b]);  // (its events come with the next ones)
+            pad_was[b] = pad[b];
+        }
     if (frame >= g_script_end) {
         g_script_over = true;
         std::fprintf(stderr, "[Info] Controls: the test script is over at frame %u\n", frame);
@@ -487,6 +538,17 @@ void controls_init(const std::string& data_dir, std::function<void(bool, int, in
     padmap_init(data_dir);
     read_settings();
     imgui_pad();
+    if (const char* v = std::getenv("MH4U_TEST_JOYSTICK"); v && !SDL_strcmp(v, "pad")) {
+        // (a gamepad's every button and its sticks, no triggers: SDL maps a virtual controller by its own order)
+        SDL_VirtualJoystickDesc d;
+        SDL_INIT_INTERFACE(&d);
+        d.type = SDL_JOYSTICK_TYPE_GAMEPAD, d.naxes = 4, d.nbuttons = SDL_GAMEPAD_BUTTON_COUNT;
+        d.name = "Test Gamepad";
+        d.vendor_id = 0x1234, d.product_id = 0x5679;
+        const SDL_JoystickID id = SDL_AttachVirtualJoystick(&d);
+        if (id) g_test_pad = SDL_OpenJoystick(id);
+        std::fprintf(stderr, "[Info] Controls: test gamepad %s\n", g_test_pad ? "attached" : SDL_GetError());
+    }
     if (const char* script = std::getenv("MH4U_TEST_INPUT"); script && *script) {
         const char* until = std::getenv("MH4U_TEST_INPUT_UNTIL");
         script_load(script, until ? static_cast<u32>(std::atol(until)) : 0);
@@ -537,6 +599,12 @@ bool controls_event(const SDL_Event& e) {
         }
         if (p->id != g_active) return false;
         const auto b = static_cast<SDL_GamepadButton>(e.gbutton.button);
+        // (a combined button's: its buttons, and nothing else; in the settings it works them as before)
+        if (const u32 combo = ui_settings_open() ? 0 : combo_bits(b)) {
+            if (g_debug) std::fprintf(stderr, "[Info] Controls: %s is a combined button's\n", SDL_GetGamepadStringForButton(b));
+            pressed(combo);
+            return true;
+        }
         if (chord(p->pad, b)) return true;
         // (a stick's click as the town's list's button: in a town it opens the list, and closes it)
         if ((b == SDL_GAMEPAD_BUTTON_LEFT_STICK && g_set.town == TOWN_L3) ||
@@ -651,6 +719,11 @@ ControlsInput controls_input(std::uint32_t game_frame) {
     }
     bits &= ~g_suppress;
     if (g_chord) bits &= ~chord_bits;
+    if (g_debug) {
+        static u32 said = 0;
+        if (bits != said) std::fprintf(stderr, "[Info] Controls: the game's buttons %s\n", script_names(bits).c_str());
+        said = bits;
+    }
     out.buttons = bits & 0xfff;
     out.zl = (bits & ZL_BIT) != 0;
     out.zr = (bits & ZR_BIT) != 0;

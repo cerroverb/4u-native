@@ -36,6 +36,7 @@
 // when they near it (MH4U_ADPF_EFFICIENT=0: never).
 #define _GNU_SOURCE
 #include <android/api-level.h>
+#include <dirent.h>
 #include <dlfcn.h>
 #include <fcntl.h>
 #include <math.h>
@@ -388,12 +389,113 @@ static void mem_watch(void) {
         maps, of, maps - first_maps, rss / 1024, (rss - first_rss) / 1024, avail / 1024, gpu);
 }
 
+// The minute's [perf] line, after the [mem] one from the second on: the game's frames shown in that minute, the CPU time
+// of the process in cores (1.00: one core all the time) and of its busiest threads, by name (the pipeline workers'
+// three together), and the process's major page faults (pages read back from storage: memory short). A phone that runs
+// slowly whatever the settings (4u-native #43: an Adreno 610 at 7-8 FPS at 1x as at 3x) shows here which thread had no
+// time to spare - the game's (mh4u-game), the renderer's (mh4n-render), the pipeline workers' (mh4n-pipeline) - or that
+// none had (a wait: the GPU, a lock), or the memory.
+extern volatile uint64_t g_present_count;  // (android_main.cpp: the game's frames shown)
+#define PERF_TASKS 192
+#define PERF_TOP 5
+typedef struct { int32_t tid; unsigned long long ticks; } PerfTask;
+static PerfTask perf_prev[PERF_TASKS];
+static int perf_prev_n = -1;  // (-1: no minute yet, the first call only takes the counts)
+static uint64_t perf_prev_frames, perf_prev_ns;
+static unsigned long long perf_prev_ticks, perf_prev_majflt;
+
+// utime + stime and majflt of a /proc stat file ("pid (comm) state ...": comm may hold spaces and parentheses, so the
+// fields are counted from the last ')'); `name`: comm, at most 15 bytes. false: unreadable.
+static bool perf_stat(const char *path, char name[16], unsigned long long *ticks, unsigned long long *majflt) {
+    char buf[512];
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return false;
+    ssize_t r = read(fd, buf, sizeof buf - 1);
+    close(fd);
+    if (r <= 0) return false;
+    buf[r] = 0;
+    char *open_p = strchr(buf, '('), *close_p = strrchr(buf, ')');
+    if (open_p == NULL || close_p == NULL || close_p < open_p) return false;
+    size_t len = (size_t)(close_p - open_p - 1);
+    if (len > 15) len = 15;
+    memcpy(name, open_p + 1, len);
+    name[len] = 0;
+    unsigned long long maj = 0, ut = 0, st = 0;  // (fields 12, 14 and 15; the state is field 3)
+    if (sscanf(close_p + 1, " %*c %*d %*d %*d %*d %*d %*u %*llu %*llu %llu %*llu %llu %llu", &maj, &ut, &st) != 3) return false;
+    *ticks = ut + st;
+    if (majflt) *majflt = maj;
+    return true;
+}
+
+static void perf_watch(void) {
+    const uint64_t now = plat_now_ns(), frames = g_present_count;
+    char name[16];
+    unsigned long long ticks = 0, majflt = 0;
+    if (!perf_stat("/proc/self/stat", name, &ticks, &majflt)) return;
+    static PerfTask now_tasks[PERF_TASKS];  // (this thread only)
+    static struct { char name[16]; double ticks; int threads; } by_name[PERF_TASKS];
+    int n = 0, names = 0;
+    DIR *dir = opendir("/proc/self/task");
+    if (dir == NULL) return;
+    for (struct dirent *e; (e = readdir(dir)) != NULL && n < PERF_TASKS;) {
+        if (e->d_name[0] < '0' || e->d_name[0] > '9') continue;
+        char path[64];
+        unsigned long long t = 0;
+        snprintf(path, sizeof path, "/proc/self/task/%s/stat", e->d_name);
+        if (!perf_stat(path, name, &t, NULL)) continue;
+        now_tasks[n].tid = (int32_t)atoi(e->d_name);
+        now_tasks[n].ticks = t;
+        unsigned long long before = 0;  // (a thread new since the last minute: all its time is the minute's)
+        for (int i = 0; i < perf_prev_n; i++)
+            if (perf_prev[i].tid == now_tasks[n].tid) { before = perf_prev[i].ticks; break; }
+        ++n;
+        if (perf_prev_n < 0 || t <= before) continue;
+        int k = 0;
+        while (k < names && strcmp(by_name[k].name, name) != 0) k++;
+        if (k == names) {
+            memcpy(by_name[k].name, name, sizeof name);
+            by_name[k].ticks = 0;
+            by_name[k].threads = 0;
+            names++;
+        }
+        by_name[k].ticks += (double)(t - before);
+        by_name[k].threads++;
+    }
+    closedir(dir);
+    if (perf_prev_n >= 0 && now > perf_prev_ns) {
+        const double secs = (double)(now - perf_prev_ns) / 1e9, hz = (double)sysconf(_SC_CLK_TCK);
+        char line[512];
+        int len = snprintf(line, sizeof line, "[perf] the last %.0f s: %llu game frames shown (%.1f FPS); the process %.2f cores",
+                           secs, (unsigned long long)(frames - perf_prev_frames), (double)(frames - perf_prev_frames) / secs,
+                           (double)(ticks - perf_prev_ticks) / hz / secs);
+        for (int shown = 0; shown < PERF_TOP && len < (int)sizeof line - 48; shown++) {
+            int best = -1;
+            for (int k = 0; k < names; k++)
+                if (by_name[k].threads > 0 && (best < 0 || by_name[k].ticks > by_name[best].ticks)) best = k;
+            if (best < 0 || by_name[best].ticks / hz / secs < 0.01) break;
+            char count[16] = "";
+            if (by_name[best].threads > 1) snprintf(count, sizeof count, " x%d", by_name[best].threads);
+            len += snprintf(line + len, sizeof line - (size_t)len, "%s %s%s %.2f", shown == 0 ? ":" : ",", by_name[best].name,
+                            count, by_name[best].ticks / hz / secs);
+            by_name[best].threads = 0;  // (shown)
+        }
+        LOG("%s; %llu major page faults\n", line, majflt - perf_prev_majflt);
+    }
+    memcpy(perf_prev, now_tasks, sizeof(PerfTask) * (size_t)n);
+    perf_prev_n = n;
+    perf_prev_ns = now;
+    perf_prev_frames = frames;
+    perf_prev_ticks = ticks;
+    perf_prev_majflt = majflt;
+}
+
 // The minute's [mem] line on a thread of its own: reading /proc/self/maps (thousands of lines the kernel writes out,
 // under the process's memory map lock) took the presenting thread a while once a minute
 static void *mem_thread(void *arg) {
     (void)arg;
     for (;;) {
         mem_watch();
+        perf_watch();
         sleep(60);
     }
     return NULL;

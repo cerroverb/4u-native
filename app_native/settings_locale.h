@@ -108,7 +108,8 @@ static inline const char* settings_text(int language, const char* english) {
         {"Two buttons", "Dos botones"},
         {"Corner band", "Banda en la esquina"},
         {"Buttons on the screen", "Botones en la pantalla"},
-        {"Choose which of the game's buttons show on the screen.", "Elige qué botones del juego se ven en la pantalla."},
+        {"Choose which of the game's buttons show on the screen, and add buttons of your own that press several at once.",
+         "Elige qué botones del juego se ven en la pantalla, y agrega botones propios que aprieten varios a la vez."},
         {"Customize controls and HUD", "Personalizar controles y HUD"},
         {"Vibrate on touch", "Vibrar al tocar"},
         // Controls: a controller's and the keyboard's (controls.h), Map a controller (padmap.h)
@@ -204,6 +205,12 @@ static inline const char* settings_text(int language, const char* english) {
         {"Right stick left", "Palanca derecha a la izquierda"},
         {"Right stick right", "Palanca derecha a la derecha"},
         {"A button of your own presses several of the game's together (A+X, say). Place it with Customize controls and HUD.", "Un botón propio aprieta varios del juego a la vez (A+X, por ejemplo). Colócalo con Personalizar controles y HUD."},
+        // (a combined button on a controller's button: [Controls] Combo<n>Pad, the MHGU port's words)
+        {"A button of your own presses several of the game's together (A+X, say). Give it a controller's button here.", "Un botón propio aprieta varios del juego a la vez (A+X, por ejemplo). Dale un botón del mando aquí."},
+        {"Buttons of your own that press several of the game's at once, on a controller's button.", "Botones propios que aprietan varios del juego a la vez, en un botón del mando."},
+        {"Controller button", "Botón del mando"},
+        {"That button of a controller does the same, and no longer does what it did.", "Ese botón del mando hace lo mismo, y deja de hacer lo que hacía."},
+        {"None", "Ninguno"},
         {"Hunting", "Cacería"},
         {"Bows and bowguns", "Arcos y ballestas"},
         {"Menus and the rest", "Menús y lo demás"},

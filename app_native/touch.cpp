@@ -3101,6 +3101,13 @@ std::string touch_setting(const std::string &key) {
     return "";
 }
 
+std::uint32_t touch_combo_buttons(int k) {
+    ensure_loaded(g_s);
+    if (k < 0 || k >= COMBOS) return 0;
+    const uint64_t m = g_combo[k];  // (ZL and ZR: bits 16 and 17 here, 14 and 15 there)
+    return (uint32_t)(m & 0xfff) | (m >> 16 & 1 ? 1u << 14 : 0) | (m >> 17 & 1 ? 1u << 15 : 0);
+}
+
 void touch_set_setting(const std::string &key, const std::string &value) {
     State &s = g_s;
     ensure_loaded(s);

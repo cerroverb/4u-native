@@ -2,6 +2,19 @@
 
 [Español más abajo](#español)
 
+## 0.1.9.2
+
+Your code library stays valid: there's no need to build it again.
+
+- **Combined buttons on a controller:** each combined button can go on a controller's button (L3, R3, SELECT, Guide,
+  Misc, the paddles or the touchpad): gear, **Controls**, **Controller**, **Combined buttons**, a row that shows while a
+  controller is connected. A player's suggestion on Discord.
+- **More in the log for slow phones** ([#43](https://github.com/khorne-hub/4u-native/issues/43)): `log.txt` now tells how
+  far the game's list of shaders has got while it is being built, and how long it took, and has a performance line once a
+  minute.
+- **The single-screen mod** is made for the USA game in English: with the game in another language its menus overlap
+  ([#30](https://github.com/khorne-hub/4u-native/issues/30)). The README says so now.
+
 ## 0.1.9.1
 
 Your code library stays valid: there's no need to build it again.
@@ -133,6 +146,19 @@ MH4U for Android is free. Only the links khorne-hub gives are official: if you g
 came with ads, it isn't the official one. Check the APK's SHA-256 against the release's `.sha256` file.
 
 ## Español
+
+## 0.1.9.2
+
+Tu librería de código sigue sirviendo: no hace falta crearla de nuevo.
+
+- **Botones combinados en un mando:** cada botón combinado puede ir en un botón del mando (L3, R3, SELECT, Guide, Misc,
+  las paletas o el panel táctil): engranaje, **Controles**, **Mando**, **Botones combinados**, una fila que se ve con un
+  mando conectado. Una sugerencia de un jugador en Discord.
+- **Más detalle en el registro para teléfonos lentos** ([#43](https://github.com/khorne-hub/4u-native/issues/43)):
+  `log.txt` ahora dice cuánto lleva armada la lista de shaders del juego mientras se arma, y cuánto tardó, y tiene una
+  línea de rendimiento por minuto.
+- **El mod de una sola pantalla** está hecho para el juego de América en inglés: con el juego en otro idioma sus menús se
+  superponen ([#30](https://github.com/khorne-hub/4u-native/issues/30)). Ahora el README lo dice.
 
 ## 0.1.9.1
 

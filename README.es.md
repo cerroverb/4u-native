@@ -54,7 +54,8 @@ Habla con otros jugadores y pide ayuda en el [Discord](https://discord.gg/sk5xEj
   bajo el pulgar derecho, con los botones de página L y R encima. La palanca de movimiento y arrastrar en la pantalla
   también mueven el cursor, y A y B quedan donde están. Para ocultarlo: engranaje, **Controles**, **Botones en la
   pantalla**, **Pad de menú**
-- **Botones combinados:** hasta seis botones propios que aprietan varios a la vez, como A+X
+- **Botones combinados:** hasta seis botones propios que aprietan varios a la vez, como A+X. Cada uno también puede ir en
+  un botón del mando (**Botón del mando**)
 - **El editor del diseño:** una pulsación larga en el engranaje. Mueve y cambia el tamaño de cada botón, y mueve el HUD del
   propio juego: el reloj, las barras de vida y aguante, el filo, los nombres, el mapa de la zona, la cámara de objetivo y
   la barra de objetos. El pad de menú y el círculo del candado de carrera también se mueven y cambian de tamaño ahí. El
@@ -72,7 +73,8 @@ Habla con otros jugadores y pide ayuda en el [Discord](https://discord.gg/sk5xEj
   se ve grande en el centro
 - Engranaje, **Controles**, **Mando**: los botones frontales por su posición (como en la 3DS) o por sus letras, la
   velocidad y dirección de la cámara, la zona muerta de las palancas. Un mando que el juego lee mal: **Mapear un mando**, y
-  aprieta cada botón una vez
+  aprieta cada botón una vez. Con un mando conectado, una fila **Botones combinados** ahí pone tus botones combinados en
+  sus botones
 - Un teclado: W A S D mueven (Mayús: caminar), I J K L la cámara, U X, O o F A, Espacio B, R Y, Q L, E R, Tab ZL, T ZR,
   Intro START, Retroceso SELECT, las flechas la cruceta
 
@@ -126,8 +128,9 @@ Pon el juego y su actualización en una misma carpeta, por ejemplo `C:\MH4U`. Si
 
 La 3DS tiene dos pantallas. La app muestra la de arriba en toda tu pantalla y la táctil en una esquina, que puedes mover,
 agrandar, hacer transparente u ocultar (engranaje, **Pantalla**). Para una sola pantalla, con los menús de la táctil
-pasados a la de arriba, usa el **mod de una sola pantalla de jM5557** para el juego de América. No es parte de este
-proyecto: descárgalo del repositorio de su autor,
+pasados a la de arriba, usa el **mod de una sola pantalla de jM5557** para el juego de América. Está hecho para el juego de
+América en inglés: con el juego en otro idioma sus menús se superponen
+([#30](https://github.com/khorne-hub/4u-native/issues/30)). No es parte de este proyecto: descárgalo del repositorio de su autor,
 [github.com/jM5557/mh4u-single-screen-mod](https://github.com/jM5557/mh4u-single-screen-mod) (el botón verde **Code**,
 **Download ZIP**), y descomprímelo dentro de una carpeta `mods` junto al juego:
 

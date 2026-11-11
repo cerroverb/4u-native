@@ -230,6 +230,7 @@ private:
 
     void Worker();
     void Saver();
+    void ReportProgress();  // (mutex_ held: the saver's turn)
     void Load();
     void WriteFiles(bool final);
 
@@ -257,6 +258,12 @@ private:
     native::ProviderCounters total_;
     Frame frame_;
     CachingStats stats_;
+    // The builds and the draws left out since the saver's last progress line (ReportProgress), and its lines so far.
+    struct Progress {
+        u64 builds = 0, skipped = 0;
+        double ms = 0.0, longest_ms = 0.0;
+    } progress_;
+    u32 progress_lines_ = 0;
     std::mutex save_mutex_;  // one WriteFiles at a time
     std::vector<std::thread> workers_;
     std::thread saver_;
@@ -533,7 +540,7 @@ rhi::Result<native::PipelineHandle> CachingProvider::Lookup(const PipelineKey& k
         if (!IsReady(fallback)) {
             QueueFallback(fallback);
         }
-        ++frame_.skipped;
+        ++frame_.skipped, ++progress_.skipped;
         handle.pending = true;
         return handle;
     }
@@ -543,7 +550,7 @@ rhi::Result<native::PipelineHandle> CachingProvider::Lookup(const PipelineKey& k
             NoteWanted(key);
         } else if (options_.never_wait && !IsReady(fallback)) {  // (not built here either: the urgent queue)
             QueueUrgent(fallback);
-            ++frame_.skipped;
+            ++frame_.skipped, ++progress_.skipped;
             handle.pending = true;
             return handle;
         }
@@ -564,7 +571,7 @@ rhi::Result<native::PipelineHandle> CachingProvider::Lookup(const PipelineKey& k
         if (!key.IsFallback()) {
             QueueFallback(fallback);
         }
-        ++frame_.skipped;
+        ++frame_.skipped, ++progress_.skipped;
         handle.pending = true;
         return handle;
     }
@@ -606,7 +613,7 @@ native::PipelineReadiness CachingProvider::Prepare(const PipelineKey& key, const
             if (!IsReady(fallback)) {
                 QueueFallback(fallback);
             }
-            ++frame_.skipped;
+            ++frame_.skipped, ++progress_.skipped;
             return native::PipelineReadiness::Pending;
         }
         if (IsReady(fallback)) {
@@ -617,7 +624,7 @@ native::PipelineReadiness CachingProvider::Prepare(const PipelineKey& key, const
         QueueFallback(fallback);
         if (options_.never_wait) {  // (Lookup's reason: nothing is built or waited for on the renderer thread)
             QueueUrgent(key);
-            ++frame_.skipped;
+            ++frame_.skipped, ++progress_.skipped;
             return native::PipelineReadiness::Pending;
         }
     }
@@ -684,6 +691,9 @@ void CachingProvider::Worker() {
         ++stats_.async_builds;
         stats_.async_ms += ms;
         ++frame_.async_builds;
+        ++progress_.builds;
+        progress_.ms += ms;
+        progress_.longest_ms = std::max(progress_.longest_ms, ms);
         if (from_list) {
             ++stats_.precompiled;
             precompile_failures_ += e.state == State::Failed ? 1 : 0;
@@ -705,6 +715,7 @@ void CachingProvider::Saver() {
         if (stop_) {
             break;
         }
+        ReportProgress();
         const bool dirty = list_dirty_ || built_since_blob_ > 0 || (spirv_ != nullptr && spirv_->Dirty());
         if (!dirty) {
             continue;
@@ -713,6 +724,35 @@ void CachingProvider::Saver() {
         WriteFiles(false);
         lock.lock();
     }
+}
+
+// At the saver's turn (every save_seconds), while the list is still being compiled, or when the builds since the last
+// turn took a second or more of the workers' time: how far the list is, the builds of that time and how long each took,
+// the draws left out meanwhile (no pipeline yet) and what is still queued. The list is done within 0.3-3 s on the
+// phones' logs (an Adreno 610 on 0.1.8 included); a phone where it is never done in a session of minutes (4u-native #43:
+// an Adreno 610 at 7-8 FPS at 1x as at 3x, no "the list is compiled" line) then says whether its builds each take long
+// (the driver's cache missed: full compiles) or few are made (the workers kept from the cores). The first 15 lines, then
+// one in 15.
+void CachingProvider::ReportProgress() {
+    const Progress p = progress_;
+    progress_ = Progress{};
+    const bool listing = !precompile_reported_;
+    if (!listing && p.ms < 1000.0) {
+        return;
+    }
+    const u32 n = ++progress_lines_;
+    if (n > 15 && n % 15 != 0) {
+        return;
+    }
+    MH4N_LOG(Info, kLog, "{:.0f} s after the start, {}the last {} s: {} builds, {:.0f} ms each (the longest {:.0f} ms), {} draws "
+                         "left out; {} urgent and {} more queued{}",
+             MsSince(start_) / 1000.0,
+             listing ? fmt::format("the list not compiled yet ({} built from it so far, {} failed); ", stats_.precompiled,
+                                   precompile_failures_)
+                     : std::string(),
+             std::max(1u, options_.save_seconds), p.builds, p.builds > 0 ? p.ms / static_cast<double>(p.builds) : 0.0,
+             p.longest_ms, p.skipped, urgent_.size(), background_.size(),
+             n == 15 ? " (from now on one line in 15)" : "");
 }
 
 // ---- the files ----
