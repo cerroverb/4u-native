@@ -2,6 +2,14 @@
 
 [Español más abajo](#español)
 
+## 0.1.9.1
+
+Your code library stays valid: there's no need to build it again.
+
+- **Fixed the flicker with the touch screen hidden** (bright, dark or broken frames every few seconds that stopped when
+  the touch screen showed) on GPUs with older graphics drivers, such as Mali-G71 and G72, and on PowerVR: the top screen
+  now always reaches the display the same way there. Mali and Adreno GPUs with recent drivers are unchanged.
+
 ## 0.1.9
 
 Your code library stays valid: there's no need to build it again.
@@ -125,6 +133,15 @@ MH4U for Android is free. Only the links khorne-hub gives are official: if you g
 came with ads, it isn't the official one. Check the APK's SHA-256 against the release's `.sha256` file.
 
 ## Español
+
+## 0.1.9.1
+
+Tu librería de código sigue sirviendo: no hace falta crearla de nuevo.
+
+- **Arreglado el parpadeo con la pantalla táctil oculta** (cuadros claros, oscuros o rotos cada pocos segundos que
+  paraban al mostrar la pantalla táctil) en GPU con drivers gráficos más viejos, como Mali-G71 y G72, y en PowerVR: ahí la
+  pantalla de arriba llega ahora siempre de la misma forma a la pantalla del teléfono. Las GPU Mali y Adreno con drivers
+  recientes no cambian.
 
 ## 0.1.9
 

@@ -1664,6 +1664,10 @@ private:
         owing_allowed_ = OwingFor(caps);
         MH4N_LOG(Info, kLog, "the top screen's hand-over {}", owing_allowed_ ? "may owe the box the next frame clears"
                                                                               : "copies the box the next frame clears (owes nothing)");
+        if (!TargetScreensOn()) {
+            MH4N_LOG(Info, kLog, "the top screen is shown from the upright copy (a GPU that owes nothing; MH4N_TARGET_SCREENS=1: "
+                                 "the target's own pictures)");
+        }
         profile_ = fragment::ProfileOf(caps);
 
         // The quaternion fix-up of lit draws (lighting/, N2-09; design 5.5): --lighting-fixup (native_gpu.h), the environment's
@@ -2824,13 +2828,20 @@ private:
     }
 
     // ---- screen targets (gpu3; ScreenTarget above) ----
-    // MH4N_TARGET_SCREENS=0: the upright copy always, as before.
-    static bool TargetScreensOn() {
-        static const bool on = [] {
+    // The top screen as the target's own pictures on the GPUs that may owe (OwingAllowed: Mali and Adreno with their own
+    // drivers, Vulkan 1.2 or later), the only ones it was seen to work on. The others copy the box at every hand-over,
+    // and with the touch screen hidden on a wide screen they copied the whole picture: three of those in a row sent the
+    // top screen to the upright copy for 120 transfers, then back to the target's pictures, and so on, and there the
+    // target's pictures were not drawn as the upright copy is (bright or broken frames every few seconds that showing
+    // the touch screen ended, as its costly hand-overs kept the upright copy: 4u-native #31 PowerVR BXM, #33 Mali-G71
+    // r19, #41 Mali-G72). Those GPUs keep the upright copy, which costs them the same copy a frame.
+    // MH4N_TARGET_SCREENS=0: the upright copy always, as before; =1: the target's pictures on any GPU (measurement aids).
+    bool TargetScreensOn() const {
+        static const int env = [] {
             const char* v = std::getenv("MH4N_TARGET_SCREENS");
-            return v == nullptr || *v != '0';
+            return v != nullptr && (*v == '0' || *v == '1') ? *v - '0' : -1;
         }();
-        return on;
+        return env < 0 ? owing_allowed_ : env == 1;
     }
     // MH4N_TARGET_SCREENS_CHECK=1 (a measurement aid): the upright copy is drawn as well, and goes with the picture
     // (SharedPicture::Reference) for the app to compare its own turn of the target with it.
