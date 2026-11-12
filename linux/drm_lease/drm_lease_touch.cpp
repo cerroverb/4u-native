@@ -61,10 +61,11 @@ std::optional<std::string> FindDirectTouchDevice(const std::string& name) {
         const int fd = open(path.c_str(), O_RDONLY | O_NONBLOCK | O_CLOEXEC);
         if (fd < 0) {
             // (mh4u-linux: say why, once per node; Azahar skips it silently)
+            const int open_error = errno;
             static std::vector<std::string> reported;
             if (std::find(reported.begin(), reported.end(), path) == reported.end()) {
                 reported.push_back(path);
-                std::fprintf(stderr, "[Warning] drm-lease touch: cannot open %s: %s\n", path.c_str(), std::strerror(errno));
+                std::fprintf(stderr, "[Warning] drm-lease touch: cannot open %s: %s\n", path.c_str(), std::strerror(open_error));
             }
             continue;
         }
