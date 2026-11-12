@@ -526,7 +526,8 @@ int main(int argc, char* argv[]) {
     bool touching = false;
     SDL_WindowID touch_window = 0;
     u64 shown_sequence = 0;
-    const void* shown_top = nullptr;  // the top screen's picture last uploaded
+    const void* shown_top = nullptr;     // the top screen's picture last uploaded
+    const void* shown_bottom = nullptr;  // the touch screen's
     bool running = true;
     bool quitting = false;
 
@@ -658,15 +659,17 @@ int main(int argc, char* argv[]) {
             SDL_Delay(1);
             continue;
         }
-        // (the pacing trace, MH4N_PACING_TRACE=<file>: the top screen's new picture and its present, as the Android
-        // app's android_main.cpp marks them)
-        if (top.pixels && top.pixels.get() != shown_top) {
+        // A screen whose picture did not change is neither uploaded nor drawn. The top screen goes first: its picture is
+        // uploaded and presented before the touch screen's, so the touch screen's upload and present never delay it.
+        // (The pacing trace, MH4N_PACING_TRACE=<file>: the top screen's new picture and its present, as the Android
+        // app's android_main.cpp marks them.)
+        const bool new_top = top.pixels && top.pixels.get() != shown_top;
+        const bool new_bottom = bottom.pixels && bottom.pixels.get() != shown_bottom;
+        if (new_top) {
             shown_top = top.pixels.get();
             mh4n::pacing::Mark(mh4n::pacing::kAppPicture, top.game_frame);
         }
-        Upload(top_view.renderer, top_view.top, top_view.top_w, top_view.top_h, top);
-        View& bview = settings.stacked ? top_view : bottom_view;
-        Upload(bview.renderer, bview.bottom, bview.bottom_w, bview.bottom_h, bottom);
+        if (new_bottom) shown_bottom = bottom.pixels.get();
 
         auto draw = [](View& v, bool with_top, bool with_bottom) {
             int w = 0, h = 0;
@@ -691,20 +694,28 @@ int main(int argc, char* argv[]) {
             if (with_top) mh4n::pacing::Mark(mh4n::pacing::kAppPresentOut);
         };
         if (settings.stacked) {
-            draw(top_view, true, true);
+            if (new_top) Upload(top_view.renderer, top_view.top, top_view.top_w, top_view.top_h, top);
+            if (new_bottom) Upload(top_view.renderer, top_view.bottom, top_view.bottom_w, top_view.bottom_h, bottom);
+            if (new_top || new_bottom) draw(top_view, true, true);
         } else {
-            draw(top_view, true, false);
-            draw(bottom_view, false, true);
-#ifdef MH4U_DRM_LEASE
-            if (lease) {
-                int out_w = 0, out_h = 0;
-                SDL_GetRenderOutputSize(bottom_view.renderer, &out_w, &out_h);
-                std::lock_guard lock(g_lease_touch.mutex);
-                g_lease_touch.view.bottom_rect = bottom_view.bottom_rect;
-                g_lease_touch.view.rotation = bottom_view.rotation;
-                g_lease_touch.out_w = static_cast<float>(out_w), g_lease_touch.out_h = static_cast<float>(out_h);
+            if (new_top) {
+                Upload(top_view.renderer, top_view.top, top_view.top_w, top_view.top_h, top);
+                draw(top_view, true, false);
             }
+            if (new_bottom) {
+                Upload(bottom_view.renderer, bottom_view.bottom, bottom_view.bottom_w, bottom_view.bottom_h, bottom);
+                draw(bottom_view, false, true);
+#ifdef MH4U_DRM_LEASE
+                if (lease) {
+                    int out_w = 0, out_h = 0;
+                    SDL_GetRenderOutputSize(bottom_view.renderer, &out_w, &out_h);
+                    std::lock_guard lock(g_lease_touch.mutex);
+                    g_lease_touch.view.bottom_rect = bottom_view.bottom_rect;
+                    g_lease_touch.view.rotation = bottom_view.rotation;
+                    g_lease_touch.out_w = static_cast<float>(out_w), g_lease_touch.out_h = static_cast<float>(out_h);
+                }
 #endif
+            }
         }
     }
 
