@@ -3,9 +3,9 @@
 // Refer to the license.txt file included.
 //
 // From virtudude's Azahar, branch drm-leasing, commit d16299140 (src/citra_qt/drm_lease/drm_lease_touch.cpp): the
-// same code, with the touch given to a TouchSink (0..1 along the panel's axes, after the swap and inversions)
-// instead of framebuffer coordinates to an EmuWindow, log calls replaced by fprintf, Azahar's u8 by uint8_t, and the
-// environment variables named MH4U_ instead of AZAHAR_.
+// same code, with the input nodes opened past Steam's overlay (OpenInputNode), the touch given to a TouchSink (0..1
+// along the panel's axes, after the swap and inversions) instead of framebuffer coordinates to an EmuWindow, log
+// calls replaced by fprintf, Azahar's u8 by uint8_t, and the environment variables named MH4U_ instead of AZAHAR_.
 
 #include <algorithm>
 #include <cerrno>
@@ -22,6 +22,7 @@
 #include <linux/input.h>
 #include <poll.h>
 #include <sys/ioctl.h>
+#include <sys/syscall.h>
 #include <unistd.h>
 
 #include "drm_lease_touch.h"
@@ -29,6 +30,15 @@
 namespace drm_lease {
 
 namespace {
+
+// (mh4u-linux) An input node opened with the openat system call itself. Steam's overlay library, which Steam preloads
+// into a game it starts with Steam Input on (LD_PRELOAD .../steamrtarm64/gameoverlayrenderer.so), makes the C
+// library's open() of the physical input nodes fail with ENODEV so that the game sees only Steam's virtual
+// controller; it hides the touchscreens with them. Seen on the Thor in Game Mode: event5, event6 and event7 opened in
+// the start script and failed in mh4u-linux, and opened once Steam Input was off for the shortcut.
+int OpenInputNode(const std::string& path) {
+    return static_cast<int>(syscall(SYS_openat, AT_FDCWD, path.c_str(), O_RDONLY | O_NONBLOCK | O_CLOEXEC));
+}
 
 bool HasBit(const uint8_t* bits, unsigned bit) {
     return bits[bit / 8] & (1 << (bit % 8));
@@ -58,7 +68,7 @@ std::optional<std::string> FindDirectTouchDevice(const std::string& name) {
             continue;
         }
         const std::string path = std::string("/dev/input/") + entry->d_name;
-        const int fd = open(path.c_str(), O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+        const int fd = OpenInputNode(path);
         if (fd < 0) {
             // (mh4u-linux: say why, once per node; Azahar skips it silently)
             const int open_error = errno;
@@ -139,7 +149,7 @@ int DrmLeaseTouch::OpenDevice() {
         path = *found;
     }
 
-    const int fd = open(path.c_str(), O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+    const int fd = OpenInputNode(path);
     if (fd < 0) {
         return -1;
     }
