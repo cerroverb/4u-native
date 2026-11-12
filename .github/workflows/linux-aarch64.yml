@@ -17,7 +17,7 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake ninja-build g++ python3 patchelf libvulkan-dev \
+          sudo apt-get install -y cmake ninja-build g++ python3 patchelf libvulkan-dev libdrm-dev libwayland-bin \
             libwayland-dev wayland-protocols libxkbcommon-dev libdecor-0-dev libegl-dev libgles-dev libdrm-dev libgbm-dev \
             libpulse-dev libpipewire-0.3-dev libasound2-dev libudev-dev libdbus-1-dev \
             libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxfixes-dev libxss-dev libxtst-dev
@@ -32,7 +32,9 @@ jobs:
 
       - name: Build mh4u-linux
         run: |
-          cmake -S linux -B build-linux -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/sdl3"
+          set -o pipefail
+          cmake -S linux -B build-linux -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/sdl3" | tee configure.log
+          grep "the touch screen on a leased panel: on" configure.log
           cmake --build build-linux --target mh4u-linux
 
       - name: Package
