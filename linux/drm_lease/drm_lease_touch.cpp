@@ -7,6 +7,7 @@
 // instead of framebuffer coordinates to an EmuWindow, log calls replaced by fprintf, Azahar's u8 by uint8_t, and the
 // environment variables named MH4U_ instead of AZAHAR_.
 
+#include <algorithm>
 #include <cerrno>
 #include <chrono>
 #include <cstdint>
@@ -59,6 +60,12 @@ std::optional<std::string> FindDirectTouchDevice(const std::string& name) {
         const std::string path = std::string("/dev/input/") + entry->d_name;
         const int fd = open(path.c_str(), O_RDONLY | O_NONBLOCK | O_CLOEXEC);
         if (fd < 0) {
+            // (mh4u-linux: say why, once per node; Azahar skips it silently)
+            static std::vector<std::string> reported;
+            if (std::find(reported.begin(), reported.end(), path) == reported.end()) {
+                reported.push_back(path);
+                std::fprintf(stderr, "[Warning] drm-lease touch: cannot open %s: %s\n", path.c_str(), std::strerror(errno));
+            }
             continue;
         }
         char device_name[80]{};
