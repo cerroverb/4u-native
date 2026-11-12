@@ -1,7 +1,7 @@
 // mh4u-linux: MH4U on the native runtime for Linux, with the 3DS's two screens in two windows.
 //
 //   mh4u-linux --game DIR --code LIB [--from-dump BASE,UPDATE] [--user DIR] [--layout dual|stacked] [--fullscreen]
-//              [--top-display N] [--bottom-display N] [--scale N] [-- runtime options...]
+//              [--top-display N] [--bottom-display N] [--scale N] [--vsync on|off] [-- runtime options...]
 //
 // DIR is a game folder (--from-dump makes it first from the decrypted game and its update), LIB the code library built from
 // the player's own dump (mh4n/tools/build_game.py --dump UPDATE.cia --native). `dual` (the default) shows the top
@@ -34,6 +34,7 @@
 #include "mh4n/host.h"
 #include "mh4n/host_thread_name.h"
 #include "mh4n/options.h"
+#include "mh4n/pacing_trace.h"
 #include "mh4n/present.h"
 #include "mh4n/registry.h"
 #include "mh4n/runtime.h"
@@ -54,6 +55,7 @@ namespace {
 struct Picture {
     std::shared_ptr<const std::vector<u8>> pixels;  // RGBA8, w * h, top row first
     u32 w = 0, h = 0;
+    u32 game_frame = 0;  // the game's frame counter at the VBlank that showed it (for the pacing trace)
 };
 
 struct Screens {
@@ -66,14 +68,15 @@ class WindowSink final : public mh4n::present::ScreenSink {
 public:
     void Publish(const mh4n::present::DisplayFrame& frame) override {
         std::lock_guard lock(g_screens.mutex);
-        Take(frame.top, g_screens.top);
-        Take(frame.bottom, g_screens.bottom);
+        Take(frame.top, frame.game_frame, g_screens.top);
+        Take(frame.bottom, frame.game_frame, g_screens.bottom);
         ++g_screens.sequence;
     }
 
 private:
-    static void Take(const std::optional<mh4n::present::ScreenImage>& image, Picture& out) {
+    static void Take(const std::optional<mh4n::present::ScreenImage>& image, u32 game_frame, Picture& out) {
         if (!image || !image->IsCpu() || !image->Valid()) return;  // (only CPU pixels: no sink here asks for others)
+        if (out.pixels != image->pixels) out.game_frame = game_frame;
         out.pixels = image->pixels;
         out.w = image->width;
         out.h = image->height;
@@ -96,6 +99,11 @@ void AttachWindow(mh4n::Runtime& rt) {
     g_runtime.store(&rt);
 }
 MH4N_REGISTER(mh4n::BootStep, "zz.linux.window", mh4n::BootStep{mh4n::Phase::Started, AttachWindow});
+
+// The pacing trace's mark for the buttons this host read and gave the live input source (value: the buttons), so that
+// a press can be followed to the game's sample of it (pacing::kInputSample, the same value). Outside the runtime's
+// own kinds; linux/tools/pacing_report.py reads it.
+constexpr auto kHostButtons = static_cast<mh4n::pacing::Kind>(100);
 
 // ---- the windows -------------------------------------------------------------------------------------------
 
@@ -177,7 +185,7 @@ SDL_Window* MakeWindow(const char* title, int w, int h, bool fullscreen, int dis
     return window;
 }
 
-bool MakeView(View& v, const char* title, int w, int h, bool fullscreen, int display_index) {
+bool MakeView(View& v, const char* title, int w, int h, bool fullscreen, int display_index, bool vsync) {
     v.window = MakeWindow(title, w, h, fullscreen, display_index);
     if (v.window == nullptr) return false;
     v.renderer = SDL_CreateRenderer(v.window, nullptr);
@@ -185,7 +193,7 @@ bool MakeView(View& v, const char* title, int w, int h, bool fullscreen, int dis
         std::fprintf(stderr, "[Error] Linux: SDL_CreateRenderer(%s): %s\n", title, SDL_GetError());
         return false;
     }
-    SDL_SetRenderVSync(v.renderer, 1);
+    SDL_SetRenderVSync(v.renderer, vsync ? 1 : SDL_RENDERER_VSYNC_DISABLED);
     return true;
 }
 
@@ -356,12 +364,14 @@ struct Settings {
     bool fullscreen = false;
     int top_display = -1, bottom_display = -1;
     int scale = 3;
+    bool vsync = true;
     std::vector<std::string> extra;
 };
 
 const char* kUsage =
     "usage: mh4u-linux --game DIR --code LIB [--from-dump BASE,UPDATE] [--user DIR] [--layout dual|stacked] [--fullscreen]\n"
-    "                  [--top-display N] [--bottom-display N] [--scale N] [-- runtime options...]\n";
+    "                  [--top-display N] [--bottom-display N] [--scale N] [--vsync on|off]\n"
+    "                  [-- runtime options...]\n";
 
 bool ParseArgs(int argc, char** argv, Settings& s) {
     for (int i = 1; i < argc; ++i) {
@@ -395,6 +405,9 @@ bool ParseArgs(int argc, char** argv, Settings& s) {
             if (!value(v)) return false;
             s.bottom_display = std::atoi(v.c_str());
             s.fullscreen = true;
+        } else if (a == "--vsync") {
+            if (!value(v) || (v != "on" && v != "off")) return false;
+            s.vsync = v == "on";
         } else if (a == "--scale") {
             if (!value(v)) return false;
             s.scale = std::clamp(std::atoi(v.c_str()), 1, 10);
@@ -440,7 +453,8 @@ int main(int argc, char* argv[]) {
 
     // the windows: the top screen's at 5:3 (the game draws to the window's shape), the touch screen's at 4:3
     View top_view, bottom_view;
-    if (!MakeView(top_view, "MH4U", 1000, settings.stacked ? 1200 : 600, settings.fullscreen, settings.top_display)) {
+    if (!MakeView(top_view, "MH4U", 1000, settings.stacked ? 1200 : 600, settings.fullscreen, settings.top_display,
+                  settings.vsync)) {
         SDL_Quit();
         return 1;
     }
@@ -461,6 +475,7 @@ int main(int argc, char* argv[]) {
             bottom_view.window = lease->Window();
             bottom_view.renderer = lease->Renderer();
             bottom_view.rotation = lease->Rotation();
+            SDL_SetRenderVSync(bottom_view.renderer, settings.vsync ? 1 : SDL_RENDERER_VSYNC_DISABLED);
             bottom_leased = true;
             std::fprintf(stderr, "[Info] Linux: the touch screen on the leased panel\n");
         } else {
@@ -470,7 +485,7 @@ int main(int argc, char* argv[]) {
     }
 #endif
     if (!settings.stacked && !bottom_leased &&
-        !MakeView(bottom_view, "MH4U Bottom", 640, 480, settings.fullscreen, settings.bottom_display)) {
+        !MakeView(bottom_view, "MH4U Bottom", 640, 480, settings.fullscreen, settings.bottom_display, settings.vsync)) {
         DestroyView(top_view);
         SDL_Quit();
         return 1;
@@ -511,6 +526,7 @@ int main(int argc, char* argv[]) {
     bool touching = false;
     SDL_WindowID touch_window = 0;
     u64 shown_sequence = 0;
+    const void* shown_top = nullptr;  // the top screen's picture last uploaded
     bool running = true;
     bool quitting = false;
 
@@ -622,6 +638,7 @@ int main(int argc, char* argv[]) {
         Port::Hooks::SetHostTriggers(in.zl, in.zr);
         if (yaw != 0 || pitch != 0) Port::Hooks::AddCameraTurn(yaw, pitch);
         if (live && (!have_sent || !(in == last_sent))) {
+            if (!have_sent || in.buttons != last_sent.buttons) mh4n::pacing::Mark(kHostButtons, in.buttons);
             live->Set(in);
             last_sent = in, have_sent = true;
         }
@@ -640,6 +657,12 @@ int main(int argc, char* argv[]) {
         if (!fresh) {
             SDL_Delay(1);
             continue;
+        }
+        // (the pacing trace, MH4N_PACING_TRACE=<file>: the top screen's new picture and its present, as the Android
+        // app's android_main.cpp marks them)
+        if (top.pixels && top.pixels.get() != shown_top) {
+            shown_top = top.pixels.get();
+            mh4n::pacing::Mark(mh4n::pacing::kAppPicture, top.game_frame);
         }
         Upload(top_view.renderer, top_view.top, top_view.top_w, top_view.top_h, top);
         View& bview = settings.stacked ? top_view : bottom_view;
@@ -663,7 +686,9 @@ int main(int argc, char* argv[]) {
                 v.bottom_rect = FitTurned(area, static_cast<float>(v.bottom_w), static_cast<float>(v.bottom_h), v.rotation);
                 SDL_RenderTextureRotated(v.renderer, v.bottom, nullptr, &v.bottom_rect, v.rotation, nullptr, SDL_FLIP_NONE);
             }
+            if (with_top) mh4n::pacing::Mark(mh4n::pacing::kAppPresentIn);
             SDL_RenderPresent(v.renderer);
+            if (with_top) mh4n::pacing::Mark(mh4n::pacing::kAppPresentOut);
         };
         if (settings.stacked) {
             draw(top_view, true, true);
