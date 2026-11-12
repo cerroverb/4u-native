@@ -29,6 +29,7 @@ public:
     // Leases the connector (empty: the first internal panel offered when internal_only), reads its mode and
     // rotation (rotation < 0: the panel orientation property's), makes the renderer on it, and starts reading the
     // touch device ("auto": the only direct-touch device, or the one named like the bottom screen) into `touch`.
+    // `rotation` is in Azahar's sense (counter-clockwise degrees, as MH4U_DRM_LEASE_ROTATION and AZAHAR_DRM_LEASE_ROTATION).
     // False, with everything let go, when the compositor offers no lease or any step fails.
     bool Initialize(const std::string& connector_name, int rotation, const std::string& touch_device,
                     bool internal_only, TouchSink touch);
