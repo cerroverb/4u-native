@@ -37,6 +37,9 @@
 #include "mh4n/present.h"
 #include "mh4n/registry.h"
 #include "mh4n/runtime.h"
+#ifdef MH4U_DRM_LEASE
+#include "drm_lease/drm_lease_output.h"
+#endif
 
 using mh4n::s16;
 using mh4n::u16;
@@ -103,6 +106,7 @@ struct View {
     SDL_Texture* bottom = nullptr;
     u32 top_w = 0, top_h = 0, bottom_w = 0, bottom_h = 0;
     SDL_FRect bottom_rect{};  // where the touch screen was drawn, in the window's pixels (w 0: not drawn)
+    int rotation = 0;         // clockwise degrees the touch screen is turned to stand upright (a leased panel)
 };
 
 // The largest rectangle of aspect w:h inside `area`, centred.
@@ -110,6 +114,25 @@ SDL_FRect Fit(SDL_FRect area, float w, float h) {
     if (w <= 0 || h <= 0 || area.w <= 0 || area.h <= 0) return SDL_FRect{};
     const float k = std::min(area.w / w, area.h / h);
     return SDL_FRect{area.x + (area.w - w * k) / 2, area.y + (area.h - h * k) / 2, w * k, h * k};
+}
+
+// The rectangle that, turned `degrees` clockwise about its centre (SDL_RenderTextureRotated), is the largest of aspect
+// w:h inside `area`.
+SDL_FRect FitTurned(SDL_FRect area, float w, float h, int degrees) {
+    if (degrees != 90 && degrees != 270) return Fit(area, w, h);
+    const SDL_FRect box = Fit(area, h, w);
+    return SDL_FRect{box.x + (box.w - box.h) / 2, box.y + (box.h - box.w) / 2, box.h, box.w};
+}
+
+// `p` turned back by `degrees` (clockwise) about the centre of `r`: where it lies in r's picture before it was turned.
+SDL_FPoint Unturn(SDL_FPoint p, const SDL_FRect& r, int degrees) {
+    const float cx = r.x + r.w / 2, cy = r.y + r.h / 2, dx = p.x - cx, dy = p.y - cy;
+    switch (degrees) {
+    case 90: return SDL_FPoint{cx + dy, cy - dx};
+    case 180: return SDL_FPoint{cx - dx, cy - dy};
+    case 270: return SDL_FPoint{cx - dy, cy + dx};
+    default: return p;
+    }
 }
 
 void Upload(SDL_Renderer* renderer, SDL_Texture*& texture, u32& tw, u32& th, const Picture& picture) {
@@ -290,10 +313,40 @@ mh4n::InputState ReadControls(Controls& c, float* cam_yaw, float* cam_pitch) {
 // A point of a window to the touch screen's pixels, or nothing when it is outside the drawn touch screen.
 std::optional<mh4n::input_live::TouchPoint> TouchAt(const View& v, float x, float y) {
     const SDL_FRect& r = v.bottom_rect;
+    const SDL_FPoint upright = Unturn(SDL_FPoint{x, y}, r, v.rotation);
+    x = upright.x, y = upright.y;
     if (r.w <= 0 || r.h <= 0 || x < r.x || y < r.y || x >= r.x + r.w || y >= r.y + r.h) return std::nullopt;
     const float u = std::clamp((x - r.x) / r.w, 0.0f, 0.999f), w = std::clamp((y - r.y) / r.h, 0.0f, 0.999f);
     return mh4n::input_live::TouchPoint{static_cast<u16>(u * 320), static_cast<u16>(w * 240)};
 }
+
+#ifdef MH4U_DRM_LEASE
+// A leased panel's touch, from its reading thread (drm_lease::DrmLeaseTouch) to the live input source: where the touch
+// screen was drawn on the panel and the input source, both set by the main thread.
+struct LeaseTouch {
+    std::mutex mutex;
+    View view;  // (bottom_rect and rotation)
+    float out_w = 0, out_h = 0;
+    std::shared_ptr<mh4n::input_live::LiveInput> live;
+} g_lease_touch;
+
+bool LeaseTouchSink(std::optional<std::pair<float, float>> point) {
+    std::lock_guard lock(g_lease_touch.mutex);
+    if (!g_lease_touch.live) return false;
+    if (!point) {
+        g_lease_touch.live->SetTouch(std::nullopt);
+        return false;
+    }
+    const auto touch = TouchAt(g_lease_touch.view, point->first * g_lease_touch.out_w, point->second * g_lease_touch.out_h);
+    if (touch) g_lease_touch.live->SetTouch(touch);
+    return touch.has_value();
+}
+
+bool EnvIs(const char* name, const char* value) {
+    const char* v = std::getenv(name);
+    return v != nullptr && std::strcmp(v, value) == 0;
+}
+#endif
 
 // ---- options -----------------------------------------------------------------------------------------------
 
@@ -391,7 +444,32 @@ int main(int argc, char* argv[]) {
         SDL_Quit();
         return 1;
     }
-    if (!settings.stacked &&
+    bool bottom_leased = false;
+#ifdef MH4U_DRM_LEASE
+    // a compositor that shows one output (gamescope) and offers the other panel for lease: the touch screen there, as
+    // Azahar's GMainWindow::LoadROM (virtudude's drm-leasing branch) routes its bottom screen; MH4U_DRM_LEASE=0 turns it
+    // off, MH4U_DRM_LEASE_CONNECTOR, _ROTATION and _TOUCH choose the connector, rotation and touch device
+    std::unique_ptr<drm_lease::DrmLeaseOutput> lease;
+    if (!settings.stacked && !EnvIs("MH4U_DRM_LEASE", "0")) {
+        const char* connector = std::getenv("MH4U_DRM_LEASE_CONNECTOR");
+        const char* rotation = std::getenv("MH4U_DRM_LEASE_ROTATION");
+        const char* touch_device = std::getenv("MH4U_DRM_LEASE_TOUCH");
+        const bool explicit_connector = connector != nullptr && connector[0] != '\0';
+        lease = std::make_unique<drm_lease::DrmLeaseOutput>();
+        if (lease->Initialize(explicit_connector ? connector : "", rotation ? std::atoi(rotation) : -1,
+                              touch_device ? touch_device : "auto", !explicit_connector, LeaseTouchSink)) {
+            bottom_view.window = lease->Window();
+            bottom_view.renderer = lease->Renderer();
+            bottom_view.rotation = lease->Rotation();
+            bottom_leased = true;
+            std::fprintf(stderr, "[Info] Linux: the touch screen on the leased panel\n");
+        } else {
+            lease.reset();
+            if (explicit_connector) std::fprintf(stderr, "[Error] Linux: no lease of connector %s: a window instead\n", connector);
+        }
+    }
+#endif
+    if (!settings.stacked && !bottom_leased &&
         !MakeView(bottom_view, "MH4U Bottom", 640, 480, settings.fullscreen, settings.bottom_display)) {
         DestroyView(top_view);
         SDL_Quit();
@@ -459,7 +537,16 @@ int main(int argc, char* argv[]) {
     while (running) {
         if (!live) {
             if (auto* rt = g_runtime.load()) live = mh4n::input_live::Find(*rt);
+#ifdef MH4U_DRM_LEASE
+            if (live && lease) {
+                std::lock_guard lock(g_lease_touch.mutex);
+                g_lease_touch.live = live;
+            }
+#endif
         }
+#ifdef MH4U_DRM_LEASE
+        if (lease) lease->PumpEvents();
+#endif
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
             // the mouse and fingers in the renderer's pixels, where bottom_rect is (high pixel density, fingers' 0..1)
@@ -573,8 +660,8 @@ int main(int argc, char* argv[]) {
             v.bottom_rect = SDL_FRect{};
             if (with_bottom && v.bottom) {
                 const SDL_FRect area{0, both ? fh / 2 : 0, fw, both ? fh / 2 : fh};
-                v.bottom_rect = Fit(area, static_cast<float>(v.bottom_w), static_cast<float>(v.bottom_h));
-                SDL_RenderTexture(v.renderer, v.bottom, nullptr, &v.bottom_rect);
+                v.bottom_rect = FitTurned(area, static_cast<float>(v.bottom_w), static_cast<float>(v.bottom_h), v.rotation);
+                SDL_RenderTextureRotated(v.renderer, v.bottom, nullptr, &v.bottom_rect, v.rotation, nullptr, SDL_FLIP_NONE);
             }
             SDL_RenderPresent(v.renderer);
         };
@@ -583,6 +670,16 @@ int main(int argc, char* argv[]) {
         } else {
             draw(top_view, true, false);
             draw(bottom_view, false, true);
+#ifdef MH4U_DRM_LEASE
+            if (lease) {
+                int out_w = 0, out_h = 0;
+                SDL_GetRenderOutputSize(bottom_view.renderer, &out_w, &out_h);
+                std::lock_guard lock(g_lease_touch.mutex);
+                g_lease_touch.view.bottom_rect = bottom_view.bottom_rect;
+                g_lease_touch.view.rotation = bottom_view.rotation;
+                g_lease_touch.out_w = static_cast<float>(out_w), g_lease_touch.out_h = static_cast<float>(out_h);
+            }
+#endif
         }
     }
 
@@ -590,6 +687,17 @@ int main(int argc, char* argv[]) {
     if (game_thread.joinable()) game_thread.join();
     live.reset();
     if (controls.pad) SDL_CloseGamepad(controls.pad);
+#ifdef MH4U_DRM_LEASE
+    if (lease) {
+        {
+            std::lock_guard lock(g_lease_touch.mutex);
+            g_lease_touch.live.reset();
+        }
+        if (bottom_view.bottom) SDL_DestroyTexture(bottom_view.bottom);
+        bottom_view = View{};  // (its window and renderer are the lease's)
+        lease.reset();         // (the panel goes back to the compositor)
+    }
+#endif
     DestroyView(bottom_view);
     DestroyView(top_view);
     SDL_Quit();
