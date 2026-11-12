@@ -485,7 +485,9 @@ bool DrmLeaseOutput::Initialize(const std::string& connector_name, int rotation_
             std::fprintf(stderr, "[Info] drm-lease: panel orientation property gives rotation %d\n", rotation_);
         }
     }
-    rotation = rotation_;
+    // Azahar's rotation turns the picture counter-clockwise (the Thor's bottom panel, "Right Side Up", is 270 there and
+    // stood upside down when drawn 270 degrees clockwise); SDL_RenderTextureRotated turns it clockwise
+    rotation = (360 - rotation_ % 360) % 360;
 
     // the surface on it, drawn with SDL's Vulkan renderer through a window that is never shown
     window = SDL_CreateWindow("MH4U Bottom", mode.hdisplay, mode.vdisplay, SDL_WINDOW_HIDDEN | SDL_WINDOW_VULKAN);
@@ -537,8 +539,8 @@ bool DrmLeaseOutput::Initialize(const std::string& connector_name, int rotation_
     if (!touch_device.empty()) {
         touch = std::make_unique<DrmLeaseTouch>(std::move(touch_sink), touch_device);
     }
-    std::fprintf(stderr, "[Info] drm-lease: touch screen output ready, %ux%u, rotation %d\n", mode.hdisplay,
-                 mode.vdisplay, rotation);
+    std::fprintf(stderr, "[Info] drm-lease: touch screen output ready, %ux%u, turned %d degrees clockwise\n",
+                 mode.hdisplay, mode.vdisplay, rotation);
     return true;
 }
 
