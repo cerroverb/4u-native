@@ -26,6 +26,11 @@ DSP's sound, the network rooms, the Gateway cheat engine, and more)
     https://github.com/azahar-emu/azahar
     Every file derived from them, with its source file, licence and copyright, is listed in
     mh4n/native/THIRD_PARTY.md.
+    The Linux host's leased touch screen (linux/drm_lease/) is Azahar's DRM lease output by virtudude
+    (https://github.com/virtudude/azahar, branch drm-leasing, commit d16299140) with cerroverb's CRTC link
+    (https://github.com/cerroverb/azahar, commit 71a132b3b), GPL-2.0-or-later. Its drm-lease-v1.xml is the
+    wayland-protocols file, Copyright 2018 NXP, 2019 Status Research & Development GmbH, 2021 Xaver Hugl, MIT
+    licence (in the file).
 
 MHGURecomp (parts of the app's interface came through the MHGU for Android port)
     Copyright (c) 2026 Rokk. MIT licence (MHGURecomp-MIT.txt).
