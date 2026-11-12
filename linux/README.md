@@ -18,6 +18,11 @@ machine that runs it.
   button is A). The right stick turns the camera (R3 locks on), the triggers are ZL and ZR. The keyboard
   follows the Android app's keys (W A S D, I J K L, Space, Enter, Backspace, the arrows). F11 toggles
   fullscreen. Select with Guide quits.
+- In a session whose compositor shows one output and offers the other panel for lease (gamescope's Game Mode on
+  Armada), the touch screen goes straight to that panel through drm-lease-v1 and VK_KHR_display, and its
+  touchscreen is read from evdev, as Azahar's DRM lease output by virtudude does (linux/drm_lease/).
+  MH4U_DRM_LEASE=0 turns it off; MH4U_DRM_LEASE_CONNECTOR, MH4U_DRM_LEASE_ROTATION and MH4U_DRM_LEASE_TOUCH choose
+  the connector, the rotation and the touch device.
 
 Not yet: the Android app's touch controls, settings panel, mods screen, network rooms and save import. The
 screens are read back from the GPU and drawn with SDL's renderer, which costs some time a frame.
@@ -25,7 +30,8 @@ screens are read back from the GPU and drawn with SDL's renderer, which costs so
 ## Build
 
 Needs CMake 3.25+, Ninja, clang or GCC, Python 3.10+, the Vulkan headers and loader, and SDL3 3.4.18 or
-newer (build it from source if your distribution has an older one).
+newer (build it from source if your distribution has an older one). The leased touch screen also needs
+wayland-client, libdrm and wayland-scanner; without them it is left out.
 
 ```sh
 cmake -S linux -B build-linux -G Ninja -DCMAKE_BUILD_TYPE=Release
