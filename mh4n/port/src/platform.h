@@ -150,6 +150,18 @@ public:
     /// (true with no room, no peers, or peers that can't vote).
     virtual void VoteEndSkip(bool vote) = 0;
     virtual bool EndSkipAgreed() = 0;
+
+    /// Whether the player's folders hold the game's add-on content (DLC) title with at least one content the host
+    /// can read (the DLC the player imported). False where the host has none (the default).
+    virtual bool DlcInstalled() { return false; }
+    /// Copies the game's save (its save data, the extdata and the metadata) to save_backups/<date>-<what>/ beside
+    /// the user folder, where the app keeps its own backups. The copy's folder; empty, and *error says why, if it
+    /// could not be made (the default: this host keeps none).
+    virtual std::string BackUpSave(const std::string& what, std::string* error) {
+        (void)what;
+        if (error != nullptr) *error = "this host keeps no save backups";
+        return {};
+    }
 };
 
 /// The Azahar build's implementation (platform_azahar.cpp), which uses Azahar's single

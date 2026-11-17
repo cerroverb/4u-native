@@ -204,7 +204,9 @@ void QueueGpu::RendererMain() {
             MH4N_LOG(Error, "GPU",
                      "queue: a call of the wrapped GPU threw something that is not an exception");
         }
-        busy_ns_.fetch_add(ElapsedNs(begin), std::memory_order_relaxed);
+        const u64 item_ns = ElapsedNs(begin);
+        busy_ns_.fetch_add(item_ns, std::memory_order_relaxed);
+        trace_busy_ns_ += item_ns;  // (this thread's own: the pacing trace's busy time a frame)
         {
             std::lock_guard lock(mutex_);
             ++completed_;
@@ -397,9 +399,11 @@ void QueueGpu::VBlank(u32 screen) {
             if (frame_end) {
                 CollectFrameStats();
                 if (pacing::Trace::Get().On()) {  // (the pacing trace: the renderer thread's busy time in the frame)
-                    static u64 last_busy = 0;     // (this thread's only; the counter is reset when the runtime takes it)
-                    const u64 busy = busy_ns_.load(std::memory_order_relaxed);
-                    pacing::Mark(pacing::kRenderFrame, static_cast<u32>((busy >= last_busy ? busy - last_busy : busy) / 1000));
+                    // (from a count of this thread's own: busy_ns_ is reset by the runtime's thread when it takes the
+                    // counters, at its own VBlank, which made frames of twice the time and of none by turns, opt101)
+                    static u64 last_busy = 0;
+                    const u64 busy = trace_busy_ns_;
+                    pacing::Mark(pacing::kRenderFrame, static_cast<u32>((busy - last_busy) / 1000));
                     last_busy = busy;
                 }
             }

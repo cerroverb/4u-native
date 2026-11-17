@@ -55,11 +55,26 @@ void HarvestFrames(Backend::Impl& backend, SyncData& data) {
             done = true;  // its reset and its write never ran
         } else if (frame.end_marked && frame.end_value != 0 && frame.end_value <= completed) {
             // Both queries have been written: the End's submission has passed, and the Begin was recorded before it.
-            frame.pool->queryResults();
-            const u64* ticks = frame.pool->getResults();
-            data.last_begin_ns = ticks[0];
-            data.last_end_ns = ticks[1];
-            data.total_ns += ticks[1] > ticks[0] ? ticks[1] - ticks[0] : 0;
+            // Unless the GPU never ran that work: a driver that recovers from a GPU fault or hang marks the submissions it
+            // dropped as done, and their queries stay unwritten (VK_NOT_READY). That was the first line of an Adreno 610's
+            // lost device (4u-native #47 on 0.1.9.2, the vivo Y21T of Discord on 1.0: "vkGetQueryPoolResults failed with
+            // error code 0x1", then vkQueueSubmit -4): what the GPU did is said so, not as plume's bare line.
+            u64 written[2] = {};
+            const VkResult r = vkGetQueryPoolResults(backend.device->vk, static_cast<::plume::VulkanQueryPool*>(frame.pool.get())->vk,
+                                                     0, 2, sizeof written, written, sizeof(u64), VK_QUERY_RESULT_64_BIT);
+            if (r == VK_SUCCESS) {
+                frame.pool->queryResults();
+                const u64* ticks = frame.pool->getResults();
+                data.last_begin_ns = ticks[0];
+                data.last_end_ns = ticks[1];
+                data.total_ns += ticks[1] > ticks[0] ? ticks[1] - ticks[0] : 0;
+            } else if (++data.unrun_frames <= 3) {
+                MH4N_LOG(Error, "RHI",
+                         "rhi: a frame's GPU work never ran though its submission {} passed (its timestamps: {}): the GPU "
+                         "stopped on it, a fault or a hang the driver gave up on; the last frame read took {:.1f} ms of GPU",
+                         frame.end_value, r == VK_NOT_READY ? "not written" : fmt::format("VkResult {}", static_cast<int>(r)),
+                         (data.last_end_ns > data.last_begin_ns ? data.last_end_ns - data.last_begin_ns : 0) / 1e6);
+            }
             done = true;
         } else if (frame.abandoned && frame.begin_value != 0 && frame.begin_value <= completed) {
             done = true;  // never read: its pool is free once the Begin has run

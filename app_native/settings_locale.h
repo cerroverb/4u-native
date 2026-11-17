@@ -15,6 +15,7 @@ static inline const char* settings_text(int language, const char* english) {
         {"Control profiles", "Perfiles de controles"},
         {"Keyboard and mouse", "Teclado y ratón"},
         {"Picture and sound", "Imagen y sonido"},
+        {"Colour", "Color"},  // (1.0.1: Graphics & Audio > Colour, the colour filter; its rows' texts are with them)
         {"Screen and HUD", "Pantalla y HUD"},
         {"Advanced", "Avanzado"},
         {"Monster health", "Vida de los monstruos"},
@@ -22,6 +23,9 @@ static inline const char* settings_text(int language, const char* english) {
         {"How to play online", "Cómo jugar en línea"},
         {"DLC and event quests", "DLC y misiones de evento"},
         {"Texture packs", "Packs de texturas"},
+        {"Pack texture size", "Tamaño de las texturas del pack"},
+        {"Full", "Completo"},
+        {"Half", "Mitad"},
         {"This menu", "Este menú"},
         {"Game code", "Código del juego"},
         {"Reset this section", "Restablecer esta sección"},
@@ -76,6 +80,7 @@ static inline const char* settings_text(int language, const char* english) {
         {"Toaster", "Tostadora"},
         {"Anti-aliasing", "Antialiasing"},
         {"Shadows", "Sombras"},
+        {"Frame generation", "Generación de cuadros"},
         {"Reverb", "Reverberación"},
         {"The picture", "La imagen"},
         {"Field of view", "Campo de visión"},
@@ -332,6 +337,7 @@ static inline const char* settings_text(int language, const char* english) {
         {"Hold for", "Mantener durante"},
         {"Send all rewards to the box", "Mandar todas las recompensas a la caja"},
         {"Send all to the box", "Enviar todo a la caja"},  // (MENU.md's label, 1.0)
+        {"DLC in every save", "DLC en todas las partidas"},  // (DLC and event quests, 1.0.1)
         // Multiplayer
         {"Multiplayer", "Multijugador"},
         {"Status", "Estado"},
@@ -366,6 +372,10 @@ static inline const char* settings_text(int language, const char* english) {
         {"Nothing has been said yet.", "Nadie dijo nada todavía."},
         {"Room messages over the game", "Mensajes de la sala sobre el juego"},
         {"Public rooms", "Salas públicas"},
+        // (1.0.1: internet hubs, settings_panel.cpp; their rows' own texts are with them)
+        {"Join a hub", "Entrar a un hub"},
+        {"Create a hub", "Crear un hub"},
+        {"Online, %d ms, %d hub(s)", "En línea, %d ms, %d hub(s)"},
         {"Lobby", "Lobby"},
         {"No lobby", "Sin lobby"},
         {"Default", "Predeterminado"},
@@ -479,8 +489,8 @@ static inline const char* settings_text(int language, const char* english) {
         {"Added: %s. It is on, and loads when the game starts again.", "Agregado: %s. Está activado, y se carga cuando el juego vuelva a iniciar."},
         {"Added: %s. The code library was made with it, so it is on: save, then restart the game.",
          "Agregado: %s. La librería de código se hizo con él, así que está activado: guarda y luego reinicia el juego."},
-        {"Added: %s, off. It changes the game's code and the code library was not made with it: make the library again on the PC with this mod before turning it on, or the game won't start.",
-         "Agregado: %s, desactivado. Cambia el código del juego y la librería de código no se hizo con él: vuelve a hacer la librería en la PC con este mod antes de activarlo, o el juego no arranca."},
+        {"Added: %s, off. It changes the game's code and the code library was not made with it: make the library again with this mod (System › Game code › Build the game code) before turning it on, or the game won't start.",
+         "Agregado: %s, desactivado. Cambia el código del juego y la librería de código no se hizo con él: vuelve a hacer la librería con este mod (Sistema › Código del juego › Crear el código del juego) antes de activarlo, o el juego no arranca."},
         {"Import cheats (.txt)", "Importar trucos (.txt)"},
         {"Remove a cheat", "Quitar un truco"},
         // [mods] S41: a cheat that writes into the game's code, made a code mod
@@ -656,11 +666,27 @@ static inline const char* settings_text(int language, const char* english) {
          "Página %d de %d. Las imágenes que agregues son tu responsabilidad."},
         {"Add pictures", "Agregar imágenes"},
         {"No picture", "Sin imagen"},
+        // (1.0.1: the pictures alone on every control, the stick's knob; the item bar's touch area; a long press hides
+        // the touch controls; a slide keeps both buttons; the camera smoothed)
+        {"For: base", "Para: base"},
+        {"For: knob", "Para: centro"},
+        {"the stick's knob", "el centro de la palanca"},
+        {"Drag it where you want it  -  pinch or use - / + for the area a tap uses it in", "Arrástrala adonde la quieras  -  pellizca o usa - / + para el área donde un toque la usa"},
+        {"Touch controls hidden: long-press an empty spot to show them again.", "Controles táctiles ocultos: mantén apretado un lugar vacío para volver a verlos."},
+        {"You can turn this off in Settings › Controls › Touch controls.", "Puedes desactivarlo en Opciones › Controles › Controles táctiles."},
+        {"Long-press hides the controls", "Pulsación larga oculta los controles"},
+        {"Slide between buttons: both pressed", "Deslizar entre botones: los dos apretados"},
+        {"Camera smoothing", "Suavizado de la cámara"},
         {"Pictures (.png, .bmp)", "Imágenes (.png, .bmp)"},
         {"(hidden)", "(oculto)"},
         {"Plus  +", "Más  +"},
         {"The FPS counter: drag it to move it  -  Reset puts it back at the top",
          "El contador de FPS: arrástralo para moverlo  -  Restablecer lo devuelve arriba"},
+        // (1.0.1: the monsters' health bars in the layout editor, hunt_bars.cpp)
+        {"Monster health bar", "Barra de vida de los monstruos"},
+        {"The monsters' health bar: drag to move, its corner handle, a pinch or - / + for its size  -  Reset puts it back",
+         "La barra de vida de los monstruos: arrástrala para moverla; su asa de la esquina, un pellizco o - / + para su "
+         "tamaño  -  Restablecer la devuelve a su lugar"},
         // (the MHGU port has these already)
         {"Hide", "Ocultar"},
         {"Show", "Mostrar"},

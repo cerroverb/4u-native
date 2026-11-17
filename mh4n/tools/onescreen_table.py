@@ -480,6 +480,17 @@ def main(argv=None) -> int:
         if g not in group_block:
             group_block[g] = block(f"ui006:{g}", [g], Place(F_KEEP))
     stay = set(config.get("prompt_stay_bottom", []))
+    # the yes / no box in a menu whose content is where the box goes: the box (its question and its plates together)
+    # moved where that menu leaves room (`shift` in pixels, `groups` a group's own), before the box's own place
+    for p in config.get("prompt_places", []):
+        moves = p.get("groups", {})
+        entries = []
+        for g in ui006:
+            if g not in stay:
+                dx, dy = moves.get(g, p["shift"])
+                entries.append((group_block[g], Place(F_COMPOSE | F_TOP, 0, 1.0, (dx, dx), dy)))
+        add_screen(2, "prompt: " + p["name"], ["@prompt", *p.get("all", [])], p.get("when", []), p.get("unless", []),
+                   entries)
     add_screen(2, "prompt", ["@prompt"], [], [],
                [(group_block[g], Place(F_COMPOSE | F_TOP)) for g in ui006 if g not in stay])
     add_screen(2, "stay bottom", [], help_top.get("stay_bottom", []), [], [])

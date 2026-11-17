@@ -163,23 +163,25 @@ extern "C" bool perfstats_rect(float r[4]) {
     return true;
 }
 
+std::atomic<uint64_t> g_framegen_presents{0};  // (frame_gen.cpp: the made pictures presented)
 extern "C" void perfstats_draw(float w, float h) {
     // the measures: the frames presented in each half second; the longest gap between two of these calls (the game's
     // frames) in each second, the last whole second's shown (the one going on until there is one)
-    static uint64_t last, win_t0, win_n0, sec_t0;
-    static float fps = -1, avg_ms, worst_cur, worst_ms;
-    uint64_t now = SDL_GetTicksNS(), n = g_present_count;
+    static uint64_t last, win_t0, win_n0, sec_t0, win_g0;
+    static float fps = -1, avg_ms, worst_cur, worst_ms, shown = 0;
+    uint64_t now = SDL_GetTicksNS(), n = g_present_count, gn = g_framegen_presents.load(std::memory_order_relaxed);
     if (!last || now - last > 5000000000ull) {  // (first shown, or after a long gap: hidden meanwhile, the app paused;
                                                 // a stall of a second or more still shows)
-        win_t0 = sec_t0 = now, win_n0 = n;
-        fps = -1, worst_cur = worst_ms = 0;
+        win_t0 = sec_t0 = now, win_n0 = n, win_g0 = gn;
+        fps = -1, worst_cur = worst_ms = 0, shown = 0;
     } else {
         worst_cur = std::max(worst_cur, (now - last) / 1e6f);
         if (now - win_t0 >= 500000000ull) {
             double s = (now - win_t0) / 1e9;
             fps = (float)((n - win_n0) / s);
+            shown = gn > win_g0 ? (float)((n - win_n0 + gn - win_g0) / s) : 0;  // (frame generation: the frames shown)
             avg_ms = n > win_n0 ? (float)(s * 1e3 / (double)(n - win_n0)) : 0;
-            win_t0 = now, win_n0 = n;
+            win_t0 = now, win_n0 = n, win_g0 = gn;
         }
         if (now - sec_t0 >= 1000000000ull) worst_ms = worst_cur, worst_cur = 0, sec_t0 = now;
     }
@@ -193,12 +195,19 @@ extern "C" void perfstats_draw(float w, float h) {
     decimal(ms, sizeof ms, avg_ms, es);
     decimal(mx, sizeof mx, worst_ms > 0 ? worst_ms : worst_cur, es);
     const char *SEP = " \xC2\xB7 ";  // (U+00B7)
-    Run runs[16];
+    Run runs[24];
     int nr = 0;
-    auto add = [&](const char *t, ImU32 c) { if (nr < 16) runs[nr++] = {t, c}; };
+    auto add = [&](const char *t, ImU32 c) { if (nr < 24) runs[nr++] = {t, c}; };
     float cap = config_live_fps();
     add(f, fps >= cap * .95f ? GOOD : fps >= cap * .75f ? GOLD : BAD);
     add(" FPS", GOLD);
+    char sh[16];
+    if (shown > 0) {  // ([Graphics] FrameGen making pictures: "30 FPS (60 shown)")
+        std::snprintf(sh, sizeof sh, "%.0f", shown);
+        add(" (", DIM);
+        add(sh, INK);
+        add(es ? " mostrados)" : " shown)", GOLD);
+    }
     add(SEP, DIM);
     add(avg_ms > 0 ? ms : "--", INK);
     add(" ms", GOLD);

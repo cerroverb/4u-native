@@ -18,12 +18,18 @@
 //  - the update title (the base program id with the high word 0x0004000E) on the NAND or the SD card
 //    is the game folder's update_romfs.bin (RomFS) and code.bin (the `.code` section), content index 0;
 //  - the base title on the game card is romfs.bin;
+//  - an add-on content (DLC) title the player brought (dlc_titles.h) on the NAND or the SD card: the RomFS of the
+//    content of that index, read from its .app (1.0.1); a content that is not there or can't be read is "not
+//    found", logged the first time the game asks for it;
 //  - any other title is not installed, so it falls to the replacements below or is "not found".
 // Departures from Azahar: the other ExeFS sections (icon, banner, logo) and the other content indices
 // (manuals, which the game folder does not hold) are not found; a read past the end of an ExeFS file
 // gives 0 bytes (Azahar's NCCHFile subtracts the offset from the size without a check).
 #include <cstring>
 
+#include <fmt/format.h>
+
+#include "dlc_titles.h"
 #include "file_backends.h"
 #include "fs_state.h"
 #include "mh4n/log.h"
@@ -40,6 +46,10 @@ constexpr const char* kLog = "Service.FS";
 constexpr u32 kFileRomFs = 0;
 constexpr u32 kFileCode = 1;
 constexpr u32 kFileExeFs = 2;
+
+// FirstAsk keys past any content index (u16): the first read and the first refusal of a DLC title.
+constexpr u32 kFirstRead = 0x10000;
+constexpr u32 kFirstMissing = 0x10001;
 
 constexpr std::size_t kArchivePathSize = 0x10;  // u64 tid, u32 media type, u32 unknown
 constexpr std::size_t kFilePathSize = 0x14;     // u32 open type, u32 content index, u32 type, char[8]
@@ -62,8 +72,8 @@ constexpr u64 UpdateTitleId(u64 program_id) {
 
 class NcchArchive final : public ArchiveBackend {
 public:
-    NcchArchive(const GameFiles& game, u64 title_id, u32 media_type)
-        : game_(game), title_id_(title_id), media_type_(media_type) {}
+    NcchArchive(const GameFiles& game, DlcTitles& dlc, u64 title_id, u32 media_type)
+        : game_(game), dlc_(dlc), title_id_(title_id), media_type_(media_type) {}
 
     std::string GetName() const override { return "NCCHArchive"; }
 
@@ -81,6 +91,10 @@ public:
         const u32 content_index = Le32(path.data.data() + 4);
         const u32 file_type = Le32(path.data.data() + 8);
         const char* exefs_name = reinterpret_cast<const char*>(path.data.data() + 12);
+
+        if ((media_type_ == kMediaNand || media_type_ == kMediaSdmc) && static_cast<u32>(title_id_ >> 32) == kTidHighDlc) {
+            return OpenDlc(content_index, file_type, file);
+        }
 
         enum class Source { None, Base, Update };
         Source source = Source::None;
@@ -164,7 +178,53 @@ public:
     Result DirectoryOpen(const Path&, std::unique_ptr<DirectoryBackend>*) override { return kResultUnknown; }
 
 private:
+    // An add-on content title's content: its RomFS, from the .app, when it can be read.
+    Result OpenDlc(u32 content_index, u32 file_type, std::shared_ptr<FileBackend>* file) {
+        const DlcTitle* title = dlc_.Find(media_type_, title_id_);
+        if (title == nullptr) {
+            MH4N_LOG(Debug, kLog, "NCCH: DLC title {:016X} is not installed (media {})", title_id_, media_type_);
+            return kResultNotFound;
+        }
+        const DlcContent* content = content_index <= 0xFFFF ? title->Content(static_cast<u16>(content_index)) : nullptr;
+        if (content == nullptr || file_type != kFileRomFs || content->state != DlcContentState::Readable) {
+            if (dlc_.FirstAsk(title_id_, content_index)) {
+                const std::string why = content == nullptr ? " is not in its title metadata"
+                                        : file_type != kFileRomFs
+                                            ? fmt::format(", file type {} (DLC has only a RomFS)", file_type)
+                                            : fmt::format(" {}", DlcContentStateText(content->state));
+                // a Warning for the first such content of a title, the others at Debug (a title has up to hundreds)
+                if (dlc_.FirstAsk(title_id_, kFirstMissing)) {
+                    MH4N_LOG(Warning, kLog, "NCCH: DLC title {:016X} content {:04X}{}: not found", title_id_,
+                             content_index, why);
+                } else {
+                    MH4N_LOG(Debug, kLog, "NCCH: DLC title {:016X} content {:04X}{}: not found", title_id_,
+                             content_index, why);
+                }
+            }
+            return kResultNotFound;
+        }
+        std::string error;
+        std::shared_ptr<PositionedFile> app = PositionedFile::Open(content->path, &error);
+        if (app == nullptr || app->Size() < content->romfs_offset + content->romfs_size) {
+            MH4N_LOG(Error, kLog, "NCCH: DLC title {:016X} content {:04X}: {} can't be read now{}", title_id_,
+                     content_index, content->path, error.empty() ? "" : ": " + error);
+            return kResultNotFound;
+        }
+        if (dlc_.FirstAsk(title_id_, content_index)) {
+            if (dlc_.FirstAsk(title_id_, kFirstRead)) {
+                MH4N_LOG(Info, kLog, "NCCH: the game reads DLC title {:016X} content {:04X} ({:08x}.app)", title_id_,
+                         content_index, content->id);
+            } else {
+                MH4N_LOG(Debug, kLog, "NCCH: the game reads DLC title {:016X} content {:04X} ({:08x}.app)",
+                         title_id_, content_index, content->id);
+            }
+        }
+        *file = std::make_shared<SliceFile>(app, content->romfs_offset, content->romfs_size);
+        return kResultSuccess;
+    }
+
     const GameFiles& game_;
+    DlcTitles& dlc_;
     u64 title_id_;
     u32 media_type_;
 };
@@ -186,7 +246,7 @@ public:
         }
         const u64 title_id = Le64(path.data.data());
         const u32 media_type = Le32(path.data.data() + 8) & 0xFF;
-        *archive = std::make_unique<NcchArchive>(state_.game, title_id, media_type);
+        *archive = std::make_unique<NcchArchive>(state_.game, state_.dlc, title_id, media_type);
         return kResultSuccess;
     }
 

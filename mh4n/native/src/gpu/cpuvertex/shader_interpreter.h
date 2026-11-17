@@ -34,6 +34,7 @@
 #pragma once
 
 #include <array>
+#include <memory>
 #include <span>
 
 #include "gpu/cpuvertex/f24.h"
@@ -178,17 +179,52 @@ struct GeometryShaderUnit : public ShaderUnit {
     GeometryEmitter emitter;
 };
 
+// A program the code library does not carry compiled is interpreted. MH4N_PICA_DECODED (read once, at the first run):
+//   on (the default)  each instruction word is decoded once into a record (its operands, selectors, write mask,
+//                     jump fields) that later runs read, checked against the program's and the operand descriptors'
+//                     words at every step, so a word the game uploads again is decoded again: the same operations in
+//                     the same order as the word-by-word interpreter, without its decoding at every instruction (the
+//                     High Rank field on a Moto g06 spent a tenth of the renderer's thread interpreting)
+//   scalar            decoded, one lane at a time (on arm64 the arithmetic otherwise takes the four lanes at once)
+//   off               word by word (Interpret), as before
+//   check             both, the word-by-word one for real and the decoded one on a copy of the unit, compared run by
+//                     run (registers, condition codes, address registers, emitted vertices: DecodedCheckCounts), each
+//                     one's time summed
+struct DecodedCheckCounts {
+    u64 runs = 0;
+    u64 differences = 0;
+    u64 plain_ns = 0;    // the word-by-word interpreter's time in those runs
+    u64 decoded_ns = 0;  // the decoded one's
+};
+DecodedCheckCounts GetDecodedCheckCounts();
+// The renderer's MH4N_AB phase "decoded" turns the decoded interpreter off (any thread; a measurement aid).
+void SetDecodedInterpreterOff(bool off);
+// ... and its four lanes at once (on arm64; MH4N_PICA_DECODED=scalar, the MH4N_AB phase "decvec": one lane at a time).
+void SetDecodedVectorsOff(bool off);
+
 // InterpreterEngine::Run
 class InterpreterEngine {
 public:
+    InterpreterEngine();
+    ~InterpreterEngine();
+    InterpreterEngine(const InterpreterEngine&) = delete;
+    InterpreterEngine& operator=(const InterpreterEngine&) = delete;
+
     // Runs the shader from `setup.entry_point` until END. False when it stopped for a reason in
     // `error`.
     bool Run(const ShaderSetup& setup, ShaderUnit& state, RunError& error) const;
 
+    struct DecodedCache;  // (shader_interpreter.cpp)
+
 private:
     bool Interpret(const ShaderSetup& setup, ShaderUnit& state, RunError& error) const;
+    bool InterpretDecoded(const ShaderSetup& setup, ShaderUnit& state, RunError& error) const;
+    bool InterpretBoth(const ShaderSetup& setup, ShaderUnit& state, RunError& error) const;
     bool RunNative(const ShaderSetup& setup, ShaderUnit& state, RunError& error) const;
     bool RunChecked(const ShaderSetup& setup, ShaderUnit& state, RunError& error) const;
+
+    // The decoded programs (InterpretDecoded): an engine runs on one thread at a time (the renderer's runner).
+    mutable std::unique_ptr<DecodedCache> decoded_;
 };
 
 } // namespace mh4n::gpu::cpuvertex

@@ -312,8 +312,11 @@ void Recorder::BeginTargetPass(const TargetPassDesc& desc) {
     r.vulkan_list()->setFramebuffer(pass.framebuffer);
     // the render area (plume patch 15): a tile-based GPU loads and stores the attachments only there
     r.vulkan_list()->renderArea = VkRect2D{{pass.area.x, pass.area.y}, {pass.area.width, pass.area.height}};
-    // the colour not loaded but cleared (plume patch 20): the pass's first draw writes all of the render area
-    r.vulkan_list()->pendingColorClear = color != nullptr && desc.color_load == LoadOp::DontCare;
+    // the colour not loaded but cleared (plume patch 20): the pass's first draw writes all of the render area. Not where a
+    // clear may not be a load op (Backend::Impl::clear_load_ops, an Adreno on a Vulkan 1.1 driver): loaded there, which
+    // the first draw writes over the same
+    const bool clear_load_ops = r.backend->clear_load_ops;
+    r.vulkan_list()->pendingColorClear = clear_load_ops && color != nullptr && desc.color_load == LoadOp::DontCare;
     const ::plume::RenderViewport viewport(static_cast<float>(pass.area.x), static_cast<float>(pass.area.y),
                                            static_cast<float>(pass.area.width), static_cast<float>(pass.area.height));
     const ::plume::RenderRect scissor(pass.area.x, pass.area.y, pass.area.x + static_cast<s32>(pass.area.width),
@@ -326,9 +329,10 @@ void Recorder::BeginTargetPass(const TargetPassDesc& desc) {
     data.pass = pass;
     if (color != nullptr) { color->open_pass_in = &r; color->dirty = true; }
     if (depth != nullptr) { depth->open_pass_in = &r; depth->dirty = true; }
-    if (depth != nullptr && desc.depth_load == LoadOp::Clear) {
+    if (clear_load_ops && depth != nullptr && desc.depth_load == LoadOp::Clear) {
         // A new pass's depth clear over its render area is its load op (plume patch 17): the old depth is neither read
-        // nor cleared by a draw. The pass begins now, as the clear command would begin it.
+        // nor cleared by a draw. The pass begins now, as the clear command would begin it. (Without clear_load_ops: the
+        // clear command below, inside a pass that loads)
         ::plume::VulkanCommandList* list = r.vulkan_list();
         list->pendingDepthClear = true;
         list->pendingDepthClearValue = VkClearDepthStencilValue{desc.clear_depth, desc.clear_stencil};

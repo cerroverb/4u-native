@@ -45,7 +45,8 @@ void touch_set_bottom_default(bool shown);
 // the controls over the menu are drawn faint (they work as ever; nothing moves).
 void touch_set_one_screen(bool on);
 // The controls' settings (the settings panel's Controls tab), by their keys in touch_layout.txt: "controls" (auto, on,
-// off), "opacity" (0.20 .. 1.00), "camera_speed" (0.20 .. 5.00), "attack_style" (0 the pill, 1 two buttons, 2 the corner
+// off), "opacity" (0.20 .. 1.00), "camera_speed" (0.20 .. 5.00), "camera_smooth" (the drag's turn smoothed: 0 off .. 1,
+// 1.0.1), "attack_style" (0 the pill, 1 two buttons, 2 the corner
 // band) and "show_<button>" (1 shown, 0 hidden: show_attacks, show_dodge, ...). Empty for a key that isn't one.
 std::string touch_setting(const std::string& key);
 // Sets one at once and saves touch_layout.txt (a value out of its range is brought into it).

@@ -6,6 +6,7 @@ import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.GradientDrawable;
+import android.hardware.display.DisplayManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Process;
@@ -68,6 +69,7 @@ public class GameActivity extends SDLActivity {
             new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> Process.killProcess(Process.myPid()), 200);
             return;
         }
+        Diag.install(this);  // (1.0.1: the versions seen, a Java crash's stack for Share log)
         getExternalFilesDir(null);  // (makes the folder, so the native side and adb can find it)
         if (!entered) AppHome.ensure(this);  // (a test run started with adb: the app's folder checked, as the entry does)
         SaveFolder.applyPending(this);  // (Settings -> Save folder, before the game reads the save: done by the gate already)
@@ -75,7 +77,70 @@ public class GameActivity extends SDLActivity {
         ExtraImportActivity.applyPending(this);  // (imported event quests, before the game reads its extra data)
         super.onCreate(savedInstanceState);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        drawUnderCutout();
         pickRefreshRate();
+        Diag.logToGame(this);  // (the phone and the app into log.txt, off this thread)
+        Diag.watch(this);      // (and what changes while the game runs: the network, the heat, power saving)
+        watching = true;
+        watchRefreshRate();
+    }
+
+    private boolean watching;
+
+    @Override
+    protected void onDestroy() {
+        if (watching) Diag.unwatch(this);
+        if (rateListener != null) ((DisplayManager) getSystemService(DISPLAY_SERVICE)).unregisterDisplayListener(rateListener);
+        rateListener = null;
+        super.onDestroy();
+    }
+
+    // (1.0.1, diag) the system's memory warnings and the window's mode, as events in log.txt with the session's time
+    @Override
+    public void onTrimMemory(int level) {
+        if (watching) Diag.event("the system trims memory: " + Diag.trimLevel(level));
+        super.onTrimMemory(level);
+    }
+
+    @Override
+    public void onLowMemory() {
+        if (watching) Diag.event("the system is out of memory (onLowMemory)");
+        super.onLowMemory();
+    }
+
+    @Override
+    public void onMultiWindowModeChanged(boolean on, android.content.res.Configuration config) {
+        if (watching) Diag.event(on ? "split screen / a window of its own" : "full screen again");
+        super.onMultiWindowModeChanged(on, config);
+    }
+
+    @Override
+    public void onConfigurationChanged(android.content.res.Configuration config) {
+        if (watching)
+            Diag.event("the configuration changed: " + config.screenWidthDp + "x" + config.screenHeightDp + " dp, "
+                       + (config.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE ? "landscape" : "portrait")
+                       + ", " + config.densityDpi + " dpi");
+        super.onConfigurationChanged(config);
+    }
+
+    /**
+     * The game fills the screen beside a notch or a punch hole too. SDL lets the window under the cutout only from Android 11
+     * (LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS, when it goes full screen); on Android 9 and 10 the window stayed beside it, and
+     * in landscape the cutout's side showed a black strip (4u-native #60, an Infinix Note 8 on Android 10: 1640x720, the
+     * game 1600 wide). There SHORT_EDGES does the same: in landscape the cutout is on a short edge.
+     */
+    private void drawUnderCutout() {
+        if (Build.VERSION.SDK_INT < 28) return;
+        try {
+            WindowManager.LayoutParams lp = getWindow().getAttributes();
+            int mode = Build.VERSION.SDK_INT >= 30 ? WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+                                                   : WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+            if (lp.layoutInDisplayCutoutMode == mode) return;
+            lp.layoutInDisplayCutoutMode = mode;
+            getWindow().setAttributes(lp);
+        } catch (Exception e) {
+            Log.w(TAG, "cutout: " + e);
+        }
     }
 
     @Override
@@ -292,7 +357,7 @@ public class GameActivity extends SDLActivity {
                 }
                 if (on) lanLock.acquire();
                 else if (lanLock.isHeld()) lanLock.release();
-                Log.i(TAG, "LAN: Wi-Fi broadcasts " + (on ? "on" : "off"));
+                Diag.event("LAN: Wi-Fi broadcasts " + (on ? "on" : "off"));
             }
         } catch (RuntimeException e) {
             Log.w(TAG, "LAN: " + e);
@@ -341,27 +406,83 @@ public class GameActivity extends SDLActivity {
         if (activity instanceof GameActivity) activity.runOnUiThread(((GameActivity) activity)::pickRefreshRate);
     }
 
+    private static volatile boolean frameGen;  // ([Graphics] FrameGen: the refresh rate at twice the limit, pickRefreshRate)
+
+    /** [Graphics] FrameGen se prendió o se apagó (android_main.cpp, settings_panel.cpp): la pantalla elige de nuevo su tasa de refresco. */
+    public static void setFrameGen(boolean on) {
+        if (frameGen == on) return;
+        frameGen = on;
+        SDLActivity activity = mSingleton;
+        if (activity instanceof GameActivity) activity.runOnUiThread(((GameActivity) activity)::pickRefreshRate);
+    }
+
+    // (1.0.1) The screen's refresh rate as it changes, the system's own switches too (a Galaxy S25 Ultra's panel went
+    // 60 -> 120 -> 60 Hz by itself 3 minutes into a 30 FPS run with frame generation): an event in log.txt, with the rate
+    // pickRefreshRate asked for. At most 40 a session (a panel that changes its rate by itself all the time)
+    private DisplayManager.DisplayListener rateListener;
+    private volatile float rateAsked;
+    private float rateSeen;
+    private int rateEvents;
+
+    private void watchRefreshRate() {
+        try {
+            final DisplayManager dm = (DisplayManager) getSystemService(DISPLAY_SERVICE);
+            Display display = Build.VERSION.SDK_INT >= 30 ? getDisplay() : getWindowManager().getDefaultDisplay();
+            if (dm == null || display == null) return;
+            final int id = display.getDisplayId();
+            rateSeen = display.getRefreshRate();
+            rateListener = new DisplayManager.DisplayListener() {
+                @Override public void onDisplayAdded(int displayId) {}
+                @Override public void onDisplayRemoved(int displayId) {}
+                @Override public void onDisplayChanged(int displayId) {
+                    if (displayId != id || rateEvents >= 40) return;
+                    Display d = dm.getDisplay(id);
+                    if (d == null) return;
+                    float rate = d.getRefreshRate();
+                    if (Math.abs(rate - rateSeen) < .5f) return;
+                    rateEvents++;
+                    Diag.event("the screen's refresh rate is now " + rate + " Hz, " + rateSeen + " Hz before (asked for "
+                               + rateAsked + " Hz)" + (rateEvents == 40 ? " (no more of these this session)" : ""));
+                    rateSeen = rate;
+                }
+            };
+            dm.registerDisplayListener(rateListener, null);  // (on this thread, the interface's)
+        } catch (Exception e) {
+            Log.w(TAG, "refresh rate listener: " + e);
+        }
+    }
+
     /**
      * La tasa de refresco más baja que alcanza para el límite de FPS, nunca menos de 60: una pantalla a 120 Hz con el juego
      * a 60 gasta batería y calienta el teléfono sin mostrar nada más. Sin límite conocido, la más alta.
+     * Con la generación de cuadros ([Graphics] FrameGen, 1.0.1): la más baja que sea el doble del límite o más, si la
+     * pantalla tiene una (límite 60: 120 Hz; 30: 60 Hz), porque la imagen hecha entre dos del juego necesita el límite a la
+     * mitad de la tasa o menos; si no tiene, la de siempre. Sin FrameGen, exactamente la de antes.
      */
     private void pickRefreshRate() {
         try {
             Display display = Build.VERSION.SDK_INT >= 30 ? getDisplay() : getWindowManager().getDefaultDisplay();
             if (display == null) return;
-            Display.Mode current = display.getMode(), best = null, fastest = current;
+            Display.Mode current = display.getMode(), best = null, fastest = current, doubled = null;
             float want = frameCap > 0 ? Math.max(frameCap, 60) - .5f : Float.MAX_VALUE;
+            float twice = frameGen && frameCap > 0 ? 2 * frameCap - .5f : Float.MAX_VALUE;  // (FrameGen off: never)
             for (Display.Mode m : display.getSupportedModes()) {
                 if (m.getPhysicalWidth() != current.getPhysicalWidth() || m.getPhysicalHeight() != current.getPhysicalHeight()) continue;
                 if (m.getRefreshRate() > fastest.getRefreshRate()) fastest = m;
                 if (m.getRefreshRate() >= want && (best == null || m.getRefreshRate() < best.getRefreshRate())) best = m;
+                if (m.getRefreshRate() >= twice && (doubled == null || m.getRefreshRate() < doubled.getRefreshRate())) doubled = m;
             }
             if (best == null) best = fastest;
+            if (doubled != null) best = doubled;
             WindowManager.LayoutParams lp = getWindow().getAttributes();
             lp.preferredDisplayModeId = best.getModeId();
             lp.preferredRefreshRate = best.getRefreshRate();
             getWindow().setAttributes(lp);
-            Log.i(TAG, "display mode " + best.getPhysicalWidth() + "x" + best.getPhysicalHeight() + " @ " + best.getRefreshRate());
+            rateAsked = best.getRefreshRate();
+            String fg = !frameGen || frameCap <= 0 ? "" : doubled != null ? ", frame generation: twice the limit or more"
+                                                                          : ", frame generation: no rate twice the limit";
+            Diag.event("display mode " + best.getPhysicalWidth() + "x" + best.getPhysicalHeight() + " @ " + best.getRefreshRate() + " Hz"
+                       + (fg.isEmpty() ? "" : " (the FPS limit " + frameCap + fg + ")"));
         } catch (Exception e) {
             Log.w(TAG, "refresh rate: " + e);
         }

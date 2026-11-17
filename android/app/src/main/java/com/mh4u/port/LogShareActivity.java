@@ -38,6 +38,9 @@ import java.util.Locale;
  * Corre en su propio proceso (":share", como LogProvider), porque el del juego muere tras un error y lo que comparte
  * tiene que seguir disponible para la app que lo reciba. Junta en un archivo los datos del teléfono, el registro de esta
  * sesión y el de la anterior: el jugador elige a quién enviarlo; la app no manda nada por su cuenta.
+ * (1.0.1) Diag.bundle arma el archivo, en un hilo propio: el teléfono y la app ahora, cómo terminaron sus últimos
+ * procesos, la librería de código, los ajustes, los mods, las dos sesiones anteriores, la última importación, el último
+ * armado y el registro del sistema.
  */
 public class LogShareActivity extends Activity {
     static final String EXTRA_CRASH = "crash";
@@ -48,6 +51,8 @@ public class LogShareActivity extends Activity {
 
     private boolean es;
     private Thread systemLines;  // (after a crash) addSystemLines
+    private Button shareButton;
+    private boolean sharing;
 
     private int dp(int v) {
         return (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v, getResources().getDisplayMetrics());
@@ -101,12 +106,17 @@ public class LogShareActivity extends Activity {
         LinearLayout.LayoutParams gap = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
                                                                       LinearLayout.LayoutParams.WRAP_CONTENT);
         gap.setMargins(0, dp(12), 0, 0);
-        box.addView(text(es ? "El registro explica qué pasó y en qué teléfono. Puedes enviarlo a quien te esté ayudando: "
-                              + "se abre la lista de apps y tú eliges a dónde va. No lleva tu partida, pero puede "
-                              + "incluir la dirección de tu red local si jugaste en LAN."
-                            : "The log says what happened and on which phone. You can send it to whoever is helping "
-                              + "you: the list of apps opens and you choose where it goes. Your save is not in it, but "
-                              + "it can hold your local network address if you played over LAN.", 15, CREAM, false), gap);
+        box.addView(text(es ? "El registro explica qué pasó y en qué teléfono: el modelo y su sistema, la memoria, la batería y "
+                              + "la temperatura, el tipo de red (Wi-Fi o datos, nunca su nombre), los ajustes y los mods de "
+                              + "la app, y las últimas sesiones. Puedes enviarlo a quien te esté ayudando: se abre la lista "
+                              + "de apps y tú eliges a dónde va. No lleva tu partida, cuentas, correo ni ubicación, pero "
+                              + "puede incluir la dirección de tu red local si jugaste en LAN."
+                            : "The log says what happened and on which phone: its model and system, the memory, the "
+                              + "battery and the heat, the network's kind (Wi-Fi or mobile data, never its name), the app's "
+                              + "settings and mods, and the last sessions. You can send it to whoever is helping you: the "
+                              + "list of apps opens and you choose where it goes. Your save, accounts, e-mail and location "
+                              + "are not in it, but it can hold your local network address if you played over LAN.",
+                         15, CREAM, false), gap);
 
         // the code library refused the game's code: a code mod turned on or off since the library was made
         boolean library = crash && logSays("does not match");
@@ -124,11 +134,11 @@ public class LogShareActivity extends Activity {
         if (recompH || twoBuilds) {
             box.addView(text(recompH
                     ? (es ? "La librería de código se hizo con otra versión de la herramienta (o la hizo otra persona). Vuelve a "
-                            + "hacerla con la herramienta de esta versión (el paso 3 de la guía), copia juntos el .so y el .id, y "
-                            + "no uses una librería ajena."
-                          : "The code library was made with another version of the tool (or by someone else). Make it again "
-                            + "with this version's tool (step 3 of the guide), copy the .so and the .id together, and don't use "
-                            + "a library someone else made.")
+                            + "crearla con esta versión (Crear el código del juego, abajo, en este teléfono; o la herramienta de "
+                            + "esta versión en una PC, con el .so y el .id juntos), y no uses una librería ajena."
+                          : "The code library was made with another version of the tool (or by someone else). Build it again "
+                            + "with this version (Build the game code, below, on this phone; or this version's tool on a PC, "
+                            + "with the .so and the .id together), and don't use a library someone else made.")
                     : (es ? "La librería de código y el .id que tiene al lado son de armados distintos. Copia juntos los dos "
                             + "archivos de un mismo armado, hechos con la herramienta de esta versión."
                           : "The code library and the .id beside it come from different builds. Copy both files of the same "
@@ -142,11 +152,13 @@ public class LogShareActivity extends Activity {
                                   + "that are on, or go back to the mods of the last start that worked.", 15, GOLD, false), gap);
         } else if (library) {
             box.addView(text(es ? "La librería de código no coincide con el código del juego y los mods de código que están "
-                                  + "activados (los que traen una carpeta exefs). Vuelve a hacer la librería en la PC con esos "
-                                  + "mods (el paso 3 de la guía), o vuelve a los mods del último inicio que funcionó."
+                                  + "activados (los que traen una carpeta exefs). Vuelve a crear la librería con esos mods "
+                                  + "(Crear el código del juego, abajo: se hace en este teléfono y tarda un rato), o vuelve a los "
+                                  + "mods del último inicio que funcionó."
                                 : "The code library doesn't match the game's code with the code mods that are on (the ones "
-                                  + "with an exefs folder). Make the library again on the PC with those mods (step 3 of the "
-                                  + "guide), or go back to the mods of the last start that worked.", 15, GOLD, false), gap);
+                                  + "with an exefs folder). Build the library again with those mods (Build the game code, below: "
+                                  + "it is made on this phone and takes a while), or go back to the mods of the last start that "
+                                  + "worked.", 15, GOLD, false), gap);
         } else if (codeMod && logSays("exheader.bin:")) {
             // (a mod's exheader.bin the loader refused: another game's or region's, or not the build of its code.bin)
             box.addView(text(es ? "Un mod de código trae un exheader.bin que no va con el juego o con su propio code.bin (otro "
@@ -184,11 +196,24 @@ public class LogShareActivity extends Activity {
             });
             box.addView(off, first);
         }
+        if (recompH || twoBuilds || library) {  // (the library to make again: the builder, on this phone, as Settings › System
+                                                 // › Game code has it; the game can't start to open those)
+            Button build = button(es ? "Crear el código del juego" : "Build the game code", true);
+            build.setOnClickListener(v -> {
+                waitSystemLines();
+                startActivity(new Intent(this, BuilderActivity.class).putExtra(BuilderActivity.EXTRA_FROM_ERROR, true));
+                finish();
+            });
+            LinearLayout.LayoutParams next = new LinearLayout.LayoutParams(first);
+            if (box.getChildAt(box.getChildCount() - 1) instanceof Button) next.setMargins(dp(8), dp(10), dp(8), 0);
+            box.addView(build, next);
+        }
         LinearLayout row = new LinearLayout(this);
         row.setGravity(Gravity.CENTER);
         row.setPadding(0, dp(library || codeMod ? 10 : 18), 0, 0);
         Button share = button(es ? "Compartir registro" : "Share log", !(library || codeMod));
         share.setOnClickListener(v -> share());
+        shareButton = share;
         LinearLayout.LayoutParams size = new LinearLayout.LayoutParams(0, dp(46), 1);
         size.setMargins(dp(8), 0, dp(8), 0);
         row.addView(share, size);
@@ -364,6 +389,7 @@ public class LogShareActivity extends Activity {
         }
         StringBuilder s = new StringBuilder("\n===== the system log's errors of this app (logcat, the last ").append(lines.size()).append(") =====\n");
         for (String l : lines) s.append(l).append('\n');
+        for (String l : Diag.exits(this, 2)) s.append(l).append('\n');  // (1.0.1: how Android saw the process end)
         try (OutputStream out = new FileOutputStream(new File(home(), "log.txt"), true)) {
             out.write(s.toString().getBytes(StandardCharsets.UTF_8));
         } catch (IOException e) {
@@ -390,38 +416,44 @@ public class LogShareActivity extends Activity {
         finish();
     }
 
+    // (1.0.1) the file is made on a thread of its own (the system log, the folders' sizes and the snapshot take a moment),
+    // then the list of apps opens; Diag.bundle: the phone and the app, the code library, the options, the mods, the last
+    // three sessions, the last save import and code build, the system log
     private void share() {
-        waitSystemLines();
-        File report = LogProvider.report(this);
-        try (OutputStream out = new FileOutputStream(report)) {
-            out.write(device().getBytes(StandardCharsets.UTF_8));
-            File home = home();
-            append(out, new File(home, "log.txt"), "this session");
-            append(out, new File(home, "log_prev.txt"), "the session before");
-            File imported = new File(home, "save_import.txt");  // (Import save's last try: where from, which game, what happened)
-            if (imported.isFile()) append(out, imported, "the last save import");
-        } catch (IOException e) {
-            Log.e(TAG, "share log: " + e);
-        }
-        Uri uri = LogProvider.uri();
-        Intent send = new Intent(Intent.ACTION_SEND);
-        send.setType("text/plain");
-        send.putExtra(Intent.EXTRA_SUBJECT, "MH4U log");
-        send.putExtra(Intent.EXTRA_STREAM, uri);
-        send.setClipData(ClipData.newRawUri("MH4U log", uri));
-        send.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-        startActivity(Intent.createChooser(send, es ? "Compartir registro" : "Share log"));
-    }
-
-    private static void append(OutputStream out, File log, String title) throws IOException {
-        out.write(("\n===== " + title + " (" + log.getName() + ", " + log.length() + " bytes) =====\n").getBytes(StandardCharsets.UTF_8));
-        if (!log.exists()) return;
-        try (FileInputStream in = new FileInputStream(log)) {
-            if (log.length() > MAX_LOG) in.skip(log.length() - MAX_LOG);
-            byte[] buf = new byte[1 << 16];
-            int n;
-            while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
-        }
+        if (sharing) return;
+        sharing = true;
+        final String label = shareButton.getText().toString();
+        shareButton.setEnabled(false);
+        shareButton.setText(es ? "Preparando…" : "Preparing…");
+        final boolean crash = getIntent().getBooleanExtra(EXTRA_CRASH, false);
+        new Thread(() -> {
+            waitSystemLines();
+            String header = device() + "share log: " + (crash ? "the error screen" : "from the settings") + ", "
+                            + new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.ROOT).format(new java.util.Date()) + "\n";
+            File report;
+            try {
+                report = Diag.bundle(this, header);
+            } catch (Throwable t) {  // (never seen: the logs as before rather than no file)
+                Log.e(TAG, "share log: " + t);
+                report = Diag.plain(this, header, t);
+            }
+            final File shared = report;
+            runOnUiThread(() -> {
+                sharing = false;
+                shareButton.setEnabled(true);
+                shareButton.setText(label);
+                if (isFinishing() || isDestroyed()) return;
+                boolean zip = shared.getName().endsWith(".zip");
+                Uri uri = LogProvider.uri(zip);
+                Intent send = new Intent(Intent.ACTION_SEND);
+                send.setType(zip ? "application/zip" : "text/plain");
+                send.putExtra(Intent.EXTRA_SUBJECT, "MH4U log");
+                send.putExtra(Intent.EXTRA_STREAM, uri);
+                send.setClipData(ClipData.newRawUri("MH4U log", uri));
+                send.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                startActivity(Intent.createChooser(send, es ? "Compartir registro" : "Share log"));
+            });
+        }, "mh4u-share").start();
     }
 
     /** The phone, for whoever reads the log: nothing that names its owner. */

@@ -39,6 +39,7 @@
 #include <dirent.h>
 #include <dlfcn.h>
 #include <fcntl.h>
+#include <link.h>
 #include <math.h>
 #include <pthread.h>
 #include <stdatomic.h>
@@ -51,6 +52,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "diag.h"
 #include "perf_hint.h"
 
 // (MHGU's runtime gave these: here the app sets the FPS and the clock is the monotonic one)
@@ -475,6 +477,72 @@ static void mem_watch(void) {
 // long session and come back after a pause in the menu (4u-native #50, Discord "MH4U Caida de fps", two Mali-G52 MC2
 // Galaxys) is the phone slowing itself down when these drop with them, and the game when they don't.
 extern volatile uint64_t g_present_count;  // (android_main.cpp: the game's frames shown)
+int present_pacing_vsyncs(void);        // (present_pacing.cpp: the vsyncs a game frame at the last present, 1 when ready)
+int present_pacing_game_vblanks(void);  // (the emulated VBlanks a game frame as the hooks pace it, 0 the game's clock)
+
+// "; limit L FPS: ..." for the minute's line: the settings' limit and how its frames were paced at the minute's end (a
+// player's log shows the limit they chose, 15 to 240, and whether its frames kept a cadence: the game on every n-th
+// VBlank and shown for n vsyncs, or by the game's own clock and shown when ready, a limit that does not divide the screen)
+static void perf_limit_state(char *out, size_t size) {
+    const float cap = config_live_fps();
+    const int vblanks = present_pacing_game_vblanks(), vsyncs = present_pacing_vsyncs();
+    char game[48], shown[48];
+    if (vblanks == 1) snprintf(game, sizeof game, "the game on every VBlank");
+    else if (vblanks > 1) snprintf(game, sizeof game, "the game on every %d%s VBlank", vblanks,
+                                   vblanks == 2 ? "nd" : vblanks == 3 ? "rd" : "th");
+    else snprintf(game, sizeof game, "the game by its own clock");
+    if (vsyncs >= 2) snprintf(shown, sizeof shown, "each frame shown for %d vsyncs", vsyncs);
+    else snprintf(shown, sizeof shown, vsyncs == 1 ? "each picture shown when ready" : "nothing shown yet");
+    snprintf(out, size, "; limit %.0f FPS: %s, %s", cap, game, shown);
+}
+
+// (1.0.1, diag) a sysfs number, -1 when the file can't be read (or isn't a number)
+static long read_number(const char *path) {
+    char buf[64];
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return -1;
+    ssize_t r = read(fd, buf, sizeof buf - 1);
+    close(fd);
+    if (r <= 0) return -1;
+    buf[r] = 0;
+    const char *comma = strchr(buf, ',');  // (MediaTek's GED: "idx, freq")
+    const char *p = comma ? comma + 1 : buf;
+    while (*p == ' ') p++;
+    if ((*p < '0' || *p > '9') && *p != '-') return -1;
+    return atol(p);
+}
+#define GPU_READ(p) read_number(p)
+
+// (1.0.1, diag) The GPU's clock in MHz, -1 when no source here can be read: Adreno's kgsl (Hz), the kernel's gpu_clock
+// (MHz: Samsung's, some Qualcomm's), MediaTek's GED (KHz, "idx, freq"), a Mali's misc device (Hz), and else the first
+// devfreq device whose name says it is the GPU (mali, gpu, g3d, kgsl, pvr: Hz; a Unisoc's or a MediaTek's Mali is one).
+// The source found is kept; none found is looked for again only every tenth time.
+static long gpu_mhz(void) {
+    static char path[160];
+    static int scale;  // what turns the file's number into MHz: 1 MHz, 1000 KHz, 1000000 Hz
+    static int misses;
+    if (!path[0]) {
+        if (misses++ % 10) return -1;
+        static const struct { const char *p; int scale; } known[] = {
+            {"/sys/class/kgsl/kgsl-3d0/gpuclk", 1000000}, {"/sys/kernel/gpu/gpu_clock", 1},
+            {"/sys/kernel/ged/hal/current_freqency", 1000}, {"/sys/class/misc/mali0/device/cur_freq", 1000000}};
+        for (size_t i = 0; i < sizeof known / sizeof known[0] && !path[0]; i++)
+            if (GPU_READ(known[i].p) > 0) snprintf(path, sizeof path, "%s", known[i].p), scale = known[i].scale;
+        DIR *d = path[0] ? NULL : opendir("/sys/class/devfreq");
+        for (struct dirent *e; d && (e = readdir(d)) != NULL;) {
+            const char *n = e->d_name;
+            if (!strstr(n, "mali") && !strstr(n, "gpu") && !strstr(n, "g3d") && !strstr(n, "kgsl") && !strstr(n, "pvr")) continue;
+            if (strstr(n, "bw") || strstr(n, "bus")) continue;  // (a GPU's memory bus, as Qualcomm's gpubw: not its clock)
+            char p[160];
+            snprintf(p, sizeof p, "/sys/class/devfreq/%s/cur_freq", n);
+            if (GPU_READ(p) > 0) { snprintf(path, sizeof path, "%s", p); scale = 1000000; break; }
+        }
+        if (d) closedir(d);
+        if (!path[0]) return -1;
+    }
+    long v = GPU_READ(path);
+    return v > 0 ? v / scale : -1;
+}
 
 // "; thermal status S, headroom H; CPU A-B MHz" (each part only when the phone gives it) into `out`
 static void perf_phone_state(char *out, size_t size) {
@@ -507,7 +575,20 @@ static void perf_phone_state(char *out, size_t size) {
         if (lo == 0 || khz < lo) lo = khz;
         if (khz > hi) hi = khz;
     }
-    if (hi > 0 && o < (int)size) snprintf(out + o, size - (size_t)o, "; CPU %ld-%ld MHz", lo / 1000, hi / 1000);
+    if (hi > 0 && o < (int)size) o += snprintf(out + o, size - (size_t)o, "; CPU %ld-%ld MHz", lo / 1000, hi / 1000);
+    // (1.0.1, diag) the battery's temperature (its sysfs file, else what the Java side last had: Diag.nativeBattery) and the
+    // GPU's clock (gpu_mhz); "?" when it can't be read, never a made-up number
+    if (o < (int)size) {
+        long t = read_number("/sys/class/power_supply/battery/temp");
+        if (t == -1 || t <= -400 || t >= 1500) t = diag_battery_tenths();  // (-1: not readable)
+        if (t > -400 && t < 1500) o += snprintf(out + o, size - (size_t)o, "; battery %.1f C", t / 10.0);
+        else o += snprintf(out + o, size - (size_t)o, "; battery ? C");
+    }
+    if (o < (int)size) {
+        const long gpu = gpu_mhz();
+        if (gpu > 0) o += snprintf(out + o, size - (size_t)o, "; GPU %ld MHz", gpu);
+        else o += snprintf(out + o, size - (size_t)o, "; GPU ? MHz");
+    }
 }
 #define PERF_TASKS 192
 #define PERF_TOP 5
@@ -578,9 +659,11 @@ static void perf_watch(void) {
     if (perf_prev_n >= 0 && now > perf_prev_ns) {
         const double secs = (double)(now - perf_prev_ns) / 1e9, hz = (double)sysconf(_SC_CLK_TCK);
         char line[512];
-        int len = snprintf(line, sizeof line, "[perf] the last %.0f s: %llu game frames shown (%.1f FPS); the process %.2f cores",
+        char limit[128];
+        perf_limit_state(limit, sizeof limit);
+        int len = snprintf(line, sizeof line, "[perf] the last %.0f s: %llu game frames shown (%.1f FPS%s); the process %.2f cores",
                            secs, (unsigned long long)(frames - perf_prev_frames), (double)(frames - perf_prev_frames) / secs,
-                           (double)(ticks - perf_prev_ticks) / hz / secs);
+                           limit, (double)(ticks - perf_prev_ticks) / hz / secs);
         for (int shown = 0; shown < PERF_TOP && len < (int)sizeof line - 48; shown++) {
             int best = -1;
             for (int k = 0; k < names; k++)
@@ -592,9 +675,11 @@ static void perf_watch(void) {
                             count, by_name[best].ticks / hz / secs);
             by_name[best].threads = 0;  // (shown)
         }
-        char phone[96];
+        char phone[192], intervals[160];
         perf_phone_state(phone, sizeof phone);
-        LOG("%s; %llu major page faults%s\n", line, majflt - perf_prev_majflt, phone);
+        diag_frame_summary(intervals, sizeof intervals);
+        LOG("%s; %llu major page faults%s; %s (at %s)\n", line, majflt - perf_prev_majflt, phone,
+            *intervals ? intervals : "no frame intervals", diag_clock());
     }
     memcpy(perf_prev, now_tasks, sizeof(PerfTask) * (size_t)n);
     perf_prev_n = n;
@@ -606,11 +691,56 @@ static void perf_watch(void) {
 
 // The minute's [mem] line on a thread of its own: reading /proc/self/maps (thousands of lines the kernel writes out,
 // under the process's memory map lock) took the presenting thread a while once a minute
+// (1.0.1, diag) The build ids of the app's libraries, the player's code library and the GPU driver's, once: a crash's
+// backtrace says "libmain.so+<offset>", and with the build id the offset is a function of the very build that ran (a
+// player's own libmh4u_code_native.so too); a driver's id tells one build of it from another of the same version.
+struct build_ids { char *line; int o, cap; };
+static int build_id_cb(struct dl_phdr_info *info, size_t size, void *data) {
+    (void)size;
+    struct build_ids *out = data;
+    const char *name = info->dlpi_name;
+    if (!name || !*name) return 0;
+    const char *base = strrchr(name, '/');
+    base = base ? base + 1 : name;
+    bool ours = !strcmp(base, "libmain.so") || !strcmp(base, "libSDL3.so") || strstr(base, "mh4u_code") != NULL;
+    bool gpu = strstr(base, "vulkan") || strstr(base, "GLES") || strstr(base, "adreno") || strstr(base, "mali") ||
+               strstr(base, "pvr") || strstr(base, "usc") || strstr(base, "glnext") || strstr(base, "mesa");
+    if ((!ours && !gpu) || out->o > out->cap - 120) return 0;
+    for (int i = 0; i < info->dlpi_phnum; i++) {
+        const ElfW(Phdr) *ph = &info->dlpi_phdr[i];
+        if (ph->p_type != PT_NOTE) continue;
+        const char *p = (const char *)(uintptr_t)(info->dlpi_addr + ph->p_vaddr), *end = p + ph->p_memsz;
+        while (p + sizeof(ElfW(Nhdr)) <= end) {
+            const ElfW(Nhdr) *nh = (const ElfW(Nhdr) *)(const void *)p;
+            const char *nname = p + sizeof *nh, *desc = nname + ((nh->n_namesz + 3) & ~3u);
+            if (desc + nh->n_descsz > end) break;
+            if (nh->n_type == NT_GNU_BUILD_ID && nh->n_namesz == 4 && !memcmp(nname, "GNU", 4)) {
+                out->o += snprintf(out->line + out->o, out->cap - out->o, "%s %s ", out->o > 18 ? "," : "", base);
+                for (unsigned k = 0; k < nh->n_descsz && k < 20 && out->o < out->cap - 3; k++)
+                    out->o += snprintf(out->line + out->o, out->cap - out->o, "%02x", (unsigned char)desc[k]);
+                return 0;
+            }
+            p = desc + ((nh->n_descsz + 3) & ~3u);
+        }
+    }
+    return 0;
+}
+
 static void *mem_thread(void *arg) {
     (void)arg;
+    bool ids_told = false;
     for (;;) {
         mem_watch();
         perf_watch();
+        diag_log_cap();  // (log.txt under 32 MB: diag.h)
+        if (!ids_told) {
+            ids_told = true;
+            char line[1500];
+            struct build_ids out = {line, 0, (int)sizeof line};
+            out.o = snprintf(line, sizeof line, "[app] build ids:");
+            dl_iterate_phdr(build_id_cb, &out);
+            LOG("%s\n", line);
+        }
         sleep(60);
     }
     return NULL;

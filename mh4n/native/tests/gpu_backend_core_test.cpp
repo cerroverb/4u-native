@@ -366,16 +366,30 @@ TEST_CASE("choice/override_tells_two_devices_with_one_name_apart") {
     CHECK(refused.error.find("fragmentStoresAndAtomics") != std::string::npos);
 }
 
-TEST_CASE("choice/the_direct_queue_family_needs_graphics_compute_and_transfer") {
+TEST_CASE("choice/the_direct_queue_family_needs_graphics_and_compute_and_transfer_is_implied") {
     constexpr u32 G = core::kQueueGraphicsBit, C = core::kQueueComputeBit, T = core::kQueueTransferBit;
     CHECK(core::IsDirectQueueFamily(G | C | T));
     CHECK(core::IsDirectQueueFamily(G | C | T | 0x10));  // sparse binding etc. do not matter
+    // A graphics or compute family supports transfers whether it reports the bit or not (the Vulkan spec makes reporting
+    // it optional there); Adreno 7xx drivers leave it out of their only family (4u-native issue #1, plume patch 21).
+    CHECK(core::IsDirectQueueFamily(G | C));
+    CHECK(core::IsDirectQueueFamily(G | C | 0x10));
     CHECK_FALSE(core::IsDirectQueueFamily(G | T));        // graphics without compute
     CHECK_FALSE(core::IsDirectQueueFamily(G));
     CHECK_FALSE(core::IsDirectQueueFamily(C | T));        // compute only
+    CHECK_FALSE(core::IsDirectQueueFamily(C));
     CHECK_FALSE(core::IsDirectQueueFamily(T));
-    CHECK_FALSE(core::IsDirectQueueFamily(G | C));        // the vendored pick asks for the transfer bit too
+    CHECK_FALSE(core::IsDirectQueueFamily(T | 0x10));     // transfer only, with sparse binding
     CHECK_FALSE(core::IsDirectQueueFamily(0));
+    // The policy agrees with the vendored pick (patch 21): the direct type asks for G|C|T, and a family with graphics or
+    // compute counts as having transfer.
+    for (u32 flags = 0; flags < 32; ++flags) {
+        u32 family = flags;
+        if ((family & (G | C)) != 0) {
+            family |= T;
+        }
+        CHECK(core::IsDirectQueueFamily(flags) == ((family & (G | C | T)) == (G | C | T)));
+    }
 }
 
 TEST_CASE("choice/present_wait_is_available_only_with_a_surface_the_bit_and_both_features") {

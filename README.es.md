@@ -10,6 +10,30 @@ sobre un runtime propio que hace el trabajo de la consola, con los gráficos dib
 
 Habla con otros jugadores y pide ayuda en el [Discord](https://discord.gg/sk5xEjEMwF) de la comunidad.
 
+**¿La misma partida en tu PC y en tu teléfono?** Mira [Jugar en la PC y en el teléfono con la misma partida (Google Drive)](#jugar-en-la-pc-y-en-el-teléfono-con-la-misma-partida-google-drive).
+
+## Jugar en la PC y en el teléfono con la misma partida (Google Drive)
+
+Una sola partida para tu teléfono, tu tablet y un emulador en tu PC (Azahar o Citra), con Google Drive en el medio. La app
+no tiene una nube propia ni sincroniza sola: en el teléfono lo hace una app de sincronización gratuita, y en la PC la
+partida se copia a mano.
+
+- **Entre teléfonos y tablets, sola:** en el juego, **Carpeta de partidas** pone tu partida en una carpeta del teléfono, y
+  una app de sincronización (**FolderSync** o **Autosync for Google Drive**) mantiene esa carpeta igual a una de tu Google
+  Drive. Paso a paso: [Tener tu partida en la nube](#tener-tu-partida-en-la-nube-google-drive-y-similares).
+- **Con un emulador en la PC, a mano:** instala **Google Drive para computadoras** en la PC: tu Drive aparece en el
+  Explorador de archivos, así que la carpeta sincronizada del teléfono está ahí. `MH4U save` tiene la forma de los
+  emuladores (una carpeta `sdmc`).
+  - **Del teléfono a la PC:** guarda en el teléfono y deja que termine la app de sincronización. Abre la carpeta de usuario del
+    emulador, la que tiene `sdmc` adentro (desde el menú **File** del emulador), guarda una copia de su carpeta `sdmc`, y copia
+    encima la carpeta `sdmc` de `MH4U save` de tu Drive, reemplazando los archivos. Las tarjetas de gremio, las misiones
+    de evento y el Felyne también pasan.
+  - **De la PC al teléfono:** en el emulador, clic derecho en el juego, **Open Save Data Location**, y copia esa carpeta a la
+    carpeta de Drive que sincroniza el teléfono. En el teléfono, cuando la app de sincronización la haya bajado: engranaje,
+    **Sistema**, **Tu partida**, **Importar partida**, **Elegir carpeta**, y elígela.
+- Juega en un dispositivo a la vez y guarda antes de cambiar. En el teléfono, la partida que se reemplaza queda en
+  `save_backups`. Más: [Importar tu partida](#importar-tu-partida) y [Exportar tu partida](#exportar-tu-partida).
+
 ## Qué ofrece
 
 ### Imagen y rendimiento
@@ -18,8 +42,8 @@ Habla con otros jugadores y pide ayuda en el [Discord](https://discord.gg/sk5xEj
   la 3DS en una pantalla de 720 líneas). Se baja en el engranaje, **Gráficos y audio**, **Resolución 3D**, hasta la propia
   de la 3DS
 - **Pantalla ancha igual a tu pantalla**, desde teléfonos ultra anchos hasta consolas 4:3, sin barras
-- **Hasta 240 fps:** el **Límite de cuadros por segundo** va de 30 a 240. El juego mantiene su velocidad; solo se dibujan
-  más cuadros. **Ritmo estable**, apagado por defecto, va a la mitad pareja del límite cuando el teléfono no lo sostiene
+- **De 15 a 240 fps:** el **Límite de cuadros por segundo** va de 15 a 240. El juego mantiene su velocidad; solo se dibujan
+  más o menos cuadros. **Ritmo estable**, apagado por defecto, va a la mitad pareja del límite cuando el teléfono no lo sostiene
 - **Modo gama baja**, para teléfonos débiles: 60 fps (30 en un teléfono sin un núcleo rápido), la imagen 3D a un tercio de
   la resolución de tu pantalla, y sin filtros de pantalla, antialiasing ni sombras. En un teléfono débil se activa solo la
   primera vez que arranca la app
@@ -32,6 +56,9 @@ Habla con otros jugadores y pide ayuda en el [Discord](https://discord.gg/sk5xEj
   idiomas: mira el [Paso 2](#paso-2-opcional-una-sola-pantalla)
 - Los **Efectos** se pueden apagar para ganar velocidad, y cargan los **packs de texturas HD** hechos para Azahar y
   Citra: mira [Opciones](#opciones) y [Mods y trucos](#mods-y-trucos)
+- **Color:** engranaje, **Gráficos y audio**, **Color**: tono, temperatura, tinte, brillo, contraste, saturación y gamma de
+  la imagen del juego en las dos pantallas (nunca los controles táctiles ni este menú), todo en 0, sin cambio, por defecto,
+  con **Restablecer el color**
 - **Tu propio driver de GPU** en un Adreno, bajo tu responsabilidad: engranaje, **Gráficos y audio**, **Avanzado**, **Driver de GPU**. Si
   uno falla, la app vuelve sola al del sistema y lo avisa
 
@@ -76,13 +103,25 @@ Habla con otros jugadores y pide ayuda en el [Discord](https://discord.gg/sk5xEj
   de tu carpeta de partidas, y tu diseño de antes es el perfil 1. Diseñado por tabarong
 - **Botones que quedan apretados:** en el editor, toca un botón y activa **Mantener**: un toque lo deja apretado, el
   siguiente lo suelta
-- **Tus propias imágenes en los botones:** en el editor, toca un botón y elige **Imagen** (agrégalas ahí con **Agregar
-  imágenes**, o en el engranaje, **Controles**, **Controles táctiles**, **Imágenes de los botones**). Lo que agregues es tu
-  responsabilidad
+- **Tus propias imágenes en los botones:** en el editor, toca un control y elige **Imagen** (agrégalas ahí con **Agregar
+  imágenes**, o en el engranaje, **Controles**, **Controles táctiles**, **Imágenes de los botones**). Todo control que
+  ubica el editor acepta una, la base y el centro de la palanca cada uno la suya (**Para: base / centro**), y tu imagen es
+  todo el aspecto del control: solo se dibuja tu PNG, un poco más chico y más oscuro mientras lo aprietas. Lo que agregues
+  es tu responsabilidad
 - **Palanca flotante**, desactivada por defecto: engranaje, **Controles**, **Controles táctiles**, **Palanca flotante**. La
   palanca de movimiento aparece donde apoyas el pulgar cerca de ella, y vuelve a su lugar al levantarlo
+- **Ocultar los controles:** mantén un dedo quieto un momento en un lugar vacío (sin botón) y se ocultan todos los
+  controles táctiles, el engranaje también; hazlo otra vez en cualquier lugar para que vuelvan. Arrastrar la cámara,
+  mantener un botón o un segundo dedo nunca los ocultan. Activado por defecto: engranaje, **Controles**, **Controles
+  táctiles**, **Pulsación larga oculta los controles**
+- **Deslizar entre botones:** un pulgar que se desliza de un botón a otro deja los dos apretados, como dos dedos (R a A es
+  R + A, R a X es R + X, como pide la glaive insecto); al volver al primero, ese solo. Activado por defecto: engranaje,
+  **Controles**, **Botones en la pantalla**, **Deslizar entre botones: los dos apretados**
+- **El área táctil de la barra de objetos:** en el editor, toca la barra de objetos y usa - / + (o pellizca) para agrandar
+  o achicar la zona donde un toque usa el objeto y un deslizamiento gira la barra (la barra en sí es la del juego)
 - El teclado de tu teléfono para el nombre de tu cazador y el chat
-- Vibración al tocar, opacidad y velocidad de la cámara ajustables
+- Vibración al tocar, opacidad y velocidad de la cámara ajustables, y **Suavizado de la cámara** (engranaje, **Controles**,
+  apagado por defecto): el giro de la cámara al arrastrar entra de a poco, y llega entero
 
 ### Mandos y teclado
 
@@ -108,10 +147,12 @@ Habla con otros jugadores y pide ayuda en el [Discord](https://discord.gg/sk5xEj
 - Mods, con orden de carga y conflictos, packs de texturas HD, y trucos en el formato de Azahar: mira
   [Mods y trucos](#mods-y-trucos)
 - Jugar con otros en salas de red, y buscar salas en la misma Wi-Fi: mira [Jugar con otros](#jugar-con-otros)
+- **Hubs**, en línea sin escribir direcciones ni abrir puertos, por el mismo servidor de hubs que el MHGU: mira
+  [Hubs](#hubs-en-línea-sin-abrir-puertos)
 - Importa tu partida de Azahar, Citra o un respaldo de Checkpoint o JKSM, y expórtala para ellos
 - Guarda tu partida en una carpeta que una app de sincronización comparta con tus otros dispositivos: mira
   [Elegir dónde se guarda tu partida](#elegir-dónde-se-guarda-tu-partida), y en la nube con una app de sincronización
-- Trae las misiones de evento que ya tienes: mira [Importar DLC y misiones de evento](#importar-dlc-y-misiones-de-evento)
+- Trae las misiones de evento y el DLC que ya tienes: mira [Importar DLC y misiones de evento](#importar-dlc-y-misiones-de-evento)
 - **Enviar todo a la caja** al terminar una misión, y un **acceso directo en el inicio** con tu propia imagen: mira
   [Opciones](#opciones)
 - **El código del juego creado en el teléfono**, sin PC: mira el [Paso 3](#paso-3-crea-el-código-del-juego)
@@ -183,8 +224,10 @@ propio juego, tan nítidos como el resto de la imagen: no hay nada que instalar 
 de EE. UU. la pantalla táctil arranca oculta; su botón (a la izquierda) la vuelve a mostrar para lo que todavía se usa con
 el dedo: el mapa del pueblo, el mapa del mundo, el teclado y la creación del personaje. Mientras un menú del juego está en
 la pantalla de arriba, un botón táctil con la mitad de su imagen o más encima del menú se dibuja tenue para que el menú
-se lea entero (sigue funcionando y no se mueve), y en una pantalla 4:3 el engranaje espera en la esquina de abajo a la izquierda. En la cacería no cambia
-nada. Está basado en el modo de
+se lea entero (sigue funcionando y no se mueve), y en una pantalla 4:3 el engranaje espera en la esquina de abajo a la izquierda. En una pantalla más ancha que la de
+la consola, esos menús se recortan al ancho de la pantalla de la consola, como los recortaba la consola. Las placas de
+la pantalla táctil y las preguntas de sí o no van al lado de las cajas, las listas y las fichas en vez de encima. En la
+cacería no cambia nada. Está basado en el modo de
 una pantalla de [Heavenfall](https://github.com/popzol/4u-heavenfall-mod-beta), de popzol y BlitzWOLF, sin los cambios
 que Heavenfall le hace al juego.
 
@@ -229,7 +272,9 @@ agregar o quitar un mod que cambia el código del juego, por ejemplo).
   S25 Ultra que se pausaba por el calor; un teléfono de gama baja debería tardar unas 2 horas. Sigue con la pantalla
   apagada o en otra app, con su avance en una notificación, y si se corta (el teléfono se reinicia, se cierra la app)
   **Seguir** continúa desde donde quedó, directo a los archivos que faltan compilar, sin volver a analizar el código del
-  juego.
+  juego. **Empezar de cero**, en la misma pantalla después de una creación cortada, cancelada o fallida, borra lo que dejó
+  (sus archivos de trabajo y el registro desde donde sigue), así la próxima vez **Crear** empieza desde el principio;
+  pregunta antes, y deja las herramientas descargadas salvo que elijas borrarlas también.
 - El teléfono se calienta: déjalo cargando, sin funda si puedes. Caliente, va más despacio; muy caliente, espera hasta que
   se enfría.
 
@@ -336,8 +381,9 @@ por ti.
   pantalla de la consola (400x240: 1x, 2x, 3x...), así que cada porcentaje se lleva al más cercano, que se ve entre
   paréntesis: no hay 55 % ni tamaño exacto como en el port de MHGU. El juego dibuja su HUD y sus textos en la misma
   imagen, así que son tan nítidos como esta resolución.
-- **Límite de cuadros por segundo:** de 30 a 240. 30 es el de la 3DS, calienta menos el teléfono y ahorra batería; más de
-  60 es para teléfonos rápidos con una pantalla así de rápida.
+- **Límite de cuadros por segundo:** de 15 a 240. 30 es el de la 3DS, calienta menos el teléfono y ahorra batería; más de
+  60 es para teléfonos rápidos con una pantalla así de rápida. 15, 20 y 25 son para un teléfono que no llega a 30, o para que
+  la batería dure lo más posible: 15 y 20 son tan parejos como 30 en una pantalla de 60 Hz, 25 es menos parejo (no divide 60).
 - **Modo gama baja:** **No**, **Sí** o **Tostadora**, como se describe [arriba](#imagen-y-rendimiento). Igual puedes cambiar
   cada una de sus opciones después.
 - **Efectos:** apagados, no se dibujan los efectos de partículas del juego (golpes, chispas, fuego, alientos, polvo,
@@ -350,7 +396,8 @@ por ti.
   dibujaron las sesiones anteriores, para una imagen que muestra algo mal después de actualizar el driver de la GPU o de
   un cierre. Mientras se compila la lista, un cartel chico dice cuánto falta.
 - **Enviar todo a la caja:** al terminar una misión, la opción del juego de enviar a la caja de objetos manda todas las
-  recompensas de una vez, como en los juegos más nuevos; lo que no entra en la caja queda en la lista. Apagado por
+  recompensas de una vez, como en los juegos más nuevos, y también los objetos del Felyne; lo que no entra en la caja
+  queda en la lista. Apagado por
   defecto: engranaje, **Juego**, **Enviar todo a la caja**. Idea de Alfonso.
 - **Acceso directo en el inicio:** engranaje, **Sistema**, **Acceso directo en el inicio** pone el juego en tu pantalla de
   inicio con la imagen y el nombre que elijas. El ícono propio de la app queda como está.
@@ -398,6 +445,23 @@ tú, bajo tu responsabilidad.
   misiones que se reemplazan quedan en `Android/data/com.mh4u.native/files/save_backups`.
 - Tienen que ser de la misma región que tu juego (EE. UU.: `00001263`, Europa: `00001261`). Si no lo son, la app te lo dice.
 - Tu juego necesita antes sus datos extra: empieza una partida y guarda una vez antes de importarlas.
+
+**El DLC en sí** (los packs de la tienda de DLC del propio juego) es un título aparte de las misiones de evento. Desde la
+1.0.1, la misma opción **Importar DLC y misiones de evento** también lo trae, de tu propia copia:
+
+1. Copia al dispositivo la carpeta de usuario del emulador donde lo instalaste (Azahar o Citra: la que tiene `sdmc`), o una
+   carpeta con tu propio `.cia` del DLC.
+2. Engranaje, **Mods y trucos**, **DLC y misiones de evento**, **Importar DLC y misiones de evento**, **Elegir carpeta**,
+   elige esa carpeta, y después **Importar y reiniciar**.
+
+- Tiene que estar descifrado: la app no descifra nada. Si el emulador lo comprimió al instalarlo, apaga esa opción ahí y
+  vuelve a instalarlo, o usa el `.cia`. La app te avisa cuando un archivo no sirve, y por qué.
+- Tiene que ser de la misma región que tu juego.
+- El juego usa el DLC solo en una partida que ya lo había recibido (una que traes de tu consola o de un emulador): el menú
+  de DLC del propio juego necesita un servicio en línea que ya no existe, así que una partida que nunca lo recibió no
+  puede recibirlo ahora.
+- El registro dice qué DLC encontró el juego y si el juego lo pidió (engranaje, **Sistema**, **Tu partida**, **Compartir
+  registro**). Esto se probó solo con archivos de prueba: cuéntanos cómo te va con el tuyo.
 
 ## Elegir dónde se guarda tu partida
 
@@ -473,10 +537,13 @@ apagarlos, el efecto dura hasta la próxima misión.
 Los packs de texturas hechos para Azahar y Citra funcionan tal como vienen: pon la carpeta del pack (la que tiene los archivos
 `tex1_...png` y, si lo trae, `pack.json`) dentro de una carpeta `textures` en la carpeta de tu juego, junto al `.cci` y a
 `mods`. También sirve la forma de Azahar, `textures/0004000000126300/...`. Solo se usan las texturas PNG (los archivos DDS y
-KTX se omiten). Cada textura se lee la primera vez que el juego la dibuja, así que la primera visita a una zona puede
-tironear, y cada textura HD ocupa memoria del teléfono (una de 1024x1024 son 4 MB): un pack grande puede cerrar el juego en un
-teléfono con poca RAM. Eso queda en tus manos: el registro dice cuántas texturas salieron del pack y cuánta memoria ocupan.
-Esta app no trae ningún pack: consíguelo de su autor.
+KTX se omiten). Cada textura se lee y se decodifica en segundo plano la primera vez que el juego la dibuja (mientras tanto se ve la del
+juego), y cada textura HD ocupa memoria del teléfono (una de 1024x1024 son 4 MB). El pack tiene una parte de la memoria que la
+app da a las texturas, según la RAM de tu teléfono: pasada esa parte, algunas texturas quedan como las del juego, y las de las
+zonas que dejaste se liberan al rato. Si un pack entero es mucho para tu teléfono, engranaje, **Mods y trucos**, **Packs de
+texturas**, **Tamaño de las texturas del pack: Mitad** dibuja las texturas grandes del pack a la mitad de ancho y de alto (un
+cuarto de la memoria; se aplica al volver a abrir el juego). El registro dice cuántas texturas salieron del pack y cuánta
+memoria ocupan. Esta app no trae ningún pack: consíguelo de su autor.
 
 ### Comodidades
 
@@ -507,7 +574,59 @@ hace con los pasos propios del juego.
 ## Jugar con otros
 
 El modo local del juego pasa por una sala de red, del mismo tipo que usa Azahar: jugadores de esta app y de Azahar pueden
-compartir una.
+compartir una. Desde la 1.0.1, los jugadores de esta app también pueden encontrarse en **hubs**, sin escribir direcciones
+ni abrir puertos (abajo).
+
+### Hubs: en línea sin abrir puertos
+
+Como los jugadores de MHGU para Android, pueden encontrarse en **hubs**: un servidor de hubs lista los hubs y lleva a sus
+jugadores, así que nadie escribe una dirección ni abre un puerto en el router.
+
+1. Engranaje, **Multijugador**: elige un **Apodo**. **Jugar en línea con** elige qué muestra la sección: **Los hubs de esta
+   app**, **Salas de Azahar y Citra** (las salas de abajo, como en la 1.0) o **Los dos** (como viene).
+2. Un cazador: **Crear un hub**. Ponle un **Nombre del hub** y, si quieres, una **Descripción** (tu rango, qué cazas, tu
+   idioma), una **Contraseña** si solo deben entrar tus amigos, y cuántos **Cazadores** (de 2 a 4). Después, **Crear el
+   hub**. Deja la app abierta mientras los demás juegan en él.
+3. Los demás: **Entrar a un hub**. Muestra los hubs abiertos ahora para su copia del juego, con sus cazadores y un candado
+   si tienen contraseña. Un toque entra a uno.
+4. Después, como en una sala: en el juego, **Local Play** (juego local) en el **Gathering Hall**. Un cazador crea una sala
+   del gremio y los demás la buscan ahí. El chat **Sala** del chat es el del hub.
+
+Solo juegan juntas copias de la misma región: EE. UU. con EE. UU., Europa con Europa (Monster Hunter 4G no tiene hubs).
+Conviene que todos tengan la misma versión de esta app.
+
+**Servidor de hubs** elige el servidor. El predeterminado, `hunterhubid-gu-hub.duckdns.org`, es el servidor de la comunidad
+que mantienen jugadores de MHGU (no este proyecto); el mismo servidor mantiene aparte los hubs de cada juego y región.
+**Otro...** escribe otro (un nombre o una IP, y `:puerto` si no es el 39510) y **Ninguno** apaga los hubs. **Comprobar el
+servidor de hubs** dice si responde, cuánto tarda y cuántos hubs lista. Como cualquier servidor de internet, ve tu dirección
+IP; los demás jugadores no.
+
+Con **Jugar en línea con: Los dos**, un hub que crees también recibe a jugadores de Azahar y Citra: entran como a una sala,
+con la dirección de tu teléfono y su **Puerto (UDP)** (desde internet, cuando ese puerto se redirige al teléfono).
+
+Un hub es una sala en el teléfono del anfitrión a la que los demás llegan por el servidor de hubs: su tráfico del juego va
+por UDP a través del servidor cuando pasa, y si no por la conexión TCP del servidor. Los límites del propio juego para el
+juego local siguen: una conexión lenta, o un teléfono que se detiene un momento, puede desconectar a un cazador, como en una
+sala.
+
+### Montar un servidor de hubs
+
+El servidor de hubs es el mismo programa que el de MHGU para Android,
+[`server/` de gu-native](https://github.com/khorne-hub/gu-native/tree/main/server): un programa chico en Go, sin base de
+datos ni archivo de configuración, y un mismo servidor sirve a los dos juegos. Para tener el tuyo, para tu grupo o más
+cerca de ti:
+
+```
+git clone https://github.com/khorne-hub/gu-native
+cd gu-native/server
+go build -o mhgurecomp-hubserver .     # Go 1.22 o más nuevo
+./mhgurecomp-hubserver -addr :39510
+```
+
+Abre el puerto **39510 para TCP y UDP** en el firewall (y redirígelo, detrás de un router). Sus opciones (límites por
+dirección, ancho de banda), Docker y systemd están en su README. Después, los jugadores eligen **Servidor de hubs**,
+**Otro...**, y su nombre o dirección. El tráfico del juego de un hub pasa por el servidor: ponlo donde los jugadores
+tengan buena conexión.
 
 **Juego cruzado con Azahar y Citra:** las salas son las mismas que las salas multijugador de Azahar, Citra y Lime3DS, así
 que sus jugadores entran a una sala de esta app y tú a las suyas, de la misma manera (con la dirección, o desde **Salas

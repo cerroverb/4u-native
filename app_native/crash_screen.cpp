@@ -1,5 +1,6 @@
 // The error screen when the game crashes (crash_screen.h).
 #include "crash_screen.h"
+#include "diag.h"
 
 #include <SDL3/SDL.h>
 #include <android/log.h>
@@ -48,7 +49,11 @@ void NotifyAndWait(double seconds) {
 // The runtime's FatalHook: its report of the bad guest access is in the log already
 void OnGuestFault() {
     if (g_crashing.exchange(1) != 0) return;
-    Put("*** MH4U: the game stopped: a bad guest memory access (above). The error screen opens.\n");
+    char when[24];
+    diag_clock_into(when, sizeof when);
+    char line[160];
+    snprintf(line, sizeof line, "*** MH4U: the game stopped at %s into the session: a bad guest memory access (above). The error screen opens.\n", when);
+    Put(line);
     __android_log_write(ANDROID_LOG_ERROR, "MH4U", "the game stopped: a bad guest memory access");
     NotifyAndWait(4);
 }
@@ -116,12 +121,13 @@ void OnSignal(int sig, siginfo_t* info, void* context) {
     if (g_crashing.exchange(1) == 0) {
         // (the thread's name says whose work it was: a SIGABRT of a Galaxy S23 FE's Xclipse 920 inside the driver's allocator
         // named only a thread number, the renderer's or a pipeline worker's or the app's GL library's)
-        char line[320], name[32];
+        char line[360], name[32], when[24];
         const int tid = static_cast<int>(gettid());
         ThreadName(tid, name, sizeof name);
-        snprintf(line, sizeof line, "\n*** MH4U: the game stopped: %s (code %d, address %016lx) on thread %d (%s)\n", SignalName(sig),
-                 info ? info->si_code : 0, info ? static_cast<unsigned long>(reinterpret_cast<uintptr_t>(info->si_addr)) : 0ul,
-                 tid, name);
+        diag_clock_into(when, sizeof when);  // (1.0.1: when in the session)
+        snprintf(line, sizeof line, "\n*** MH4U: the game stopped: %s (code %d, address %016lx) on thread %d (%s), at %s into the session\n",
+                 SignalName(sig), info ? info->si_code : 0,
+                 info ? static_cast<unsigned long>(reinterpret_cast<uintptr_t>(info->si_addr)) : 0ul, tid, name, when);
         Put(line);
 #if defined(__aarch64__)
         if (context != nullptr) {
@@ -198,9 +204,10 @@ MH4N_REGISTER(mh4n::BootStep, "zz.android.crash_test", mh4n::BootStep{mh4n::Phas
 
 void crash_screen_device_lost(const char* where) {
     if (g_crashing.exchange(1) != 0) return;
-    char line[512];
-    snprintf(line, sizeof line, "\n*** MH4U: the game stopped: the GPU stopped answering (Vulkan device lost: %s). The error "
-                                "screen opens.\n", where);
+    char line[512], when[24];
+    diag_clock_into(when, sizeof when);
+    snprintf(line, sizeof line, "\n*** MH4U: the game stopped at %s into the session: the GPU stopped answering (Vulkan device "
+                                "lost: %s). The error screen opens.\n", when, where);
     Put(line);
     __android_log_print(ANDROID_LOG_ERROR, "MH4U", "the game stopped: the GPU's device is lost (%s)", where);
     NotifyAndWait(4);

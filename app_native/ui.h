@@ -62,6 +62,9 @@ bool ui_event(const SDL_Event& e, const UiScreens& screens);
 // Builds and draws the interface over the game's picture (between the game's screens and SDL_RenderPresent).
 // `controller`: a controller is connected (the touch controls hide, as in MHGU, when [Touch] Controls = Auto).
 void ui_frame(int width, int height, const UiScreens& screens, bool controller);
+// (frame generation, android_main.cpp) what the last ui_frame drew, drawn again with no new frame of the interface: the
+// game's picture presented right after the made one shows the same controls and menus
+void ui_redraw();
 // ui_frame's input side alone, nothing drawn: the touch controls take the fingers' events of a loop turn that does not
 // present (the window's next buffer would only wait for a vsync).
 void ui_update(int width, int height, const UiScreens& screens, bool controller);

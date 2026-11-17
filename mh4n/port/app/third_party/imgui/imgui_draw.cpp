@@ -5430,6 +5430,13 @@ ImFontBaked* ImFont::GetFontBaked(float size, float density)
     // Round font size
     // - ImGui::PushFont() will already round, but other paths calling GetFontBaked() directly also needs it (e.g. ImFontAtlasBuildPreloadAllGlyphRanges)
     size = ImGui::GetRoundedFontSize(size);
+    // (the port's) A size below 1 or not a number, as a layout made for a window of 0 x 0 asks for, baked glyphs of a
+    // negative width and the atlas packer read past its last node (stbrp__skyline_find_best_pos, a SIGSEGV at address 0):
+    // the same bounds as UpdateCurrentFontSize's, which PushFont goes through and CalcTextSizeA and AddText with a size don't
+    if (!(size >= 1.0f))
+        size = 1.0f;
+    else if (size > IMGUI_FONT_SIZE_MAX)
+        size = IMGUI_FONT_SIZE_MAX;
 
     if (density < 0.0f)
         density = CurrentRasterizerDensity;

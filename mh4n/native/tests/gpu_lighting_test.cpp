@@ -3,8 +3,8 @@
 // normalised interpolated quaternion it takes), src/video_core/pica/regs_lighting.h (the lighting registers, their fields, the
 // LUT inputs, scales and samplers, IsLightingSamplerSupported), src/video_core/pica/pica_core.h (Lighting::LutEntry) and
 // src/video_core/pica_types.h (Float::FromRaw for f16 and f20) at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-2.0-or-later: every
-// one of those files says "Licensed under GPLv2 or any later version"). The rig (Tri, Vertex, Rig) is adapted from gpu_fog_test.cpp
-// in this directory (GPL-3.0-or-later, see its header).
+// one of those files says "Licensed under GPLv2 or any later version"). The rig (Tri, Vertex, Rig) is adapted from this directory's
+// fog test, gpu_fog_test (GPL-3.0-or-later, see its header).
 // Copyright 2017 Citra Emulator Project (sw_lighting.cpp, regs_lighting.h)
 // Copyright 2015-2026 Citra Emulator Project / Azahar Emulator Project (sw_rasterizer.cpp, pica_types.h)
 // Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project (pica_core.h)

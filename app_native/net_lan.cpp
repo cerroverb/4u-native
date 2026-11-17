@@ -306,8 +306,10 @@ void net_lan_hosting(bool password) {
 
 void net_lan_poll() {
     const bool hosting = rooms::IsHosting();
-    if (hosting && !g_responder) start_answering();
-    if (!hosting) {
+    // (a hub's room on the loopback only can't be joined from this Wi-Fi: not answered; its Wi-Fi lock stays)
+    const bool answering = hosting && net_room_on_lan();
+    if (answering && !g_responder) start_answering();
+    if (!answering) {
         stop_answering();
         g_answer_failed = false;
     }

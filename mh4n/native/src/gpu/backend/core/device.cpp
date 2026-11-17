@@ -436,6 +436,35 @@ void OneCompileAtATime(const Capabilities& c) {
                           "building two at once){}", env != nullptr ? " (MH4N_ONE_COMPILE)" : "");
 }
 
+// ---- an Adreno on a Vulkan 1.1 driver: no clear as a pass's load op ----
+// A pass over part of its attachments that begins with a clear as its load op (plume patch 20: LoadOp::DontCare's colour,
+// cleared to zero; patch 17: a depth clear over the render area) must leave every pixel outside its render area as it was.
+// A tile-based GPU stores whole tiles: one whose tiles are larger than the render area's edges must load them first even
+// though the load op is a clear. The Adreno 6xx GPUs on their Vulkan 1.1 drivers (1.1.128: an Adreno 650 at 3x, an Adreno
+// 610 at 2x) drew thin coloured bars and blocks around bright spots with the bloom on, and only with it (4u-native #32,
+// Discord "Bloom artifacts on Adreno 650"): the bloom's buffers lie in the scene target's other rows and are drawn by passes
+// over small boxes that begin so (DiscardPingPongLoads), the scene's pass too (FirstDrawClears). Clean on a Mali, on an
+// Adreno 830 on its Vulkan 1.3 driver and on the PC. There a pass loads its attachments and clears its depth with a clear
+// command inside it, as every pass did before those patches: the same picture. MH4N_CLEAR_LOAD_OPS=0|1 forces either (a
+// test aid).
+bool ClearLoadOpsFor(const Capabilities& c) {
+    constexpr u32 kVendorQualcomm = 0x5143, kDriverQualcomm = 8;  // (VkDriverId)
+    constexpr u32 kVulkan12 = (1u << 22) | (2u << 12);
+    const char* env = std::getenv("MH4N_CLEAR_LOAD_OPS");
+    if (env != nullptr && (*env == '0' || *env == '1')) {
+        MH4N_LOG(Info, "RHI", "rhi: MH4N_CLEAR_LOAD_OPS={}: passes {} with a clear as their load op", *env,
+                 *env == '1' ? "may begin" : "never begin");
+        return *env == '1';
+    }
+    const bool adreno = c.vendor_id == kVendorQualcomm || c.driver_id == kDriverQualcomm;
+    if (adreno && c.api_version < kVulkan12) {
+        MH4N_LOG(Info, "RHI", "rhi: an Adreno on a Vulkan 1.1 driver: a pass loads its attachments, never a clear as its load "
+                              "op (its tiles beside a small render area)");
+        return false;
+    }
+    return true;
+}
+
 } // namespace
 
 Result<std::shared_ptr<Backend>> CreateBackend(std::shared_ptr<Instance> instance, const BackendOptions& options) {
@@ -698,8 +727,62 @@ Result<std::shared_ptr<Backend>> CreateBackend(std::shared_ptr<Instance> instanc
                                         : std::string();
         MH4N_LOG(Info, "RHI", "rhi: driver info \"{}\", version {:#x}{}", made.driver_info, made.driver_version, release);
         core::HostDeviceMade(made);
+        // (1.0.1, diag) what a log someone else reads needs about the device, once: its vendor and device ids, the driver's
+        // conformance, the pipeline cache's UUID (a driver update makes the saved caches useless), the memory heaps and
+        // types, and every extension the device offers (the line above has the ones enabled): a player's report then
+        // needs no second log to know whether the driver has one
+        VkPhysicalDeviceMemoryProperties memory = {};
+        vkGetPhysicalDeviceMemoryProperties(impl->physical_device, &memory);
+        std::string uuid, heaps, types;
+        for (u32 i = 0; i < VK_UUID_SIZE; ++i) uuid += fmt::format("{:02x}", props.pipelineCacheUUID[i]);
+        for (u32 h = 0; h < memory.memoryHeapCount; ++h)
+            heaps += fmt::format("{}{}: {} MB{}", h ? ", " : "", h, memory.memoryHeaps[h].size >> 20,
+                                 (memory.memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) ? " device local" : "");
+        for (u32 t = 0; t < memory.memoryTypeCount; ++t) {
+            const VkMemoryPropertyFlags fl = memory.memoryTypes[t].propertyFlags;
+            types += fmt::format(" {}:{}{}{}{}{}{}", t, memory.memoryTypes[t].heapIndex,
+                                 (fl & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) ? " DL" : "", (fl & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) ? " HV" : "",
+                                 (fl & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) ? " HC" : "", (fl & VK_MEMORY_PROPERTY_HOST_CACHED_BIT) ? " CA" : "",
+                                 (fl & VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT) ? " LA" : "");
+        }
+        std::string conformance = "not told (no driver properties)";
+        if (!c.driver_name.empty()) {
+            VkPhysicalDeviceDriverProperties driver = {};
+            driver.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES;
+            VkPhysicalDeviceProperties2 props2 = {};
+            props2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+            props2.pNext = &driver;
+            vkGetPhysicalDeviceProperties2(impl->physical_device, &props2);
+            conformance = fmt::format("{}.{}.{}.{}", driver.conformanceVersion.major, driver.conformanceVersion.minor,
+                                      driver.conformanceVersion.subminor, driver.conformanceVersion.patch);
+        }
+        MH4N_LOG(Info, "RHI", "rhi: vendor {:#x}, device {:#x}, type {}, conformance {}, pipeline cache UUID {}", props.vendorID,
+                 props.deviceID, static_cast<int>(props.deviceType), conformance, uuid);
+        MH4N_LOG(Info, "RHI", "rhi: memory heaps {}; types (heap, DL device local, HV host visible, HC coherent, CA cached, LA lazy):{}",
+                 heaps, types);
+        u32 count = 0;
+        vkEnumerateDeviceExtensionProperties(impl->physical_device, nullptr, &count, nullptr);
+        std::vector<VkExtensionProperties> offered(count);
+        vkEnumerateDeviceExtensionProperties(impl->physical_device, nullptr, &count, offered.data());
+        std::vector<std::string> names;
+        for (u32 i = 0; i < count; ++i) {
+            std::string_view n(offered[i].extensionName);
+            if (n.substr(0, 3) == "VK_") n.remove_prefix(3);  // (shorter lines)
+            names.emplace_back(n);
+        }
+        std::sort(names.begin(), names.end());
+        std::string line = fmt::format("rhi: device extensions offered ({}):", count);
+        for (const std::string& n : names) {
+            if (line.size() + n.size() > 220) {
+                MH4N_LOG(Info, "RHI", "{}", line);
+                line = "rhi:  ";
+            }
+            line += " " + n;
+        }
+        MH4N_LOG(Info, "RHI", "{}", line);
     }
     OneCompileAtATime(c);
+    impl->clear_load_ops = ClearLoadOpsFor(c);
 
     return std::shared_ptr<Backend>(new Backend(std::move(impl)), ReleaseWithLastHandle);
 }

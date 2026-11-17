@@ -81,3 +81,8 @@ int low_end_fps();
 inline constexpr const char* kLowEndFilters[] = {"bloom", "motion_blur", "depth_of_field", "radial_blur", "haze"};
 // LowEnd's text (off|on|toaster, and the switch's 0/1/true/false of older files) as LOW_END_*
 int app_low_end_level(const std::string& text);
+
+// [Colour] Hue (-180..180), Temperature, Tint, Brightness, Contrast, Saturation, Gamma (-100..100): the colour filter
+// (colour_filter.h, shared_screens.cpp), each 0 when the file doesn't have it. Graphics & Audio > Colour writes them.
+struct ColourAdjust;
+void app_colour(ColourAdjust* out);

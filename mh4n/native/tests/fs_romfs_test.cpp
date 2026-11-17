@@ -43,6 +43,7 @@ TEST_CASE("fs_romfs_test needs recomp.h (the repository around native/)" * docte
 #include <vector>
 
 #include "../src/ipc_replay/tool.h"
+#include "../src/services/fs/dlc_titles.h"
 #include "../src/services/fs/fs_state.h"
 #include "../src/services/fs/positioned_file.h"
 #include "../src/services/fs/system_archives.h"
@@ -55,6 +56,7 @@ TEST_CASE("fs_romfs_test needs recomp.h (the repository around native/)" * docte
 #include "mh4n/runtime.h"
 #include "mh4n/service.h"
 #include "mh4n/threads.h"
+#include "support/dlc_title.h"
 #include "../src/cpu/recomp_c.h"  // last: it defines macros
 
 using namespace mh4n;
@@ -1726,6 +1728,235 @@ TEST_CASE("the delays are Azahar's numbers") {
     CHECK(fs::RomFsReadDelayNs(856) == 856 * 94 + 582778);
     CHECK(fs::RomFsReadDelayNs(0x100000) == 0x100000ull * 94 + 582778);
     CHECK(fs::kRomFsOpenDelayNs == 9438006);
+}
+
+// ---- NCCH: add-on content titles the player brought (1.0.1) -----------------------------------------------------
+
+namespace {
+constexpr u64 kDlcTitleId = 0x0004008C00ABCD00;
+
+std::vector<test_dlc::App> DlcApps() {
+    return {
+        {0, 0x00000000, test_dlc::AppKind::Readable, MakeRomFs({{u"index.bin", Pattern(64, 0x10)}})},
+        {1, 0x00000001, test_dlc::AppKind::Readable, MakeRomFs({{u"pack.bin", Pattern(3000, 0x21)}})},
+        {2, 0x00000002, test_dlc::AppKind::Encrypted, Pattern(200, 3)},
+        {3, 0x00000003, test_dlc::AppKind::Compressed, {}},
+        {4, 0x00000004, test_dlc::AppKind::NotNcch, {}},
+        {5, 0x00000005, test_dlc::AppKind::Missing, Pattern(100, 5)},
+        {6, 0x00000006, test_dlc::AppKind::NoRomFs, {}},
+    };
+}
+}  // namespace
+
+TEST_CASE("NCCH: an add-on content title's contents are their .app files' RomFS, and the ones that can't be read are not found") {
+    Fixture f;
+    TempDir dir;
+    const std::filesystem::path user = dir.Path() / "user";
+    const std::vector<test_dlc::App> apps = DlcApps();
+    test_dlc::WriteTitle(test_dlc::SdTitleRoot(user / "sdmc"), kDlcTitleId, 3, apps);
+    Opened content1, content0, encrypted, compressed, not_ncch, missing, no_romfs, absent, exefs, nand, card, other;
+    u64 size1 = 0;
+    FsGuest::ReadResult bytes1;
+    const int status = BootWith(f, dir, {"--ms", "100", "--io-latency", "none", "--user", Utf8(user)}, [&] {
+        FsGuest g(f, dir);
+        g.Initialize();
+        content1 = g.OpenFileDirectly(0x2345678A, kBinary, NcchArchivePath(kDlcTitleId, 1), NcchFilePath(1, 0));
+        content0 = g.OpenFileDirectly(0x2345678A, kBinary, NcchArchivePath(kDlcTitleId, 1), NcchFilePath(0, 0));
+        encrypted = g.OpenFileDirectly(0x2345678A, kBinary, NcchArchivePath(kDlcTitleId, 1), NcchFilePath(2, 0));
+        compressed = g.OpenFileDirectly(0x2345678A, kBinary, NcchArchivePath(kDlcTitleId, 1), NcchFilePath(3, 0));
+        not_ncch = g.OpenFileDirectly(0x2345678A, kBinary, NcchArchivePath(kDlcTitleId, 1), NcchFilePath(4, 0));
+        missing = g.OpenFileDirectly(0x2345678A, kBinary, NcchArchivePath(kDlcTitleId, 1), NcchFilePath(5, 0));
+        no_romfs = g.OpenFileDirectly(0x2345678A, kBinary, NcchArchivePath(kDlcTitleId, 1), NcchFilePath(6, 0));
+        absent = g.OpenFileDirectly(0x2345678A, kBinary, NcchArchivePath(kDlcTitleId, 1), NcchFilePath(9, 0));
+        exefs = g.OpenFileDirectly(0x2345678A, kBinary, NcchArchivePath(kDlcTitleId, 1), NcchFilePath(1, 2, "icon"));
+        nand = g.OpenFileDirectly(0x2345678A, kBinary, NcchArchivePath(kDlcTitleId, 0), NcchFilePath(1, 0));
+        card = g.OpenFileDirectly(0x2345678A, kBinary, NcchArchivePath(kDlcTitleId, 2), NcchFilePath(1, 0));
+        other = g.OpenFileDirectly(0x2345678A, kBinary, NcchArchivePath(0x0004008C00ABCE00, 1), NcchFilePath(1, 0));
+        if (content1.result == kResultSuccess) {
+            size1 = g.GetSize(content1.file);
+            bytes1 = g.Read(content1.file, 0, static_cast<u32>(apps[1].romfs.size()));
+        }
+        ExitProcess(*f.runtime);
+    });
+    CHECK(status == 0);
+    CHECK(content1.result == kResultSuccess);
+    // the section past its 0x1000-byte header, padding to the 0x200-byte unit included (as Azahar's ReadRomFS)
+    CHECK(size1 == test_dlc::SectionUnits(apps[1]) * 0x200 - 0x1000);
+    CHECK(bytes1.result == kResultSuccess);
+    CHECK(bytes1.bytes == apps[1].romfs);
+    CHECK(content0.result == kResultSuccess);
+    CHECK(encrypted.result == kNotFound);
+    CHECK(compressed.result == kNotFound);
+    CHECK(not_ncch.result == kNotFound);
+    CHECK(missing.result == kNotFound);
+    CHECK(no_romfs.result == kNotFound);
+    CHECK(absent.result == kNotFound);
+    CHECK(exefs.result == kNotFound);
+    CHECK(nand.result == kNotFound);  // the title is on the SD card
+    CHECK(card.result == kNotFound);
+    CHECK(other.result == kNotFound);
+    CHECK(f.Logged("DLC title 0004008C00ABCD00 on the SD card: version 3, 7 contents, 2 readable"));
+    CHECK(f.Logged("content 0002 (00000002.app) is encrypted"));
+    CHECK(f.Logged("content 0003 (00000003.app) is compressed by Azahar"));
+    CHECK(f.Logged("content 0004 (00000004.app) is not a readable NCCH"));
+    CHECK(f.Logged("content 0005 (00000005.app) is not there"));
+    CHECK(f.Logged("content 0006 (00000006.app) has no RomFS"));
+    CHECK(f.Logged("the game reads DLC title 0004008C00ABCD00 content 0001"));
+    // the first refusal of the title is a Warning (the others are Debug: a title has up to hundreds of contents)
+    CHECK(f.Logged("NCCH: DLC title 0004008C00ABCD00 content 0002 is encrypted: only a decrypted copy of your own can be read: not found"));
+    CHECK_FALSE(f.Logged("content 0009 is not in its title metadata: not found"));
+}
+
+TEST_CASE("NCCH: DLC titles in the save folder, the user folder, its NAND and --dlc-folder; broken ones are left out") {
+    Fixture f;
+    TempDir dir;
+    const std::filesystem::path user = dir.Path() / "user", saves = dir.Path() / "saves" / "sdmc",
+                                azahar = dir.Path() / "azahar";
+    const std::vector<test_dlc::App> one = {
+        {0, 0x10, test_dlc::AppKind::Readable, Pattern(16, 1)},
+        {1, 0x11, test_dlc::AppKind::Readable, Pattern(16, 2)},
+    };
+    const std::vector<test_dlc::App> single = {{0, 0x20, test_dlc::AppKind::Readable, Pattern(32, 7)}};
+    test_dlc::WriteTitle(test_dlc::SdTitleRoot(saves), 0x0004008C00000101, 1, one);
+    test_dlc::WriteTitle(test_dlc::SdTitleRoot(user / "sdmc"), 0x0004008C00000102, 2, one);
+    // the same title in both: the save folder's is used
+    test_dlc::WriteTitle(test_dlc::SdTitleRoot(user / "sdmc"), 0x0004008C00000101, 9, one);
+    test_dlc::WriteTitle(user / "nand" / std::string(32, '0') / "title", 0x0004008C00000103, 1, one);
+    // one content: its .app is in content/, not content/00000000/
+    test_dlc::WriteTitle(test_dlc::SdTitleRoot(azahar / "sdmc"), 0x0004008C00000104, 1, single);
+    // broken: no .tmd; a .tmd of another title
+    std::filesystem::create_directories(test_dlc::SdTitleRoot(user / "sdmc") / "0004008c" / "00000105" / "content");
+    test_dlc::WriteBytes(test_dlc::SdTitleRoot(user / "sdmc") / "0004008c" / "00000106" / "content" / "00000000.tmd",
+                         test_dlc::Tmd(0x0004008C00000999, 1, one));
+    Opened in_saves, in_user, on_nand, nand_as_sd, extra, no_tmd, wrong_tmd;
+    FsGuest::ReadResult saves_bytes, extra_bytes;
+    const int status = BootWith(f, dir,
+                                {"--ms", "100", "--io-latency", "none", "--user", Utf8(user), "--saves", Utf8(saves),
+                                 "--dlc-folder", Utf8(azahar)},
+                                [&] {
+        FsGuest g(f, dir);
+        g.Initialize();
+        in_saves = g.OpenFileDirectly(0x2345678A, kBinary, NcchArchivePath(0x0004008C00000101, 1), NcchFilePath(1, 0));
+        in_user = g.OpenFileDirectly(0x2345678A, kBinary, NcchArchivePath(0x0004008C00000102, 1), NcchFilePath(1, 0));
+        on_nand = g.OpenFileDirectly(0x2345678A, kBinary, NcchArchivePath(0x0004008C00000103, 0), NcchFilePath(1, 0));
+        nand_as_sd = g.OpenFileDirectly(0x2345678A, kBinary, NcchArchivePath(0x0004008C00000103, 1), NcchFilePath(1, 0));
+        extra = g.OpenFileDirectly(0x2345678A, kBinary, NcchArchivePath(0x0004008C00000104, 1), NcchFilePath(0, 0));
+        no_tmd = g.OpenFileDirectly(0x2345678A, kBinary, NcchArchivePath(0x0004008C00000105, 1), NcchFilePath(0, 0));
+        wrong_tmd = g.OpenFileDirectly(0x2345678A, kBinary, NcchArchivePath(0x0004008C00000106, 1), NcchFilePath(0, 0));
+        if (in_saves.result == kResultSuccess) saves_bytes = g.Read(in_saves.file, 0, 16);
+        if (extra.result == kResultSuccess) extra_bytes = g.Read(extra.file, 0, 32);
+        ExitProcess(*f.runtime);
+    });
+    CHECK(status == 0);
+    CHECK(in_saves.result == kResultSuccess);
+    CHECK(saves_bytes.bytes == Pattern(16, 2));
+    CHECK(in_user.result == kResultSuccess);
+    CHECK(on_nand.result == kResultSuccess);
+    CHECK(nand_as_sd.result == kNotFound);
+    CHECK(extra.result == kResultSuccess);
+    CHECK(extra_bytes.bytes == Pattern(32, 7));
+    CHECK(no_tmd.result == kNotFound);
+    CHECK(wrong_tmd.result == kNotFound);
+    CHECK(f.Logged("DLC title 0004008C00000101 on the SD card: version 1"));
+    CHECK(f.Logged("DLC title 0004008C00000101 is also in"));
+    CHECK(f.Logged("DLC title 0004008C00000103 on the NAND"));
+    CHECK(f.Logged("it has no title metadata (.tmd)"));
+    CHECK(f.Logged("its title metadata is title 0004008C00000999's"));
+}
+
+TEST_CASE("DLC titles: none in the folders is one line, and the title metadata parser refuses what it can't read") {
+    Fixture f;
+    TempDir dir;
+    const int status = BootWith(f, dir, {"--ms", "50", "--io-latency", "none", "--user", Utf8(dir.Path() / "user")}, [&] {
+        FsGuest g(f, dir);
+        g.Initialize();
+        ExitProcess(*f.runtime);
+    });
+    CHECK(status == 0);
+    CHECK(f.Logged("DLC titles: none"));
+
+    fs::DlcTitle title;
+    std::string error;
+    std::vector<u8> tmd = test_dlc::Tmd(0x0004008C00000101, 4, DlcApps());
+    CHECK(fs::ParseTitleMetadata(tmd, &title, &error));
+    CHECK(title.title_id == 0x0004008C00000101);
+    CHECK(title.version == 4);
+    CHECK(title.title_type == 0x40);
+    REQUIRE(title.contents.size() == 7);
+    CHECK(title.contents[1].index == 1);
+    CHECK(title.contents[1].type == 0x4000);
+    CHECK(title.contents[1].size == test_dlc::AppBytesSize(DlcApps()[1]));
+    tmd.resize(tmd.size() - 1);
+    CHECK_FALSE(fs::ParseTitleMetadata(tmd, &title, &error));
+    CHECK(error == "the title metadata is cut short");
+    std::vector<u8> bad(0x200, 0);
+    CHECK_FALSE(fs::ParseTitleMetadata(bad, &title, &error));
+    CHECK(error.find("signature type") != std::string::npos);
+}
+
+
+TEST_CASE("DLC flags (1.0.1): the game's own readable DLC title is found, and the save is copied to save_backups") {
+    TempDir dir;
+    const auto ReadFile = [](const std::string& path) {
+        std::ifstream in(std::filesystem::path(std::u8string(path.begin(), path.end())), std::ios::binary);
+        return std::vector<u8>(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    };
+    const std::filesystem::path user = dir.Path() / "user";
+    fs::FsState state;
+    state.user_folder = Utf8(user) + "/";
+    state.game.program_id = 0x0004000000126300;
+    // no title, another game's title, an encrypted one of this game: none counts
+    state.dlc.Scan(state, {});
+    CHECK_FALSE(fs::HasReadableGameDlc(state));
+    const std::vector<test_dlc::App> readable = {{0, 0x10, test_dlc::AppKind::Readable, Pattern(16, 1)},
+                                                 {1, 0x11, test_dlc::AppKind::Readable, Pattern(16, 2)}};
+    const std::vector<test_dlc::App> encrypted = {{0, 0x10, test_dlc::AppKind::Encrypted, Pattern(16, 1)},
+                                                  {1, 0x11, test_dlc::AppKind::Encrypted, Pattern(16, 2)}};
+    test_dlc::WriteTitle(test_dlc::SdTitleRoot(user / "sdmc"), 0x0004008C00126100, 1, readable);
+    test_dlc::WriteTitle(test_dlc::SdTitleRoot(user / "sdmc"), 0x0004008C00126300, 1, encrypted);
+    state.dlc.Scan(state, {});
+    CHECK(state.dlc.All().size() == 2);
+    CHECK_FALSE(fs::HasReadableGameDlc(state));
+    test_dlc::WriteTitle(test_dlc::SdTitleRoot(user / "sdmc"), 0x0004008C00126300, 1, readable);
+    state.dlc.Scan(state, {});
+    CHECK(fs::HasReadableGameDlc(state));
+    // a game whose id is not known takes any readable title
+    fs::FsState unknown;
+    unknown.user_folder = state.user_folder;
+    unknown.dlc.Scan(unknown, {});
+    CHECK(fs::HasReadableGameDlc(unknown));
+
+    // save_backups/ beside the user folder, as the app's own
+    const std::string backups = fs::SaveBackupsFolder(state);
+    CHECK(std::filesystem::path(std::u8string(backups.begin(), backups.end())) == dir.Path() / "save_backups" / "");
+    CHECK(fs::SaveBackupsFolder(fs::FsState{}).empty());
+    std::string error;
+    CHECK(fs::BackUpGameSave(state, "dlc-flags", &error).empty());  // no save yet
+    CHECK(error.find("there is no save in") == 0);
+    const std::filesystem::path sd = user / "sdmc" / "Nintendo 3DS" / std::string(32, '0') / std::string(32, '0');
+    const std::filesystem::path data = sd / "title" / "00040000" / "00126300" / "data" / "00000001";
+    test_dlc::WriteBytes(data / "system", Pattern(100, 3));
+    test_dlc::WriteBytes(data / "user1", Pattern(200, 4));
+    test_dlc::WriteBytes(sd / "title" / "00040000" / "00126300" / "data" / "00000001.metadata", Pattern(16, 5));
+    test_dlc::WriteBytes(sd / "extdata" / "00000000" / "00001263" / "user" / "quest1", Pattern(50, 6));
+    const std::string keep = fs::BackUpGameSave(state, "dlc-flags", &error);
+    REQUIRE_FALSE(keep.empty());
+    CHECK(keep.rfind(fs::SaveBackupsFolder(state), 0) == 0);
+    CHECK(keep.find("-dlc-flags/") == keep.size() - 11);
+    const std::filesystem::path copy = std::filesystem::path(std::u8string(keep.begin(), keep.end())) / "00126300";
+    CHECK(ReadFile(Utf8(copy / "data" / "system")) == Pattern(100, 3));
+    CHECK(ReadFile(Utf8(copy / "data" / "user1")) == Pattern(200, 4));
+    CHECK(ReadFile(Utf8(copy / "00000001.metadata")) == Pattern(16, 5));
+    CHECK(ReadFile(Utf8(copy / "extdata" / "user" / "quest1")) == Pattern(50, 6));
+    // a second copy in the same second gets its own folder; the save itself is untouched
+    const std::string again = fs::BackUpGameSave(state, "dlc-flags", &error);
+    CHECK_FALSE(again.empty());
+    CHECK(again != keep);
+    CHECK(ReadFile(Utf8(data / "user1")) == Pattern(200, 4));
+    // a save folder (--saves) that can't be reached: no copy
+    state.sdmc_folder = Utf8(dir.Path() / "gone") + "/";
+    CHECK(fs::BackUpGameSave(state, "dlc-flags", &error).empty());
+    CHECK(error == "the save folder can't be reached");
 }
 
 #endif  // recomp.h

@@ -45,15 +45,19 @@
 #include "app_live.h"
 #include "app_settings.h"
 #include "app_version.h"
+#include "colour_filter.h"
 #include "cache_clear.h"
 #include "content.h"
 #include "controls.h"
 #include "crash_screen.h"
+#include "diag.h"
 #include "display_vsync.h"
 #include "first_run.h"
+#include "frame_gen.h"
 #include "game_options.h"
 #include "gpu_driver.h"
 #include "perf_hint.h"
+#include "thread_place.h"
 #include "present_pacing.h"
 #include "perfstats.h"
 #include "settings_panel.h"
@@ -134,6 +138,34 @@ std::int64_t CallActivityLong(const char* method) {
 // The game's frames shown (perfstats.cpp counts them over half a second)
 extern "C" {
 volatile uint64_t g_present_count = 0;
+}
+
+// (1.0.1, diag) The window's events the log's timeline wants, with the session's time (diag_clock): to the background and
+// back, the focus (the notification shade, a dialog over the game), a new size (split screen, DeX; 40 at most) and the
+// system's low memory warning
+void DiagWindowEvent(const SDL_Event& e) {
+    static Uint64 background_ns = 0;
+    static int sizes = 0, last_w = 0, last_h = 0;
+    switch (e.type) {
+    case SDL_EVENT_DID_ENTER_BACKGROUND:
+        background_ns = SDL_GetTicksNS();
+        std::fprintf(stderr, "[app] %s: to the background\n", diag_clock());
+        break;
+    case SDL_EVENT_DID_ENTER_FOREGROUND:
+        std::fprintf(stderr, "[app] %s: back in front after %.0f s\n", diag_clock(),
+                     background_ns ? (SDL_GetTicksNS() - background_ns) / 1e9 : 0.0);
+        break;
+    case SDL_EVENT_WINDOW_FOCUS_LOST: std::fprintf(stderr, "[app] %s: the window lost the focus\n", diag_clock()); break;
+    case SDL_EVENT_WINDOW_FOCUS_GAINED: std::fprintf(stderr, "[app] %s: the window has the focus\n", diag_clock()); break;
+    case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
+        if ((e.window.data1 != last_w || e.window.data2 != last_h) && sizes++ < 40)
+            std::fprintf(stderr, "[app] %s: the window is %dx%d pixels\n", diag_clock(), static_cast<int>(e.window.data1),
+                         static_cast<int>(e.window.data2));
+        last_w = e.window.data1, last_h = e.window.data2;
+        break;
+    case SDL_EVENT_LOW_MEMORY: std::fprintf(stderr, "[app] %s: the system says memory is low\n", diag_clock()); break;
+    default: break;
+    }
 }
 
 }  // namespace
@@ -418,6 +450,7 @@ Layout ComputeLayout(int w, int h, u32 top_w, u32 top_h, u32 bot_w, u32 bot_h, b
 int main(int argc, char* argv[]) {
     (void)argc;
     (void)argv;
+    diag_start();  // (the session's clock on the log's lines: diag.h)
     SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight");
     SDL_SetHint(SDL_HINT_ANDROID_TRAP_BACK_BUTTON, "1");
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD | SDL_INIT_AUDIO | SDL_INIT_EVENTS | SDL_INIT_SENSOR)) {  // (sensors: the gyro's aim)
@@ -430,10 +463,15 @@ int main(int argc, char* argv[]) {
     std::string ext = SDL_GetAndroidExternalStoragePath() ? SDL_GetAndroidExternalStoragePath() : internal;
     // (the private folder instead when another app made the external one: AppHome.java, MHGU's gu-native #176)
     if (const std::string moved = FirstLine(internal + "/home.txt"); !moved.empty()) ext = moved;
-    // the runtime logs to stderr: into log.txt in the app's external folder (Share log reads it there)
+    // the runtime logs to stderr: into log.txt in the app's external folder (Share log reads it there). (1.0.1) The last two
+    // sessions' kept as log_prev.txt and log_prev2.txt: Share log has always sent "the session before", but nothing made it,
+    // so every player's log had it empty and a crash's log was gone at the next start (MH4U_CATEGORIZADOS M03, M05)
     if (!ext.empty()) {
+        std::rename((ext + "/log_prev.txt").c_str(), (ext + "/log_prev2.txt").c_str());
+        std::rename((ext + "/log.txt").c_str(), (ext + "/log_prev.txt").c_str());
         std::freopen((ext + "/log.txt").c_str(), "w", stderr);
         std::setvbuf(stderr, nullptr, _IOLBF, 0);
+        diag_log_ready();  // (the Java side's lines may come in: com.mh4u.port.Diag)
     }
     // (the first line: which version a shared log comes from)
     std::fprintf(stderr, "[Info] App: MH4U for Android %s\n", MH4U_APP_VERSION);
@@ -447,6 +485,7 @@ int main(int argc, char* argv[]) {
             if (eq != std::string::npos && eq > 0) setenv(var.substr(0, eq).c_str(), var.substr(eq + 1).c_str(), 1);
         }
     }
+    diag_log_env();  // (the variables this start runs with: a test run's env=)
     const std::string game = launch.count("game") ? launch["game"] : ext + "/game";
     const std::string code_src = launch.count("code") ? launch["code"] : ext + "/libmh4u_code_native.so";
     const std::string user = launch.count("user") ? launch["user"] : ext + "/user";
@@ -470,6 +509,7 @@ int main(int argc, char* argv[]) {
     // settings=<folder>: the app's own options (mh4u-app.ini) of this run, a test run's (the player's are in the external
     // files folder)
     app_settings_init(launch.count("settings") ? launch["settings"] : ext);
+    diag_log_ini("mh4u-app.ini (the app's options; names and passwords hidden)", app_settings_path());
     cache_clear_start(user);  // (the menu's Clear shader cache: before the runtime reads any of it)
     // HD texture packs (1.0's S26; mh4n gpu/native/hd_textures.h): the game folder's textures/, read in place, the
     // emulators' packs as they come (a folder of tex1_*.png with its pack.json, or Azahar's load/textures/<title id>/).
@@ -482,6 +522,8 @@ int main(int argc, char* argv[]) {
             std::fprintf(stderr, "[Info] App: texture packs from %s\n", packs.c_str());
         }
     }
+    // Texture packs > Pack texture size: Half (1.0.1, 4u-native #56; launch.txt's env= can set MH4N_HD_SCALE itself)
+    if (app_setting("Graphics", "HdPackSize", "full") == "half") setenv("MH4N_HD_SCALE", "half", 0);
     // the single-screen mod (a code mod that is on in the user folder's load/mods, GameFolderActivity.syncMods or the
     // settings' Mods page): the game's touch menus are on the top screen, so the touch screen's corner starts hidden
     bool code_mod = false, touch_start_set = false;
@@ -500,6 +542,7 @@ int main(int argc, char* argv[]) {
     const std::string code = internal + "/libmh4u_code_native.so";
     mkdir(user.c_str(), 0770);
     game_options_init(user);
+    diag_log_ini("mh4u.ini (the port's game options)", user + "/mh4u.ini");
     content_init(user);  // (the settings' Mods and Cheats pages)
     content_set_game(game);  // (their title: USA or EUR, as the game folder's exheader says)
     {  // System > Your game > Verify game files (verify_files.h): where everything is, and the code library id this app runs with
@@ -610,6 +653,10 @@ int main(int argc, char* argv[]) {
         g_publish_event = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
         if (g_publish_event >= 0) SDL_AddEventWatch(WakeMainLoop, nullptr);
         Logf("screens: %s", g_want_shared ? "straight from the renderer's buffers" : "pixels read back and uploaded");
+        const bool frame_gen = app_setting_bool("Graphics", "FrameGen", false);
+        frame_gen_set_enabled(frame_gen);  // ([Graphics] FrameGen: frame_gen.h)
+        // (and the screen's refresh rate picked again: twice the FPS limit or more with it on, where the screen has one)
+        CallActivity("setFrameGen", "(Z)V", static_cast<int>(frame_gen));  // (a boolean goes as an int)
         std::fprintf(stderr, "[Info] App: screens: %s\n",
                      g_want_shared ? "straight from the renderer's buffers" : "pixels read back and uploaded");
     }
@@ -623,6 +670,8 @@ int main(int argc, char* argv[]) {
         else live->SetTouch(std::nullopt);
     });
     perf_hint_thread(PERF_RENDER);
+    thread_place_role(PLACE_PRESENT);
+    thread_place_init();  // (MH4N_PERF_NICE, MH4N_PERF_AFFINITY: off unless launch.txt's env= turns them on)
     // the game's frames start on its VBlank and the VBlank follows the display's vsync (hooks.cpp UpdateFrameTiming,
     // display_vsync.cpp): one picture a vsync, without the beat of three clocks; the limiter's spin is a sleep
     // (launch.txt's env= can set MH4U_PACE=limiter, MH4U_LIMITER_SLEEP=0, MH4U_VBLANK_LOCK=off: as before)
@@ -637,6 +686,11 @@ int main(int argc, char* argv[]) {
     gpu_driver_setup();  // (the driver the game's Vulkan goes through: the system's, or the player's own for an Adreno)
     crash_screen_install();  // (a crash: the error screen with Share log, instead of the app vanishing)
     app_live_start();        // (the shadows and the reverb as mh4u-app.ini has them)
+    {  // (the colour filter as mh4u-app.ini has it: Graphics & Audio > Colour; all 0, the screens drawn as always)
+        ColourAdjust colour;
+        app_colour(&colour);
+        shared_screens_set_colour(colour);
+    }
 
     std::string problem;
     if (!FileExists(game + "/exheader.bin")) problem = "No game folder at " + game;
@@ -728,12 +782,21 @@ int main(int argc, char* argv[]) {
         // missing pipeline is built when it is first drawn (tested with --no-ubershader on a Mali: the same picture)
         // (its compiler also crashed building the saved list on a worker while the renderer built its own: so 0.1.6 to
         // 0.1.9.2 built every pipeline on the renderer thread when first drawn, with no list, and the game stopped at every
-        // new effect in every session, 4u-native #48. Now, as MHGU for Android's: the list again, compiled from the start
+        // new effect in every session, 4u-native #48. 1.0, as MHGU for Android's: the list again, compiled from the start
         // on one worker, and every driver compile, the renderer's too, takes one lock (mh4n backend/core/device.cpp
-        // OneCompileAtATime): never two at once. MH4U_POWERVR_LIST=0: no list, as before)
+        // OneCompileAtATime): never two at once.)
+        // A PowerVR Rogue (GE8300, GE8320, GM9446...) is back to 0.1.9.2's way, with no list: on 1.0 a GE8300 and a
+        // GE8320 (driver 1.15@6070602) closed at every start from their second session on, the first one with a list to
+        // compile, with a SIGSEGV in the driver's compiler (libusc.so PVRUniFlexCompileToHw) on the renderer's thread
+        // while the worker compiled the list (243 of 350 keys done, and 865 keys). The lock covers the app's calls into
+        // the compiler, but the Rogue driver also compiles inside the renderer's own Vulkan calls, outside it. 0.1.6 to
+        // 0.1.9.2 built every pipeline on the renderer thread and never closed so. A PowerVR B-Series (BXM-8-256, its
+        // own driver) keeps 1.0's list on one worker: it plays so (4u-native #31). MH4U_POWERVR_LIST=1: the list on any
+        // PowerVR, =0: on none (test aids; launch.txt's env=).
         if (first_run_gpu_name().find("PowerVR") != std::string::npos) {
             const char* list_env = std::getenv("MH4U_POWERVR_LIST");
-            const bool list = !(list_env != nullptr && *list_env == '0');
+            const bool rogue = first_run_gpu_name().find("Rogue") != std::string::npos;
+            const bool list = list_env != nullptr && (*list_env == '0' || *list_env == '1') ? *list_env == '1' : !rogue;
             args.push_back("--no-ubershader");
             if (list) {
                 args.push_back("--pipeline-workers");
@@ -742,14 +805,20 @@ int main(int argc, char* argv[]) {
                 args.push_back("--no-pipeline-list");
             }
             const char* how = list ? "pipelines built one at a time, the saved list on one worker from the start, no ubershader"
-                                   : "pipelines built one at a time when first drawn, no ubershader, no list at start";
+                              : rogue && list_env == nullptr
+                                  ? "pipelines built one at a time when first drawn, no ubershader, no list at start (a Rogue: "
+                                    "as 0.1.9.2, its compiler closed the game with the list on a worker)"
+                                  : "pipelines built one at a time when first drawn, no ubershader, no list at start";
             Logf("PowerVR: %s", how);
             // (in log.txt too: what a shared log has to show, 4u-native #31)
             std::fprintf(stderr, "[Info] App: PowerVR (%s): %s\n", first_run_gpu_name().c_str(), how);
         }
         // the renderer's thread joins the performance-hint session as the game's does (it carries the frame as much;
         // PERF_SUBMIT would join only after reporting frame after frame)
-        mh4n::gpu::queue::SetRendererThreadStartHook([] { perf_hint_thread(PERF_GAME); });
+        mh4n::gpu::queue::SetRendererThreadStartHook([] {
+            perf_hint_thread(PERF_GAME);
+            thread_place_role(PLACE_RENDER);
+        });
         if (launch.count("args")) {
             std::istringstream extra(launch["args"]);
             std::string a;
@@ -774,6 +843,7 @@ int main(int argc, char* argv[]) {
         game_thread = std::thread([args] {
             mh4n::SetHostThreadName("mh4u-game");
             perf_hint_thread(PERF_GAME);  // (the guest's code and the renderer both run here)
+            thread_place_role(PLACE_GAME);
             std::vector<const char*> argv;
             for (const auto& a : args) argv.push_back(a.c_str());
             const mh4n::Options options = mh4n::ParseOptions("runner", static_cast<int>(argv.size()), argv.data());
@@ -886,6 +956,7 @@ int main(int argc, char* argv[]) {
         while (SDL_PollEvent(&e)) {
             had_events = true;
             last_input_ms = SDL_GetTicks();
+            DiagWindowEvent(e);  // (the log's timeline: background, focus, size, low memory)
             switch (e.type) {  // (the pacing trace: when an input came, and how long SDL had it)
             case SDL_EVENT_KEY_DOWN: case SDL_EVENT_KEY_UP: case SDL_EVENT_GAMEPAD_BUTTON_DOWN: case SDL_EVENT_GAMEPAD_BUTTON_UP:
             case SDL_EVENT_GAMEPAD_AXIS_MOTION: case SDL_EVENT_JOYSTICK_BUTTON_DOWN: case SDL_EVENT_JOYSTICK_BUTTON_UP:
@@ -920,6 +991,7 @@ int main(int argc, char* argv[]) {
                 break;
             case SDL_EVENT_DID_ENTER_FOREGROUND:
                 display_frame_rate_refresh();  // (the surface may be a new one)
+                thread_place_resume();         // (Android's cpuset gave the threads back all of its cores)
                 if (auto* rt = g_runtime.load(); rt != nullptr && paused_in_background && !paused_for_menu) rt->Clock().Resume();
                 paused_in_background = false;
                 break;
@@ -951,6 +1023,7 @@ int main(int argc, char* argv[]) {
             case SDL_EVENT_RENDER_DEVICE_RESET:
                 // the GL context was lost: every texture of the screens is made again from the next picture
                 shared_screens_reset(views, 2);
+                frame_gen_reset();
                 shown_sequence = 0;
                 Logf("the renderer's device was reset: the screens' textures are made again");
                 break;
@@ -977,12 +1050,18 @@ int main(int argc, char* argv[]) {
             if (want && !paused_for_menu) {
                 rt->Clock().Pause();
                 paused_for_menu = true;
-                if (!touch_editing() || !said_in_editor) Logf("the game waits while the menu is open");
+                if (!touch_editing() || !said_in_editor) {
+                    Logf("the game waits while the menu is open");
+                    std::fprintf(stderr, "[app] %s: the game waits while the menu is open\n", diag_clock());  // (1.0.1: in log.txt too)
+                }
                 said_in_editor = touch_editing();
             } else if (!want && paused_for_menu) {
                 paused_for_menu = false;
                 if (!paused_in_background) rt->Clock().Resume();
-                if (!touch_editing()) Logf("the game goes on"), said_in_editor = false;
+                if (!touch_editing()) {
+                    Logf("the game goes on"), said_in_editor = false;
+                    std::fprintf(stderr, "[app] %s: the game goes on\n", diag_clock());
+                }
             }
         }
         // the controls to the game now, before this turn draws and presents (a present can wait for a buffer of the
@@ -1000,6 +1079,10 @@ int main(int argc, char* argv[]) {
                     if (g_screens.game_frame != shown_game_frame) {
                         shown_game_frame = g_screens.game_frame;
                         g_present_count = g_present_count + 1;
+                        static Uint64 last_frame_ns = 0;  // (the minute's frame intervals: diag.h, perf_hint.c's line)
+                        const Uint64 frame_ns = SDL_GetTicksNS();
+                        if (last_frame_ns) diag_frame_interval(frame_ns - last_frame_ns);
+                        last_frame_ns = frame_ns;
                     }
                 }
                 top = g_screens.top;
@@ -1043,6 +1126,9 @@ int main(int argc, char* argv[]) {
         g_touch_hidden.store(!bottom_shown, std::memory_order_relaxed);
         if (settings_panel_closed_now()) {
             display = ReadDisplayOptions(app_settings_path());  // (the settings may have moved the touch screen)
+            ColourAdjust colour;  // (and the colour: as saved, a change not saved goes with the menu)
+            app_colour(&colour);
+            shared_screens_set_colour(colour);
         }
         layout = ComputeLayout(win_w, win_h, static_cast<u32>(top_view.width), static_cast<u32>(top_view.height),
                                static_cast<u32>(bottom_view.width), static_cast<u32>(bottom_view.height), bottom_shown, display);
@@ -1054,6 +1140,33 @@ int main(int argc, char* argv[]) {
         // a bowgun's layout, the item bar where it is drawn): the hooks work it out once a game frame
         {
             const Port::Hooks::GameState game = Port::Hooks::CurrentGameState();
+            {  // (1.0.1, diag) [place]: where the game is, at each change, with the session's time: a crash, a black screen or
+               // a slowdown is tied to the title, a town or a quest (and the weapon's class there) without asking
+                // (a change is told once it has held a second: a frame's flicker during a load is not a place)
+                static int last_place = -2, last_front = -2, last_weapon = -2;
+                static Uint64 since_ns = 0, changed_ns = 0;
+                const bool differs = game.place != last_place || game.front_end != last_front ||
+                                     (game.place == Port::Hooks::GameState::PLACE_QUEST && game.weapon != last_weapon);
+                static int pending_key = 0;
+                const int key = (game.place + 2) * 1000 + (game.front_end + 2) * 100 + (game.weapon + 2);
+                const Uint64 now_ns = SDL_GetTicksNS();
+                if (!differs) changed_ns = 0;
+                else if (changed_ns == 0 || key != pending_key) changed_ns = now_ns, pending_key = key;
+                if (differs && now_ns - changed_ns >= 1000000000ull) {
+                    changed_ns = 0;
+                    const char* where = game.front_end == 1 ? "the title, a save's choice or the creation"
+                                        : game.place == Port::Hooks::GameState::PLACE_TOWN ? "a town (a village or the Gathering Hall)"
+                                        : game.place == Port::Hooks::GameState::PLACE_QUEST ? "a quest"
+                                        : game.place == Port::Hooks::GameState::PLACE_OTHER ? "another place (a load, the Arena's gear...)"
+                                                                                           : "not known (a place no rule covers)";
+                    char weapon[32] = "";
+                    if (game.place == Port::Hooks::GameState::PLACE_QUEST && game.weapon >= 0) std::snprintf(weapon, sizeof weapon, ", weapon class %d", game.weapon);
+                    std::fprintf(stderr, "[place] %s: %s%s%s\n", diag_clock(), where, weapon,
+                                 since_ns ? (", after " + std::to_string((now_ns - since_ns) / 1000000000ull) + " s").c_str() : "");
+                    since_ns = now_ns;
+                    last_place = game.place, last_front = game.front_end, last_weapon = game.weapon;
+                }
+            }
             UiGameState state;
             state.menu = game.menu;
             state.weapon_drawn = game.weapon_drawn;
@@ -1127,6 +1240,59 @@ int main(int argc, char* argv[]) {
             last_present_ms = now;
             new_picture = false;
         }
+        // FRAMEGEN: ([Graphics] FrameGen, frame_gen.h) a new top picture at half the display's rate or less: the picture
+        // made between the last one and it is presented first, with the touch screen, the controls and the menus over it
+        // as over the game's own; the game's follows the vsyncs frame_gen says. With the setting off nothing here runs.
+        bool made_shown = false;
+        if (new_frame && frame_gen_enabled()) {
+            const Port::Hooks::GameState game = Port::Hooks::CurrentGameState();
+            const char* skip = ui_settings_open() || touch_editor_holds() ? "the settings or the layout editor are open"
+                               : game.front_end == 1                       ? "the title or a save's choice"
+                               : game.menu == 1                            ? "a menu or a window of the game's"
+                               : !problem.empty()                          ? "a message on the screen"
+                                                                           : nullptr;
+            FrameGenBox boxes[Port::Hooks::HUD_PART_COUNT];
+            int nb = 0;
+            for (int k = 0; k < Port::Hooks::HUD_PART_COUNT; ++k)
+                if (game.hud[k].shown == 1) std::memcpy(boxes[nb++].r, game.hud[k].rect, sizeof boxes[0].r);
+            int follow = 0;
+            SDL_Texture* made = frame_gen_make(renderer, top_view, present_pacing_cadence(), boxes, nb, skip, &follow);
+            if (made != nullptr) {
+                SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+                SDL_RenderClear(renderer);
+                SDL_FRect top = layout.top;
+                if (top.y < 0.5f) {  // (as the game's picture below: one 3DS row taller, that row above the window)
+                    const float row = top.h / 240.0f * 2;
+                    top.y -= row;
+                    top.h += row;
+                }
+                {  // (drawn as a screen SDL would draw: whatever shared_screens puts on the game's screens goes on it too)
+                    SharedScreenView made_view;
+                    float fw = 0, fh = 0;
+                    SDL_GetTextureSize(made, &fw, &fh);
+                    made_view.texture = made;
+                    made_view.source = SDL_FRect{0, 0, fw, fh};
+                    made_view.width = static_cast<int>(fw), made_view.height = static_cast<int>(fh);
+                    shared_screens_draw(made_view, top, win_w, win_h);
+                }
+                if (layout.bottom_shown) {
+                    if (town_large) {
+                        SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+                        SDL_SetRenderDrawColor(renderer, 0, 0, 0, static_cast<u8>(160 * std::clamp(town_alpha, 0.0f, 1.0f)));
+                        SDL_RenderFillRect(renderer, nullptr);
+                    }
+                    shared_screens_draw(bottom_view, layout.bottom, win_w, win_h, layout.bottom_alpha);
+                }
+                static const bool no_ui_made = [] { const char* v = std::getenv("MH4U_DEBUG_NO_UI"); return v != nullptr && *v == '1'; }();
+                if (!no_ui_made) ui_frame(win_w, win_h, UiScreens{layout.top, layout.bottom, layout.bottom_shown}, controls_real_pad());
+                send_input();
+                present_pacing_before_present(true, perfstats_fps_cap());
+                SDL_RenderPresent(renderer);
+                frame_gen_presented();
+                present_pacing_follow(follow);
+                made_shown = true;
+            }
+        }
         shared_screens_frame_begin();
         SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
         SDL_RenderClear(renderer);
@@ -1158,7 +1324,8 @@ int main(int argc, char* argv[]) {
         }
         // MH4U_DEBUG_NO_UI=1 (a measurement aid): the screens alone, without the touch controls and the menus
         static const bool no_ui = [] { const char* v = std::getenv("MH4U_DEBUG_NO_UI"); return v != nullptr && *v == '1'; }();
-        if (!no_ui) ui_frame(win_w, win_h, UiScreens{layout.top, layout.bottom, layout.bottom_shown}, controls_real_pad());
+        if (!no_ui && made_shown) ui_redraw();  // (FRAMEGEN: the same controls as over the made picture just presented)
+        else if (!no_ui) ui_frame(win_w, win_h, UiScreens{layout.top, layout.bottom, layout.bottom_shown}, controls_real_pad());
         send_input();  // (the touch controls' input of this frame now: the present may wait for a buffer)
         // A test run (launch.txt's args with a scripted input) ignores the controls: say so on the screen, or a player who
         // picks the phone up thinks the game is broken
@@ -1184,7 +1351,7 @@ int main(int argc, char* argv[]) {
             const u64 start = SDL_GetTicksNS();
             shared_screens_frame_end();
             present_pacing_before_present(new_frame, perfstats_fps_cap());
-            if (new_frame) last_frame_present_ms = SDL_GetTicks();
+            if (new_frame) last_frame_present_ms = SDL_GetTicks(), thread_place_shown();
             new_frame = false;
             mh4n::pacing::Mark(mh4n::pacing::kAppPresentIn);
             SDL_RenderPresent(renderer);

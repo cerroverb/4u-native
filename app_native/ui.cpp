@@ -14,6 +14,8 @@
 #include "imgui_impl_sdl3.h"
 #include "imgui_impl_sdlrenderer3.h"
 #include "game_keyboard.h"
+#include "hunt_bars.h"
+#include "hunt_numbers.h"
 #include "settings_panel.h"
 #include "touch.h"
 #include "town.h"
@@ -21,6 +23,7 @@
 namespace {
 
 SDL_Renderer* g_renderer = nullptr;
+SDL_Window* g_window = nullptr;
 UiInput g_input;
 std::string g_ini;
 bool g_settings_open = false;  // the settings panel is over the game
@@ -43,10 +46,34 @@ void town_watch() {
     was = busy;
 }
 
+// Whether the window can take a frame of the menus now. SDL marks it minimized as the app goes to the background
+// (another of the app's screens over the game, as the code builder's; the home screen; the screen off) for the one loop
+// turn before it waits, and ImGui's SDL backend then gives a 0 x 0 display: the settings' sizes, made from the screen's,
+// came out at 0 or below, and a section's name asked for at a size below 0 crashed ImGui's font atlas (a SIGSEGV in
+// stbrp__skyline_find_best_pos, the settings open behind the builder: "the app closes at Translate the game's code
+// (10 %)"). Nothing of the menus is drawn then; the next frame, back in front, is as before.
+bool ui_drawable() {
+    if (g_window == nullptr) return true;
+    int w = 0, h = 0;
+    const bool minimized = (SDL_GetWindowFlags(g_window) & SDL_WINDOW_MINIMIZED) != 0;
+    const bool drawable = !minimized && SDL_GetWindowSize(g_window, &w, &h) && w > 0 && h > 0;
+    static bool was = true;
+    static int said = 0;
+    if (drawable != was && said < 20) {  // (each change, the first 20 times)
+        ++said;
+        std::fprintf(stderr, "[Info] App: %s\n", drawable ? "the window is back: the menus drawn again"
+                                                          : minimized ? "the window is minimized: no frame of the menus"
+                                                                      : "the window has no size: no frame of the menus");
+    }
+    was = drawable;
+    return drawable;
+}
+
 }  // namespace
 
 void ui_init(SDL_Window* window, SDL_Renderer* renderer, const std::string& data_dir) {
     g_renderer = renderer;
+    g_window = window;
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
@@ -112,6 +139,10 @@ bool ui_event(const SDL_Event& e, const UiScreens& screens) {
 }
 
 void ui_frame(int width, int height, const UiScreens& screens, bool controller) {
+    if (!ui_drawable()) {  // (going to the background: no frame of the menus, nothing held)
+        g_input = UiInput{};
+        return;
+    }
     ImGui_ImplSDLRenderer3_NewFrame();
     ImGui_ImplSDL3_NewFrame();
     ImGui::NewFrame();
@@ -121,6 +152,8 @@ void ui_frame(int width, int height, const UiScreens& screens, bool controller) 
     town_watch();
     // (under the settings: none; under the town's list and large touch screen neither: town.h)
     const bool thanks = settings_panel_thanks_open();
+    if (!g_settings_open && !thanks) hunt_numbers_draw(screens.top);  // (1.0.1: damage numbers, under the controls)
+    if (!g_settings_open && !thanks) hunt_bars_draw(screens.top);     // (1.0.1: the monsters' health bars, the same)
     if (!g_settings_open && !town_busy() && !thanks) touch_frame(width, height, screens, controller, in);
     if (!g_settings_open && !thanks) town_frame(width, height, controller);
     game_keyboard_frame(width, height, g_settings_open);
@@ -130,7 +163,16 @@ void ui_frame(int width, int height, const UiScreens& screens, bool controller) 
     ImGui_ImplSDLRenderer3_RenderDrawData(ImGui::GetDrawData(), g_renderer);
 }
 
+void ui_redraw() {
+    ImDrawData* d = ImGui::GetDrawData();
+    if (ui_drawable() && d != nullptr && d->Valid) ImGui_ImplSDLRenderer3_RenderDrawData(d, g_renderer);
+}
+
 void ui_update(int width, int height, const UiScreens& screens, bool controller) {
+    if (!ui_drawable()) {  // (as ui_frame)
+        g_input = UiInput{};
+        return;
+    }
     ImGui_ImplSDLRenderer3_NewFrame();
     ImGui_ImplSDL3_NewFrame();
     ImGui::NewFrame();

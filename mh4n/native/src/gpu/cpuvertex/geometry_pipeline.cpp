@@ -9,8 +9,12 @@
 #include "gpu/cpuvertex/geometry_pipeline.h"
 
 #include <algorithm>
+#include <cstdlib>
+#include <memory>
+#include <utility>
 
 #include "gpu/pica/regs.h"
+#include "mh4n/ab_switches.h"
 
 namespace mh4n::gpu::cpuvertex {
 
@@ -245,9 +249,42 @@ GeometryPipeline::GeometryPipeline(GeometryShaderUnit& gs_unit, Uniforms& gs_uni
 
 GeometryPipeline::~GeometryPipeline() = default;
 
+namespace {
+
+bool BackendReuse() {
+    static const bool on = [] {
+        const char* v = std::getenv("MH4N_GS_BACKEND_REUSE");
+        return v == nullptr || *v != '0';
+    }();
+    return on && !ab::g_gs_backend_reuse_off.load(std::memory_order_relaxed);
+}
+
+// A backend of type T: the spare one of its mode made again in place (destroyed, then constructed as a new one would
+// be), or a new one.
+template <typename T, typename... Args>
+std::unique_ptr<T> MakeBackend(std::unique_ptr<GeometryPipelineBackend>& spare, Args&&... args) {
+    if (spare != nullptr && BackendReuse()) {
+        T* const p = static_cast<T*>(spare.release());  // (the spare of this mode is a T)
+        std::destroy_at(p);
+        std::construct_at(p, std::forward<Args>(args)...);
+        return std::unique_ptr<T>(p);
+    }
+    return std::make_unique<T>(std::forward<Args>(args)...);
+}
+
+}  // namespace
+
+void GeometryPipeline::Stash() {
+    if (backend_ != nullptr && backend_kind_ >= 0 && BackendReuse()) {
+        spare_[backend_kind_] = std::move(backend_);
+    }
+    backend_.reset();
+    backend_kind_ = -1;
+}
+
 bool GeometryPipeline::Reconfigure(bool adopt_cursors) {
     discarded_partial_input_ = backend_ != nullptr && !backend_->IsEmpty();
-    backend_.reset();
+    Stash();
     error_ = {};
 
     const pica::PicaState& state = *state_;
@@ -285,11 +322,12 @@ bool GeometryPipeline::Reconfigure(bool adopt_cursors) {
             g.buffer_size % vs_output_num != 0) {
             return bad();
         }
-        auto point = std::make_unique<GeometryPipeline_Point>(state_, gs_unit_, vs_output_num, g.buffer_size);
+        auto point = MakeBackend<GeometryPipeline_Point>(spare_[0], state_, gs_unit_, vs_output_num, g.buffer_size);
         if (adopt_cursors) {
             point->Adopt(g);
         }
         backend_ = std::move(point);
+        backend_kind_ = 0;
         break;
     }
     case pica::GeometryMode::VariablePrimitive: {
@@ -297,11 +335,12 @@ bool GeometryPipeline::Reconfigure(bool adopt_cursors) {
         if (!variable_primitive || !input_to_uniform) {
             return bad();
         }
-        auto variable = std::make_unique<GeometryPipeline_VariablePrimitive>(state_, gs_, vs_output_num);
+        auto variable = MakeBackend<GeometryPipeline_VariablePrimitive>(spare_[1], state_, gs_, vs_output_num);
         if (adopt_cursors) {
             variable->Adopt(g);
         }
         backend_ = std::move(variable);
+        backend_kind_ = 1;
         break;
     }
     case pica::GeometryMode::FixedPrimitive: {
@@ -317,12 +356,13 @@ bool GeometryPipeline::Reconfigure(bool adopt_cursors) {
             (g.buffer_size - g.buffer_offset) % vs_output_num != 0) {
             return bad();
         }
-        auto fixed = std::make_unique<GeometryPipeline_FixedPrimitive>(gs_, vs_output_num, g.buffer_offset,
-                                                                       g.buffer_size);
+        auto fixed = MakeBackend<GeometryPipeline_FixedPrimitive>(spare_[2], gs_, vs_output_num, g.buffer_offset,
+                                                                  g.buffer_size);
         if (adopt_cursors) {
             fixed->Adopt(g);
         }
         backend_ = std::move(fixed);
+        backend_kind_ = 2;
         break;
     }
     default:
@@ -332,7 +372,7 @@ bool GeometryPipeline::Reconfigure(bool adopt_cursors) {
 }
 
 void GeometryPipeline::Reset() {
-    backend_.reset();
+    Stash();
     error_ = {};
     discarded_partial_input_ = false;
 }

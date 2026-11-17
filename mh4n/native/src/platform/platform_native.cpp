@@ -22,6 +22,8 @@
 #include "mh4n/log.h"
 #include "mh4n/options.h"
 #include "mh4n/registry.h"
+#include "mh4n/service.h"
+#include "services/fs/fs_state.h"
 
 extern "C" {
 #include "recomp.h"
@@ -321,6 +323,20 @@ bool NativePlatform::EndSkipAgreed() {
     // No room, no peers: this console's say-so is everyone's (the hooks ask only after their own
     // vote; with peers they would wait for the others).
     return true;
+}
+
+bool NativePlatform::DlcInstalled() {
+    ServiceManager* manager = FindServiceManager(runtime_);
+    return manager != nullptr && fs::HasReadableGameDlc(*fs::GetFsState(manager->Context()));
+}
+
+std::string NativePlatform::BackUpSave(const std::string& what, std::string* error) {
+    ServiceManager* manager = FindServiceManager(runtime_);
+    if (manager == nullptr) {
+        if (error != nullptr) *error = "the runtime has no file system";
+        return {};
+    }
+    return fs::BackUpGameSave(*fs::GetFsState(manager->Context()), what, error);
 }
 
 std::uint32_t NativePlatform::TopScreenRows() const {

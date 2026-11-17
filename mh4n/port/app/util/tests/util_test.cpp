@@ -171,12 +171,25 @@ TEST_CASE("CreateFullPath fails under a file and past 100 levels") {
     CHECK_FALSE(CreateFullPath(deep));
     SetLogSink(before);
     CHECK(g_logged.size() >= 2);
-    bool too_deep = false;
+    bool too_deep = false, creation_failed = false;
     for (const Logged& l : g_logged) {
         CHECK(l.level == LogLevel::Error);
         too_deep = too_deep || l.message.find("too deep") != std::string::npos;
+        creation_failed = creation_failed || l.message.find("creation failed") != std::string::npos;
     }
+#ifdef _WIN32
+    // Windows makes no directory whose path is 248 characters or longer (without long paths): from the system's temp
+    // folder that limit can come before the 100th level, and then the creation is what fails, as it should
+    std::size_t to_level_100 = 0, levels = 0;
+    for (std::size_t i = 0; i < deep.size() && levels < 100; ++i) {
+        if (deep[i] == '/' && ++levels == 100) {
+            to_level_100 = i + 1;
+        }
+    }
+    CHECK((too_deep || (to_level_100 >= 248 && creation_failed)));
+#else
     CHECK(too_deep);
+#endif
 }
 
 TEST_CASE("WriteStringToFile and ReadFileToString count bytes") {

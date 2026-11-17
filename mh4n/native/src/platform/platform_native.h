@@ -99,6 +99,9 @@ public:
     void InstallNetSync(Port::NetSyncMode mode, double slack_ms, std::vector<std::string>& log) override;
     void VoteEndSkip(bool vote) override;
     bool EndSkipAgreed() override;
+    // The file system's: fs::HasReadableGameDlc and fs::BackUpGameSave (services/fs/dlc_titles.h).
+    bool DlcInstalled() override;
+    std::string BackUpSave(const std::string& what, std::string* error) override;
 
     // ---- what the renderer (N2b) reads -----------------------------------------------------------
     std::uint32_t TopScreenRows() const;      // 0 until the hooks set it

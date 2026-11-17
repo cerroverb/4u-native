@@ -33,6 +33,7 @@
 #include <time.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -66,6 +67,9 @@ struct Pacer {
 };
 Pacer g_pacer;
 bool g_active = false;  // the last present was paced (a limit of n >= 2 vsyncs a frame)
+std::atomic<int> g_told_n{0};  // the vsyncs a game frame of the last present (1: shown when ready; 0: none yet), for the minute's line
+int g_cadence = 1;      // (frame generation) the vsyncs a game frame took at the last present
+int g_follow = 0;       // (frame generation) the next new frame's buffer goes this many vsyncs after the last one
 
 int64_t (*g_deadline_query)() = nullptr;
 
@@ -100,9 +104,16 @@ Phase g_phase;
 
 void present_pacing_set_deadline_query(int64_t (*query)()) { g_deadline_query = query; }
 
+extern "C" int present_pacing_vsyncs(void) { return g_told_n.load(std::memory_order_relaxed); }
+extern "C" int present_pacing_game_vblanks(void) { return mh4n::pacing::g_frame_vblanks.load(std::memory_order_relaxed); }
+
 bool present_pacing_frame_pending() {
     return g_active && g_pacer.last_frame_slot > NowNs();
 }
+
+int present_pacing_cadence() { return g_active ? g_cadence : 1; }
+
+void present_pacing_follow(int vsyncs) { g_follow = vsyncs; }
 
 void present_pacing_before_present(bool new_frame, float fps_cap) {
     static const bool on = [] {
@@ -111,6 +122,8 @@ void present_pacing_before_present(bool new_frame, float fps_cap) {
     }();
     static const PresentationTime set_time =
         on ? reinterpret_cast<PresentationTime>(eglGetProcAddress("eglPresentationTimeANDROID")) : nullptr;
+    const int follow = g_follow;  // (frame generation: for this present only)
+    g_follow = 0;
     EGLDisplay display = eglGetCurrentDisplay();
     EGLSurface surface = eglGetCurrentSurface(EGL_DRAW);
     if (display == EGL_NO_DISPLAY || surface == EGL_NO_SURFACE) {
@@ -179,6 +192,7 @@ void present_pacing_before_present(bool new_frame, float fps_cap) {
 
     g_active = false;
     if (set_time == nullptr || period <= 0 || vsync <= 0) {
+        g_told_n.store(1, std::memory_order_relaxed);
         return;  // (the display's vsync not sampled yet: the buffer is shown when ready)
     }
     // the margin: the display's presentation deadline and 2 ms (MH4U_PRESENT_MARGIN=<us>: that), worked out again when
@@ -237,6 +251,7 @@ void present_pacing_before_present(bool new_frame, float fps_cap) {
                          n >= 2 ? (std::to_string(n) + " vsyncs a game frame").c_str() : "each picture shown when ready");
         }
     }
+    g_told_n.store(n, std::memory_order_relaxed);
     if (n < 2) {
         // At the refresh rate (or a limit that does not divide it) there is no cadence to keep: each buffer is shown when
         // ready. Given times there, a GPU-bound Anbernic at 49 FPS of 60 had 6 % of its buffers dropped (two taken in one
@@ -245,6 +260,7 @@ void present_pacing_before_present(bool new_frame, float fps_cap) {
         return;
     }
     g_active = true;
+    g_cadence = n;
     static const bool phase_on = [] {
         const char* v = std::getenv("MH4U_PHASE");
         return !(v != nullptr && std::strcmp(v, "0") == 0);
@@ -257,6 +273,10 @@ void present_pacing_before_present(bool new_frame, float fps_cap) {
         p = Pacer{};  // (nothing presented for a while: a new start)
     }
     int64_t slot = std::max(earliest, p.last_slot);
+    if (follow > 0 && new_frame && p.last_slot != 0) {  // (frame generation: the game's picture after the made one)
+        slot = std::max(slot, p.last_slot + follow * period);
+        new_frame = false;  // (the cadence, and the phase, stay the made picture's)
+    }
     bool late = false;    // (this frame came too late for the cadence's slot)
     int64_t jump = 0;     // (how much later than that slot it is shown: the slots' move)
     if (new_frame) {

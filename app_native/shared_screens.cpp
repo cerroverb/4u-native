@@ -11,6 +11,8 @@
 // binding put back.
 #include "shared_screens.h"
 
+#include "colour_filter.h"
+
 #include "mh4n/pacing_trace.h"
 
 #include <EGL/egl.h>
@@ -31,6 +33,7 @@
 #include <cstring>
 #include <deque>
 #include <map>
+#include <memory>
 #include <string>
 
 namespace {
@@ -75,6 +78,9 @@ struct Import {
     GLenum external_target = 0;
     int width = 0, height = 0;
     std::uint64_t last_used = 0;
+    // (1.0.1) the picture last shown with it: while it lives (a view still shows it) the import stays, however long ago
+    // it was shown (shared_screens_frame_done)
+    std::weak_ptr<const SharedPicture> shown;
 };
 std::map<std::uint64_t, Import> g_imports;  // by SharedPicture::BufferId
 std::uint64_t g_frame = 0;
@@ -93,9 +99,62 @@ struct TargetProgram {
     GLuint program = 0;
     GLint u_tex = -1, u_rect = -1, u_affine = -1, u_yfix = -1, u_size = -1, u_map = -1, u_flip = -1, u_alpha = -1;
     GLint u_inv = -1, u_cut = -1, u_in_shift = -1, u_in_inv = -1, u_in_low = -1, u_out_shift = -1, u_out_inv = -1, u_out_low = -1;
+    GLint u_f0 = -1, u_f1 = -1, u_f2 = -1, u_fg = -1;  // (the colour filter's variant)
 };
 TargetProgram g_target_programs[2];  // [0] GL_TEXTURE_2D, [1] GL_TEXTURE_EXTERNAL_OES
 bool g_target_programs_tried = false;
+
+// ---- the colour filter ([Colour], colour_filter.h: shared_screens_set_colour) ----
+// Off (every control 0), the screens are drawn as they always were. On, the render target's program has a variant with the
+// filter's few operations after its sample (kFilterCode: the same source otherwise), and a screen SDL would draw
+// (SDL_RenderTexture) is drawn by a program of ours that samples it as SDL does, with the filter: no pass of its own.
+ColourAdjust g_colour{};
+bool g_colour_on = false;
+ColourMatrix g_colour_matrix{};
+TargetProgram g_filter_target_programs[2];  // (the render target's, with the filter: made the first time it is on)
+bool g_filter_target_tried = false;
+// A screen SDL would draw, with the filter: its quad, its part of the texture, its alpha mod
+struct TextureProgram {
+    GLuint program = 0;
+    GLint u_tex = -1, u_rect = -1, u_uv = -1, u_alpha = -1;
+    GLint u_f0 = -1, u_f1 = -1, u_f2 = -1, u_fg = -1;
+};
+TextureProgram g_texture_programs[2];  // [0] GL_TEXTURE_2D, [1] GL_TEXTURE_EXTERNAL_OES
+bool g_texture_programs_tried = false;
+// The filter in a fragment shader (GLSL ES 1.00): three rows and the gamma (colour_filter.h ColourMatrix)
+constexpr const char* kFilterCode = R"(uniform vec4 u_f0, u_f1, u_f2;
+uniform float u_fg;
+vec3 Filter(vec3 c) {
+    vec4 p = vec4(pow(max(c, vec3(0.0)), vec3(u_fg)), 1.0);
+    return clamp(vec3(dot(u_f0, p), dot(u_f1, p), dot(u_f2, p)), 0.0, 1.0);
+}
+)";
+constexpr const char* kTextureVertex = R"(
+attribute vec2 a_corner;
+uniform vec4 u_rect;  // the destination's corners in clip space: x0, y0, x1, y1
+uniform vec4 u_uv;    // the texture's coordinates there: u0, v0, u1, v1
+varying vec2 v_uv;
+void main() {
+    gl_Position = vec4(mix(u_rect.x, u_rect.z, a_corner.x), mix(u_rect.y, u_rect.w, a_corner.y), 0.0, 1.0);
+    v_uv = vec2(mix(u_uv.x, u_uv.z, a_corner.x), mix(u_uv.y, u_uv.w, a_corner.y));
+}
+)";
+// (%s: the sampler's extension line, its type, kFilterCode)
+constexpr const char* kTextureFragment = R"(%s
+#ifdef GL_FRAGMENT_PRECISION_HIGH
+precision highp float;
+#else
+precision mediump float;
+#endif
+uniform %s u_tex;
+uniform float u_alpha;
+varying vec2 v_uv;
+%s
+void main() {
+    vec4 t = texture2D(u_tex, v_uv);
+    gl_FragColor = vec4(Filter(t.rgb), t.a * u_alpha);
+}
+)";
 GLuint g_corners = 0;  // a buffer of the quad's corners (0, 0), (1, 0), (0, 1), (1, 1)
 
 constexpr const char* kTargetVertex = R"(
@@ -124,7 +183,7 @@ uniform float u_alpha;
 uniform vec2 u_cut;     // the colour is cut to fewer bits than 8: x the target's depths, y the framebuffer's
 uniform vec3 u_in_shift, u_in_inv, u_in_low;     // 2^(8 - b), 2^(b - 8), 2^(8 - 2b) of each depth
 uniform vec3 u_out_shift, u_out_inv, u_out_low;
-// a texel's colour as the upright copy holds it: cut to the target's depths, then the framebuffer's (8 bits: kept)
+%s// a texel's colour as the upright copy holds it: cut to the target's depths, then the framebuffer's (8 bits: kept)
 vec3 Depths(vec3 c) {
     if (u_cut.y < 0.5 && u_cut.x < 0.5) return c;
     vec3 v = floor(c * 255.0 + 0.5);
@@ -188,7 +247,7 @@ void main() {
             c = mix(c, d, f.y);
         }
     }
-    gl_FragColor = vec4(c, u_alpha);
+    %sgl_FragColor = vec4(c, u_alpha);
 }
 )";
 
@@ -208,12 +267,38 @@ GLuint CompileShader(GLenum kind, const char* text) {
     return shader;
 }
 
-TargetProgram MakeTargetProgram(bool external) {
+// The two programs a shader pair makes alike (the render target's, a screen's with the filter): 0 when it fails (logged)
+GLuint LinkProgram(const char* vertex, const char* fragment, const char* what) {
+    const GLuint vs = CompileShader(GL_VERTEX_SHADER, vertex), fs = CompileShader(GL_FRAGMENT_SHADER, fragment);
+    GLuint program = 0;
+    if (vs != 0 && fs != 0) {
+        program = glCreateProgram();
+        glAttachShader(program, vs);
+        glAttachShader(program, fs);
+        glBindAttribLocation(program, 0, "a_corner");
+        glLinkProgram(program);
+        GLint ok = 0;
+        glGetProgramiv(program, GL_LINK_STATUS, &ok);
+        if (!ok) {
+            char log[1024] = {};
+            glGetProgramInfoLog(program, sizeof(log), nullptr, log);
+            std::fprintf(stderr, "[Error] App: %s program: %s\n", what, log);
+            glDeleteProgram(program);
+            program = 0;
+        }
+    }
+    if (vs != 0) glDeleteShader(vs);
+    if (fs != 0) glDeleteShader(fs);
+    return program;
+}
+
+// filter: the colour filter's variant (kFilterCode after the sample); false gives the source of always, unchanged
+TargetProgram MakeTargetProgram(bool external, bool filter = false) {
     TargetProgram p;
-    char fragment[4096];
+    char fragment[8192];
     std::snprintf(fragment, sizeof(fragment), kTargetFragment,
                   external ? "#extension GL_OES_EGL_image_external : require" : "",
-                  external ? "samplerExternalOES" : "sampler2D");
+                  external ? "samplerExternalOES" : "sampler2D", filter ? kFilterCode : "", filter ? "c = Filter(c);\n    " : "");
     const GLuint vs = CompileShader(GL_VERTEX_SHADER, kTargetVertex), fs = CompileShader(GL_FRAGMENT_SHADER, fragment);
     if (vs != 0 && fs != 0) {
         p.program = glCreateProgram();
@@ -250,8 +335,39 @@ TargetProgram MakeTargetProgram(bool external) {
         p.u_out_shift = glGetUniformLocation(p.program, "u_out_shift");
         p.u_out_inv = glGetUniformLocation(p.program, "u_out_inv");
         p.u_out_low = glGetUniformLocation(p.program, "u_out_low");
+        p.u_f0 = glGetUniformLocation(p.program, "u_f0");
+        p.u_f1 = glGetUniformLocation(p.program, "u_f1");
+        p.u_f2 = glGetUniformLocation(p.program, "u_f2");
+        p.u_fg = glGetUniformLocation(p.program, "u_fg");
     }
     return p;
+}
+
+TextureProgram MakeTextureProgram(bool external) {
+    TextureProgram p;
+    char fragment[2048];
+    std::snprintf(fragment, sizeof(fragment), kTextureFragment, external ? "#extension GL_OES_EGL_image_external : require" : "",
+                  external ? "samplerExternalOES" : "sampler2D", kFilterCode);
+    p.program = LinkProgram(kTextureVertex, fragment, "a screen's (colour filter)");
+    if (p.program != 0) {
+        p.u_tex = glGetUniformLocation(p.program, "u_tex");
+        p.u_rect = glGetUniformLocation(p.program, "u_rect");
+        p.u_uv = glGetUniformLocation(p.program, "u_uv");
+        p.u_alpha = glGetUniformLocation(p.program, "u_alpha");
+        p.u_f0 = glGetUniformLocation(p.program, "u_f0");
+        p.u_f1 = glGetUniformLocation(p.program, "u_f1");
+        p.u_f2 = glGetUniformLocation(p.program, "u_f2");
+        p.u_fg = glGetUniformLocation(p.program, "u_fg");
+    }
+    return p;
+}
+
+// The colour filter's uniforms (the rows and the gamma: colour_filter.h) into the program in use
+void SetFilterUniforms(GLint f0, GLint f1, GLint f2, GLint fg) {
+    glUniform4fv(f0, 1, g_colour_matrix.row[0]);
+    glUniform4fv(f1, 1, g_colour_matrix.row[1]);
+    glUniform4fv(f2, 1, g_colour_matrix.row[2]);
+    glUniform1f(fg, g_colour_matrix.gamma);
 }
 
 bool HasExtension(const char* list, const char* name);
@@ -279,6 +395,27 @@ bool EnsureTargetPrograms() {
     std::fprintf(stderr, "[Info] App: target pictures' programs: GL_TEXTURE_2D %s, GL_TEXTURE_EXTERNAL_OES %s\n",
                  g_target_programs[0].program != 0 ? "yes" : "no", g_target_programs[1].program != 0 ? "yes" : "no");
     return g_target_programs[0].program != 0;
+}
+
+// The colour filter's programs, made the first time it is on (SDL's GL state put back), as EnsureTargetPrograms does
+bool EnsureFilterPrograms() {
+    if (g_texture_programs_tried) return g_texture_programs[0].program != 0;
+    g_texture_programs_tried = true;
+    if (!EnsureTargetPrograms()) return false;  // (the corners' buffer)
+    SDL_FlushRenderer(g_renderer);
+    GLint program = 0;
+    glGetIntegerv(GL_CURRENT_PROGRAM, &program);
+    const char* gl = reinterpret_cast<const char*>(glGetString(GL_EXTENSIONS));
+    const bool external = HasExtension(gl, "GL_OES_EGL_image_external");
+    g_texture_programs[0] = MakeTextureProgram(false);
+    if (external) g_texture_programs[1] = MakeTextureProgram(true);
+    g_filter_target_programs[0] = MakeTargetProgram(false, true);
+    if (external) g_filter_target_programs[1] = MakeTargetProgram(true, true);
+    glUseProgram(static_cast<GLuint>(program));
+    std::fprintf(stderr, "[Info] App: the colour filter's programs: screens %s/%s, render targets %s/%s\n",
+                 g_texture_programs[0].program != 0 ? "yes" : "no", g_texture_programs[1].program != 0 ? "yes" : "no",
+                 g_filter_target_programs[0].program != 0 ? "yes" : "no", g_filter_target_programs[1].program != 0 ? "yes" : "no");
+    return g_texture_programs[0].program != 0;
 }
 
 // Pictures no longer shown, held until the GL work queued before `fence` (the work that read them) is done.
@@ -768,6 +905,7 @@ bool Show(SharedScreenView& view, const std::shared_ptr<const SharedPicture>& pi
     }
     ++(fd >= 0 ? g_stats.shown_waiting : g_stats.shown_ready);
     Retire(std::move(view.picture));
+    import->shown = picture;
     view.picture = picture;
     view.shown_shared = true;
     g_target_shown = g_target_shown || target;
@@ -819,10 +957,13 @@ namespace {
 // render target of that size, whose rows SDL keeps the other way up), in SDL's order: its queue goes to GL first, and
 // SDL sets its own state again afterwards (SDL_FlushRenderer forgets what it had set); the vertex arrays SDL keeps
 // enabled are left as they were.
+// colour: with the colour filter (its variant of the program; the program of always where that one couldn't be made)
 void DrawTarget(const SharedScreenView& view, const SDL_FRect& dst, int out_w, int out_h, bool into_texture, Uint8 alpha,
-                bool no_cut = false) {
+                bool no_cut = false, bool colour = false) {
     if (!EnsureTargetPrograms() || view.gl_name == 0 || dst.w <= 0 || dst.h <= 0 || out_w <= 0 || out_h <= 0) return;
-    const TargetProgram& p = g_target_programs[view.gl_target == GL_TEXTURE_EXTERNAL_OES ? 1 : 0];
+    const int kind = view.gl_target == GL_TEXTURE_EXTERNAL_OES ? 1 : 0;
+    colour = colour && EnsureFilterPrograms() && g_filter_target_programs[kind].program != 0;
+    const TargetProgram& p = colour ? g_filter_target_programs[kind] : g_target_programs[kind];
     if (p.program == 0) return;
     SDL_FlushRenderer(g_renderer);
     glUseProgram(p.program);
@@ -877,6 +1018,7 @@ void DrawTarget(const SharedScreenView& view, const SDL_FRect& dst, int out_w, i
     glUniform3fv(p.u_out_shift, 1, out_shift);
     glUniform3fv(p.u_out_inv, 1, out_inv);
     glUniform3fv(p.u_out_low, 1, out_low);
+    if (colour) SetFilterUniforms(p.u_f0, p.u_f1, p.u_f2, p.u_fg);
     // (SDL keeps its colour and texture coordinate arrays enabled: off for this draw, the colour one on again after)
     glDisableVertexAttribArray(1);
     glDisableVertexAttribArray(2);
@@ -887,6 +1029,59 @@ void DrawTarget(const SharedScreenView& view, const SDL_FRect& dst, int out_w, i
     glBindBuffer(GL_ARRAY_BUFFER, 0);
     glEnableVertexAttribArray(1);
     glBindTexture(view.gl_target, 0);
+}
+
+// A screen SDL would draw (view.texture: a buffer imported as SDL's texture, or the CPU form's), with the colour filter: its
+// GL texture sampled as SDL_RenderTexture samples it (the same quad, the same part of the texture, linear, clamped to the
+// edge as SDL sets it, its blend mode and alpha mod), in SDL's order as DrawTarget does. False: not drawn (no program, or
+// SDL doesn't say the texture's name): the caller draws it with SDL, without the filter.
+bool DrawTextureFiltered(const SharedScreenView& view, const SDL_FRect& dst, int out_w, int out_h, Uint8 alpha) {
+    if (!EnsureFilterPrograms() || dst.w <= 0 || dst.h <= 0 || out_w <= 0 || out_h <= 0) return false;
+    const SDL_PropertiesID props = SDL_GetTextureProperties(view.texture);
+    const GLuint name = static_cast<GLuint>(SDL_GetNumberProperty(props, SDL_PROP_TEXTURE_OPENGLES2_TEXTURE_NUMBER, 0));
+    const GLenum target =
+        static_cast<GLenum>(SDL_GetNumberProperty(props, SDL_PROP_TEXTURE_OPENGLES2_TEXTURE_TARGET_NUMBER, GL_TEXTURE_2D));
+    float tw = 0, th = 0;
+    if (name == 0 || !SDL_GetTextureSize(view.texture, &tw, &th) || tw <= 0 || th <= 0) return false;
+    const TextureProgram& p = g_texture_programs[target == GL_TEXTURE_EXTERNAL_OES ? 1 : 0];
+    if (p.program == 0) return false;
+    SDL_BlendMode blend = SDL_BLENDMODE_NONE;
+    SDL_GetTextureBlendMode(view.texture, &blend);
+    SDL_FlushRenderer(g_renderer);
+    glUseProgram(p.program);
+    glViewport(0, 0, out_w, out_h);
+    glDisable(GL_SCISSOR_TEST);
+    if (blend == SDL_BLENDMODE_BLEND) {  // (SDL's BLEND; NONE: as written)
+        glEnable(GL_BLEND);
+        glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+        glBlendEquation(GL_FUNC_ADD);
+    } else {
+        glDisable(GL_BLEND);
+    }
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(target, name);
+    glTexParameteri(target, GL_TEXTURE_MIN_FILTER, GL_LINEAR);  // (SDL_SCALEMODE_LINEAR, as every screen texture is set)
+    glTexParameteri(target, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(target, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(target, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glUniform1i(p.u_tex, 0);
+    const float x0 = 2.0f * dst.x / out_w - 1.0f, x1 = 2.0f * (dst.x + dst.w) / out_w - 1.0f;  // (the window: y down)
+    const float y0 = 1.0f - 2.0f * dst.y / out_h, y1 = 1.0f - 2.0f * (dst.y + dst.h) / out_h;
+    glUniform4f(p.u_rect, x0, y0, x1, y1);
+    glUniform4f(p.u_uv, view.source.x / tw, view.source.y / th, (view.source.x + view.source.w) / tw,
+                (view.source.y + view.source.h) / th);
+    glUniform1f(p.u_alpha, alpha / 255.0f);
+    SetFilterUniforms(p.u_f0, p.u_f1, p.u_f2, p.u_fg);
+    glDisableVertexAttribArray(1);
+    glDisableVertexAttribArray(2);
+    glBindBuffer(GL_ARRAY_BUFFER, g_corners);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
+    glEnableVertexAttribArray(0);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glEnableVertexAttribArray(1);
+    glBindTexture(target, 0);
+    return true;
 }
 
 // MH4N_TARGET_SCREENS_CHECK's comparisons
@@ -902,10 +1097,28 @@ struct Check {
 
 void shared_screens_draw(SharedScreenView& view, const SDL_FRect& dst, int win_w, int win_h, Uint8 alpha) {
     if (view.target) {
-        DrawTarget(view, dst, win_w, win_h, /*into_texture=*/false, alpha);
+        DrawTarget(view, dst, win_w, win_h, /*into_texture=*/false, alpha, /*no_cut=*/false, /*colour=*/g_colour_on);
     } else if (view.texture != nullptr) {
+        if (g_colour_on && DrawTextureFiltered(view, dst, win_w, win_h, alpha)) return;
         SDL_SetTextureAlphaMod(view.texture, alpha);
         SDL_RenderTexture(g_renderer, view.texture, &view.source, &dst);
+    }
+}
+
+void shared_screens_set_colour(const ColourAdjust& colour) {
+    if (!std::memcmp(&colour, &g_colour, sizeof colour)) return;
+    g_colour = colour;
+    g_colour_on = !colour_neutral(&colour);
+    if (g_colour_on) colour_matrix(&colour, &g_colour_matrix);
+}
+
+void shared_screens_draw_upright(SharedScreenView& view, int w, int h) {
+    const SDL_FRect all{0, 0, static_cast<float>(w), static_cast<float>(h)};
+    if (view.target) {
+        DrawTarget(view, all, w, h, /*into_texture=*/true, 255);
+    } else if (view.texture != nullptr) {
+        SDL_SetTextureAlphaMod(view.texture, 255);
+        SDL_RenderTexture(g_renderer, view.texture, &view.source, &all);
     }
 }
 
@@ -978,12 +1191,24 @@ void shared_screens_check(SharedScreenView& view, const SDL_FRect& dst, int win_
         }
     }
     // MH4U_TARGET_BENCH=1 (with the check): each way of drawing the screen timed alone on the GPU (8 draws between two
-    // glFinish): the upright copy as SDL draws it, the target turned here, and the target in one filtered sample
+    // glFinish): the upright copy as SDL draws it, the target turned here, the target in one filtered sample, and (1.0.1)
+    // the colour filter's: the target turned with it, and the upright copy with it (DrawTextureFiltered: a screen SDL would
+    // draw). With the filter off, a test filter (saturation +20) for those two, put back after.
     static const bool bench = [] { const char* v = std::getenv("MH4U_TARGET_BENCH"); return v != nullptr && *v == '1'; }();
     if (bench) {
         SDL_SetRenderTarget(g_renderer, g_check.texture);
-        double ms[3] = {};
-        for (int way = 0; way < 3; ++way) {
+        const bool was_on = g_colour_on;
+        const ColourMatrix was_matrix = g_colour_matrix;
+        if (!was_on) {
+            ColourAdjust test{};
+            test.saturation = 20;
+            colour_matrix(&test, &g_colour_matrix);
+        }
+        SharedScreenView copy_view = view;  // (the upright copy as a screen SDL would draw: DrawTextureFiltered's)
+        copy_view.texture = upright;
+        copy_view.target = false;
+        double ms[5] = {};
+        for (int way = 0; way < 5; ++way) {
             SDL_FlushRenderer(g_renderer);
             glFinish();
             const std::uint64_t start = NowUs();
@@ -991,18 +1216,22 @@ void shared_screens_check(SharedScreenView& view, const SDL_FRect& dst, int win_
                 if (way == 0) {
                     SDL_RenderTexture(g_renderer, upright, &view.source, &dst);
                     SDL_FlushRenderer(g_renderer);
+                } else if (way == 4) {
+                    DrawTextureFiltered(copy_view, dst, win_w, win_h, 255);
                 } else {
-                    DrawTarget(view, dst, win_w, win_h, /*into_texture=*/true, 255, /*no_cut=*/way == 2);
+                    DrawTarget(view, dst, win_w, win_h, /*into_texture=*/true, 255, /*no_cut=*/way == 2, /*colour=*/way == 3);
                 }
             }
             SDL_FlushRenderer(g_renderer);
             glFinish();
             ms[way] = (NowUs() - start) / 8000.0;
         }
+        g_colour_matrix = was_matrix;
         SDL_SetRenderTarget(g_renderer, before);
         std::fprintf(stderr,
-                     "[Info] App: target bench: the upright copy drawn %.3f ms, the target turned %.3f ms, in one sample %.3f ms\n",
-                     ms[0], ms[1], ms[2]);
+                     "[Info] App: target bench: the upright copy drawn %.3f ms, the target turned %.3f ms, in one sample %.3f ms; "
+                     "with the colour filter: the target turned %.3f ms, the upright copy %.3f ms\n",
+                     ms[0], ms[1], ms[2], ms[3], ms[4]);
     }
     if (ra != nullptr) SDL_DestroySurface(ra);
     if (rb != nullptr) SDL_DestroySurface(rb);
@@ -1123,10 +1352,13 @@ void shared_screens_frame_done() {
         p_eglDestroySyncKHR(Display(), r.fence);
         g_retiring.pop_front();  // the picture goes: the renderer may draw into its buffer again
     }
-    // imports of buffers not shown for a few seconds (the renderer made others: a new size, a pool that shrank)
+    // imports of buffers not shown for a few seconds (the renderer made others: a new size, a pool that shrank), but not
+    // one whose picture a view still shows: while the game waits (the settings or the layout editor open) the window
+    // goes on presenting the same picture, and after 600 frames (10 s at 60 Hz) its texture was deleted under it and
+    // the game behind the menu went black (1.0.1, a Moto g06)
     if (g_frame % 120 == 0) {
         for (auto it = g_imports.begin(); it != g_imports.end();) {
-            if (g_frame - it->second.last_used > 600) {
+            if (g_frame - it->second.last_used > 600 && it->second.shown.expired()) {
                 SyncWithSdl();
                 DropImport(it->second);
                 it = g_imports.erase(it);

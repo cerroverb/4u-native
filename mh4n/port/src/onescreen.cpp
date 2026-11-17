@@ -27,6 +27,7 @@
 #include <iterator>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include <fmt/format.h>
 
@@ -98,8 +99,17 @@ constexpr u32 GAME_CONTROL_MODE = 0x2b;           // u8: 1 a quest, 5 its result
 // x (the screen's height) and y (its width). The draw's constant room: cDraw + 0x14 the next free byte, + 0x18 the end.
 constexpr u32 CDRAW_SHADER = 0x08, CDRAW_ROOM = 0x14, CDRAW_ROOM_END = 0x18, CDRAW_VIEWPORT = 0x824,
               CDRAW_DIRTY = 0x188;
+// (draw, size): a new room for the draw's constants when its own has less than size bytes left, from the game's frame
+// allocator (nLayout::objectConstants calls it so for the object's own constants before it takes them)
+GameAddr FN_ROOM_MORE{0x005deb68};
 constexpr u32 SHADER_VIEWPORT_LAYOUT = 0x614;   // the shader's description of that block: its size in words at + 0x14
 constexpr u32 PROJ = 16;                        // the projection's first float in the block
+// The draw's render state (0x005e560c copies cDraw + 0x120 .. + 0x15f into the draw's packet when + 0x128 has bit 3,
+// and clears it): + 0x12c the viewport, + 0x13c the scissor, each (x0, y0, x1, y1) in the rotated target's pixels
+// (x the screen's height, y its width, from its right edge). uLayout::draw's 0x00b048b8 sets the scissor to the
+// viewport at the start of each pass.
+constexpr u32 CDRAW_STATE = 0x128, CDRAW_STATE_SCISSOR = 8, CDRAW_VIEWPORT_RECT = 0x12c, CDRAW_SCISSOR = 0x13c;
+constexpr u32 CONSOLE_ROWS = 400;               // the console's top screen: 400 pixels wide (the target's rows)
 // A group's panes (Heavenfall's game_gui.h): + 0x08 the group's first; a pane's + 0x00 name hash, + 0x08 its kind's data,
 // + 0x0C its draw node (+ 0x12 = 3 redraws it), + 0x10 its kind (0 sprite, 1 null, 2 text), + 0x14 the next, + 0x20 its
 // first child. Shown: a sprite's data + 0x58 bit 7, a null's + 0x24 bit 0, a text's + 0x5C bit 28.
@@ -160,9 +170,35 @@ struct Swap {
     u32 draw = 0, game = 0, ours = 0;
 } swap;
 
+/// This frame's copies of the pass's constants, one per (draw, pass constants, move): the groups that share a place
+/// (a layout's groups, a frame's, ui006's) share one copy. Each copy takes 0xa0 bytes of the draw's constant room,
+/// which the game fills with its own; with a copy a group, the room ran out in a full menu (the quest counter with its
+/// yes / no box: seen on the PC runner and the phones) and the groups after were drawn where the game puts them
+/// (unscaled, unmoved: the quest card at the game's size under the yes / no plates).
+struct Copy {
+    u32 draw, game, end;  // (end: the room's end when it was made; another room, another copy)
+    float scale, tx, ty;
+    u32 at, check;        // where it is, and the xor of its words (still ours: nothing wrote over it)
+};
+std::vector<Copy> copies;  // (this frame's)
+
+/// In a picture wider than the console's screen, the groups placed on the top screen this frame: each is drawn with the
+/// scissor cut to the console's 400 pixels (the game parks some panels just off the screen it made them for, and a
+/// wider picture showed them at its sides), and the next group gets the game's scissor back.
+std::unordered_set<u32> cuts;  // group addresses (this frame's)
+struct ScissorSwap {
+    u32 draw = 0;
+    u32 game[4] = {}, ours[4] = {};
+    bool on = false;
+} scissor;
+
 bool was_on = false;
 u32 frames_on = 0;
 std::string last_screens;
+bool cut_logged = false;  // (the first cut goes to the log, from the next Frame)
+std::string cut_line;
+std::unordered_set<u32> unmoved;  // groups once drawn unmoved (for the log)
+std::string unmoved_line;
 
 int NameIndex(u32 hash) {
     const auto* begin = std::begin(Table::kNames);
@@ -310,12 +346,53 @@ void GiveAllBack(RCtx* ctx) {
     }
     notes.clear();
     moves.clear();
+    cuts.clear();
+    copies.clear();
     hidden.clear();
+}
+
+/// The scissor of the draw's next group: the console's 400 pixels in the middle of a wider picture (`cut`), or the
+/// game's own back after a group that had them. What the game set in between (a list's own scissor) is left as it is.
+void Cut(RCtx* ctx, u32 draw, bool cut) {
+    u32 now[4];
+    for (u32 i = 0; i < 4; ++i) now[i] = rd32(ctx, draw + CDRAW_SCISSOR + 4 * i);
+    const bool ours = scissor.on && scissor.draw == draw && std::equal(now, now + 4, scissor.ours);
+    if (!cut) {
+        if (ours) {
+            for (u32 i = 0; i < 4; ++i) wr32(ctx, draw + CDRAW_SCISSOR + 4 * i, scissor.game[i]);
+            wr32(ctx, draw + CDRAW_STATE, rd32(ctx, draw + CDRAW_STATE) | CDRAW_STATE_SCISSOR);
+        }
+        if (scissor.draw == draw) scissor.on = false;
+        return;
+    }
+    if (!ours) std::copy(now, now + 4, scissor.game);  // (the game's: kept while the next groups are cut too)
+    const u32* game = scissor.game;
+    // the console's rows: centred in the viewport's (the picture's width), within the game's scissor
+    const u32 v0 = rd32(ctx, draw + CDRAW_VIEWPORT_RECT + 4), v1 = rd32(ctx, draw + CDRAW_VIEWPORT_RECT + 12);
+    if (v1 <= v0 + CONSOLE_ROWS || v1 > 0x1000) {
+        scissor.on = false;
+        return;
+    }
+    const u32 first = v0 + (v1 - v0 - CONSOLE_ROWS) / 2;
+    const u32 lo = std::max(game[1], first), hi = std::max(lo, std::min(game[3], first + CONSOLE_ROWS));
+    const u32 want[4] = {game[0], lo, game[2], hi};
+    scissor.draw = draw;
+    scissor.on = true;
+    std::copy(want, want + 4, scissor.ours);
+    if (!std::equal(now, now + 4, want)) {
+        for (u32 i = 0; i < 4; ++i) wr32(ctx, draw + CDRAW_SCISSOR + 4 * i, want[i]);
+        wr32(ctx, draw + CDRAW_STATE, rd32(ctx, draw + CDRAW_STATE) | CDRAW_STATE_SCISSOR);
+    }
+    if (!cut_logged) {
+        cut_logged = true;
+        cut_line = fmt::format("one screen: the menus cut to the console's {} pixels of a {}-pixel picture",
+                               CONSOLE_ROWS, v1 - v0);
+    }
 }
 
 }  // namespace
 
-std::string Frame(RCtx* ctx, bool on) {
+std::string Frame(RCtx* ctx, bool on, bool wide) {
     if (!on) {
         if (was_on) {
             GiveAllBack(ctx);
@@ -329,6 +406,8 @@ std::string Frame(RCtx* ctx, bool on) {
     const u32 list = main ? rd32(ctx, main + ULAYOUT_GROUPS) : 0;
     const u32 count = main ? rd32(ctx, main + ULAYOUT_GROUP_COUNT) : 0;
     moves.clear();
+    cuts.clear();
+    copies.clear();
     if (list == 0 || count == 0 || count > 0x2000) return {};
     std::string line;
     if (!was_on) {
@@ -353,6 +432,18 @@ std::string Frame(RCtx* ctx, bool on) {
         shown[n] = rd8(ctx, PROMPT_OWNER + PROMPT_BOUND) != 0 && rd8(ctx, PROMPT_OWNER + PROMPT_KIND0) == 3 &&
                    rd8(ctx, PROMPT_OWNER + PROMPT_KIND1) == 6;
     }
+    // (MH4N_ONESCREEN_TRACE=1: the log says when ui006's button kinds or their binding change, for the PC runner)
+    static const bool trace = std::getenv("MH4N_ONESCREEN_TRACE") != nullptr;
+    if (trace) {
+        static u32 last_kinds = ~0u;
+        const u32 kinds = rd8(ctx, PROMPT_OWNER + PROMPT_BOUND) << 16 | rd8(ctx, PROMPT_OWNER + PROMPT_KIND0) << 8 |
+                          rd8(ctx, PROMPT_OWNER + PROMPT_KIND1);
+        if (kinds != last_kinds) {
+            last_kinds = kinds;
+            line += fmt::format("{}one screen: ui006 kinds {} {} bound {}", line.empty() ? "" : "; ", kinds >> 8 & 0xFF,
+                                kinds & 0xFF, kinds >> 16);
+        }
+    }
     if (const int n = NameIndex(PSEUDO_QUEST); n >= 0) {
         const u32 control = rd32(ctx, GAME_CONTROL);
         const u32 mode = control ? rd8(ctx, control + GAME_CONTROL_MODE) : 0;
@@ -376,8 +467,9 @@ std::string Frame(RCtx* ctx, bool on) {
     if (screens != last_screens) {
         last_screens = screens;
         static int logged = 0;
-        if (line.empty() && logged < 200) {
-            line = "one screen: screens " + screens + (++logged == 200 ? " (no more of these)" : "");
+        if ((line.empty() || trace) && logged < 200) {
+            line += (line.empty() ? "" : "; ") + ("one screen: screens " + screens) +
+                    (++logged == 200 ? " (no more of these)" : "");
         }
     }
 
@@ -434,10 +526,18 @@ std::string Frame(RCtx* ctx, bool on) {
         } else {
             GiveBackPriority(ctx, group, note);
         }
-        if (want == VIEW_TOP && (place.scale != 1.0f || place.tx[0] != 0 || place.tx[1] != 0 || place.ty != 0)) {
+        // (MH4N_ONESCREEN_UNMOVED=<name hash>: that group is not moved, as when the draw has no room left for its
+        // constants, for the PC runner)
+        static const u32 unmoved_test = [] {
+            const char* v = std::getenv("MH4N_ONESCREEN_UNMOVED");
+            return v ? static_cast<u32>(std::strtoul(v, nullptr, 16)) : 0u;
+        }();
+        if (want == VIEW_TOP && (place.scale != 1.0f || place.tx[0] != 0 || place.tx[1] != 0 || place.ty != 0) &&
+            (unmoved_test == 0 || rd32(ctx, group) != unmoved_test)) {
             const int own = note.game_view == VIEW_TOUCH ? 1 : 0;
             moves[group] = Move{place.scale, place.tx[own], place.ty};
         }
+        if (want == VIEW_TOP && wide) cuts.insert(group);
         for (auto& [pane, h] : hidden) {
             if (h.group == group) h.seen = true;
         }
@@ -454,7 +554,13 @@ std::string Frame(RCtx* ctx, bool on) {
         if (h.seen) ShowAgain(ctx, it->first, h);
         it = hidden.erase(it);
     }
+    if (line.empty() && !cut_line.empty()) line = std::move(cut_line), cut_line.clear();
+    if (!unmoved_line.empty()) line += (line.empty() ? "" : "; ") + unmoved_line, unmoved_line.clear();
     return line;
+}
+
+void ObjectScissor(RCtx* ctx, u32 object, u32 draw, u32 screen) {
+    Cut(ctx, draw, screen == 0 && cuts.count(object) != 0);
 }
 
 void ObjectConstants(RCtx* ctx, u32 object, u32 draw, u32 constants, u32 screen) {
@@ -472,15 +578,56 @@ void ObjectConstants(RCtx* ctx, u32 object, u32 draw, u32 constants, u32 screen)
     const u32 shader = rd32(ctx, draw + CDRAW_SHADER);
     const u32 layout = shader ? rd32(ctx, shader + SHADER_VIEWPORT_LAYOUT) : 0;
     const u32 size = layout ? ((rd32(ctx, layout + 0x14) & 0xFFFF) * 4 + 15) & ~15u : 0;
-    const u32 at = rd32(ctx, draw + CDRAW_ROOM);
-    if (game == 0 || size < (PROJ + 16) * 4 || size > 0x400 || at + size > rd32(ctx, draw + CDRAW_ROOM_END)) {
-        return;  // (no room: drawn where the game puts it this frame)
+    u32 at = rd32(ctx, draw + CDRAW_ROOM);
+    u32 end = rd32(ctx, draw + CDRAW_ROOM_END);
+    const Move& m = it->second;
+    const auto words_xor = [&](u32 from) {
+        u32 x = 0;
+        for (u32 i = 0; i < size; i += 4) x ^= rd32(ctx, from + i) * (i + 1);
+        return x;
+    };
+    // a copy made this frame for the same pass constants and the same move: shared (it lies below the room's next
+    // free byte, in the same room, and nothing wrote over it)
+    for (const Copy& c : copies) {
+        if (c.draw == draw && c.game == game && c.end == end && c.scale == m.scale && c.tx == m.tx && c.ty == m.ty &&
+            c.at + size <= at && size >= (PROJ + 16) * 4 && size <= 0x400 && words_xor(c.at) == c.check) {
+            wr32(ctx, draw + CDRAW_VIEWPORT, c.at);
+            wr32(ctx, draw + CDRAW_DIRTY, rd32(ctx, draw + CDRAW_DIRTY) | 1);
+            swap = Swap{draw, game, c.at};
+            return;
+        }
+    }
+    // (only where the library knows the function's address: a library of another version made before the port listed
+    // it has none, and USA v1.3.0's would be another function there)
+    const auto& table = GameAddressTable();
+    const bool room_more_known =
+        table.empty() || std::binary_search(table.begin(), table.end(),
+                                            std::make_pair(FN_ROOM_MORE.Usa(), GameAddress(FN_ROOM_MORE.Usa())));
+    if (room_more_known && game != 0 && size >= (PROJ + 16) * 4 && size <= 0x400 && at + size > end) {
+        // the room is full: a new one, as the game takes one for its own constants (the copies of this frame in the
+        // full room stay where they are; this room's are made anew)
+        CallGame(ctx, FN_ROOM_MORE, draw, size);
+        at = rd32(ctx, draw + CDRAW_ROOM);
+        end = rd32(ctx, draw + CDRAW_ROOM_END);
+        static bool refill_logged = false;
+        if (!refill_logged) {
+            refill_logged = true;
+            unmoved_line = fmt::format("one screen: the draw's constant room was full: a new one from the game's "
+                                       "allocator, {:08X}..{:08X}", at, end);
+        }
+    }
+    if (game == 0 || size < (PROJ + 16) * 4 || size > 0x400 || at == 0 || at + size > end) {
+        // (no room: drawn where the game puts it this frame; the log says so for the first few groups)
+        if (unmoved.size() < 8 && unmoved.insert(rd32(ctx, object)).second) {
+            unmoved_line = fmt::format("one screen: group {:08X} drawn unmoved (constants {:08X}, size {:#x}, room "
+                                       "{:08X}..{:08X})", rd32(ctx, object), game, size, at, end);
+        }
+        return;
     }
     wr32(ctx, draw + CDRAW_ROOM, at + size);
     for (u32 i = 0; i < size; i += 4) wr32(ctx, at + i, rd32(ctx, game + i));
     // pixels p of the top screen go to scale * (p - centre) + centre + (tx, ty): the projection's two rows scaled,
     // then moved (its x row is the screen's height, up; its y row the screen's width, to the left)
-    const Move& m = it->second;
     const float m00 = F(ctx, game + 4 * (PROJ + 0)), m11 = F(ctx, game + 4 * (PROJ + 5));
     for (u32 column = 0; column < 4; ++column) {
         for (u32 row = 0; row < 2; ++row) {
@@ -493,6 +640,7 @@ void ObjectConstants(RCtx* ctx, u32 object, u32 draw, u32 constants, u32 screen)
     wr32(ctx, draw + CDRAW_VIEWPORT, at);
     wr32(ctx, draw + CDRAW_DIRTY, rd32(ctx, draw + CDRAW_DIRTY) | 1);
     swap = Swap{draw, game, at};
+    if (copies.size() < 64) copies.push_back(Copy{draw, game, end, m.scale, m.tx, m.ty, at, words_xor(at)});
 }
 
 }  // namespace Port::OneScreen

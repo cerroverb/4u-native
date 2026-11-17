@@ -1,6 +1,8 @@
 // The port's options while the game runs (game_options.h).
 #include "game_options.h"
+#include "diag.h"
 
+#include <cstdio>
 #include <fstream>
 #include <map>
 #include <mutex>
@@ -21,9 +23,10 @@ std::vector<std::pair<std::string, std::string>> g_queue;  // for the game's thr
 const char* const kLive[] = {"fps", "refresh_rate", "steady", "dither", "antialiasing", "fov", "render_flags_set", "render_flags_clear", "kick",
                              "target", "skip", "skip_panel", "skip_hint", "touch_overlay", "quest_overlay",
                              "target_overlay", "hud_edges", "bloom", "motion_blur", "depth_of_field", "radial_blur",
-                             "haze", "skip_end", "skip_end_hold", "qol_hold_gather", "qol_flex_cancel",
+                             "haze", "skip_end", "skip_end_hold", "gather_all", "qol_hold_gather", "qol_flex_cancel",
                              "qol_sharpen_cancel", "qol_rewards_no_limit", "rewards_send_all",
-                             "single_screen", "effects"};
+                             "single_screen", "effects", "monsters_on_map", "damage_numbers",
+                             "monster_health_bar"};
 
 std::string Trim(std::string s) {
     while (!s.empty() && (s.back() == ' ' || s.back() == '\t' || s.back() == '\r')) s.pop_back();
@@ -93,7 +96,15 @@ bool game_option_preview(const std::string& key, const std::string& value) {
 
 bool game_option_set(const std::string& key, const std::string& value) {
     std::lock_guard lock(g_mutex);
-    if (!g_ini.empty()) WriteIni(key, value);
+    if (!g_ini.empty()) {
+        // (1.0.1, diag) a change, with the session's time ([settings] in log.txt)
+        const auto before = diag_read_ini(g_ini);
+        const auto was = before.find(key);
+        if (was == before.end() || was->second != value)
+            std::fprintf(stderr, "[settings] %s mh4u.ini changed: %s %s -> %s\n", diag_clock(), key.c_str(),
+                         was == before.end() ? "(none)" : diag_mask(was->second).c_str(), diag_mask(value).c_str());
+        WriteIni(key, value);
+    }
     if (game_option_needs_restart(key)) return false;
     g_queue.emplace_back(key, value);
     return true;

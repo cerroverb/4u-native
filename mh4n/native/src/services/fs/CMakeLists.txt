@@ -29,6 +29,7 @@ mh4n_module(
         archive_savedata.cpp
         archive_selfncch.cpp
         disk_file.cpp
+        dlc_titles.cpp
         dump_source.cpp
         fs_dir.cpp
         fs_file.cpp

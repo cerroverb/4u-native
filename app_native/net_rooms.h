@@ -5,25 +5,34 @@
 //
 // No room server is built in: a room's address is the player's to type, or picked from a lobby's list or this Wi-Fi's.
 // The lobby comes set to a community one (settings_panel.cpp DEFAULT_LOBBY), and the player can type another or none.
-// Everything here runs on the app's main thread (the interface's), but for the lobby's fetch, which has its own.
+//
+// Hubs (mh4n/hubs.h, 1.0.1): a room this phone hosts on its loopback, listed on a hub server (MHGU's: the same server
+// software, and by default the same community instance) and reached through it, so nobody forwards a port. Joining one
+// is joining its room through the runtime's tunnel; everything else (the hunters, the chat, the game's Local Play) is the
+// room's. The hub server comes set to a community one too (settings_panel.cpp DEFAULT_HUB_SERVER).
+//
+// Everything here runs on the app's main thread (the interface's), but for the lobby's and the hub server's fetches,
+// which have their own.
 #pragma once
 #include <cstdint>
 #include <string>
 #include <vector>
 
+#include "mh4n/hubs.h"
 #include "mh4n/rooms.h"
 
 // Something the room said, or this phone did in it, for the chat and the notices over the game
 struct NetLine {
-    enum Kind { Chat, Mine, Joined, Left, Kicked, Banned, Failed, YouJoined, YouLeft } kind = Chat;
+    enum Kind { Chat, Mine, Joined, Left, Kicked, Banned, Failed, YouJoined, YouLeft, HubFailed } kind = Chat;
     std::string nick, text;  // who; what they said (Chat, Mine), the room's name (YouJoined)
     mh4n::rooms::Error error = mh4n::rooms::Error::None;  // (Failed)
+    mh4n::hubs::JoinError hub_error = mh4n::hubs::JoinError::None;  // (HubFailed)
     double time = 0;         // seconds since the app started, when it came
     unsigned serial = 0;     // goes up by one with each line
 };
 
 // Why a join or a host request was not even tried
-enum class NetProblem { None, Nickname, Address, Port, PortBusy };
+enum class NetProblem { None, Nickname, Address, Port, PortBusy, NoGame, NoServer };
 
 // Each frame, whether the settings are open or not: the room's events into the lines (the last 60).
 void net_poll();
@@ -54,3 +63,25 @@ struct NetLobby {
 };
 void net_lobby_fetch(const std::string& url);
 NetLobby net_lobby();
+
+// ---- hubs
+// The hubs a hub server lists for this game's region (public ones), fetched on a thread of its own; also the menu's
+// Check hub server (the state, the round trip and how many)
+struct NetHubs {
+    bool busy = false, done = false;
+    std::string server;
+    mh4n::hubs::ListResult list;
+};
+void net_hubs_fetch(const std::string& server);
+NetHubs net_hubs();
+// Joins a listed hub (a room or hub of this phone's is closed first)
+NetProblem net_hub_join(const std::string& server, const mh4n::hubs::Hub& hub, const std::string& nickname,
+                        const std::string& password);
+// Opens a room on this phone (UDP `port`: on the loopback only, or on every address when `crossplay`, for Azahar and
+// Citra players too), lists it on `server` as a hub and joins it
+NetProblem net_hub_create(const std::string& server, const std::string& name, const std::string& tags, int slots,
+                          const std::string& nickname, const std::string& password, const std::string& port, bool crossplay);
+void net_hub_close();  // stops listing the hub and closes its room
+bool net_in_hub();     // in (or joining) a hub's room, through the tunnel
+bool net_hosting_hub();
+bool net_room_on_lan();  // the room this phone hosts takes players at its own address (not a hub's on the loopback)

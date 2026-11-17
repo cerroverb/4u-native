@@ -182,6 +182,8 @@ void FsState::Init(ServiceContext& context) {
              folder.empty() ? "(none)" : "set",
              game.romfs ? "yes" : "no", game.update_romfs ? "yes" : "no", game.icon ? "yes" : "no");
 
+    dlc.Scan(*this, context.GetOptions().All("--dlc-folder"));
+
     for (const auto& [name, provider] : Registry<ArchiveProvider>::Instance().All()) {
         if (!archives.Register(provider.id_code, provider.make(*this))) {
             MH4N_LOG(Error, kLog, "archive id 0x{:08X} is registered twice ({})", provider.id_code, name);

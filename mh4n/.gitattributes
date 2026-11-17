@@ -1,5 +1,12 @@
 # Windows batch files need CRLF line endings
 *.bat text eol=crlf
+# Shell scripts need LF line endings: bash stops at the first carriage return of a CRLF script, which is what a
+# Windows checkout with core.autocrlf=true writes (setup_env.sh, the Docker room entrypoint, the unix build and host
+# scripts)
+*.sh text eol=lf
+# A patch is applied byte for byte (port/azahar/azahar.patch, with git apply, to the pinned Azahar sources): a Windows
+# checkout with core.autocrlf=true must not give it CRLF line ends
+*.patch -text
 # The vendored copies under native/third_party/rhi (plume, VMA, volk) are compared byte for byte
 # (tools/native/rhi_patches.py check and blobs, git blob ids, sha256): a Windows checkout with
 # core.autocrlf=true must not rewrite them (N2-25).

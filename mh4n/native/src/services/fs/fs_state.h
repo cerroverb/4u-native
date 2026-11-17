@@ -29,6 +29,7 @@
 #include <memory>
 #include <string>
 
+#include "dlc_titles.h"
 #include "fs_types.h"
 #include "mh4n/service.h"
 #include "positioned_file.h"
@@ -134,6 +135,8 @@ struct FsState {
     // layout; empty: user_folder's sdmc/. The NAND (the console's config: its unique ID, the MAC address) stays in
     // user_folder, so two devices that share a save folder keep their own.
     std::string sdmc_folder;
+    // The add-on content titles found in the player's folders (dlc_titles.h), looked up once by Init.
+    DlcTitles dlc;
     ArchiveManager archives;
     std::unique_ptr<IoPool> pool;
 

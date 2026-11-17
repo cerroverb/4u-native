@@ -76,6 +76,7 @@
 //    structure is zero (Azahar leaves it uninitialised).
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
@@ -88,11 +89,13 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "../../kernel/deterministic.h"  // kernel_detail::ScheduleThreadSafe (the runtime module reaches it the same way)
 #include "mh4n/cfg.h"
 #include "mh4n/clock.h"
+#include "mh4n/hubs.h"
 #include "mh4n/ipc.h"
 #include "mh4n/kernel.h"
 #include "mh4n/loader.h"
@@ -1570,6 +1573,15 @@ MH4N_OPTION("runner", "--room-host", "PORT",
 MH4N_OPTION("runner", "--nick", "NAME",
             "nickname in the room, 4 to 20 letters, digits, spaces, '.', '_' or '-' (default \"runner\")");
 MH4N_OPTION("runner", "--room-password", "TEXT", "the room's password (with --room-join or --room-host)");
+MH4N_OPTION("runner", "--hub-host", "SERVER",
+            "host a hub listed on this hub server (NAME[:PORT], 39510 without a port): a room on the loopback "
+            "interface (UDP --hub-room-port, default 24872) that players reach through the server (mh4n/hubs.h)");
+MH4N_OPTION("runner", "--hub-join", "SERVER",
+            "join a hub of this hub server before the game starts: the first one it lists (or the one named by "
+            "--hub-name), waiting up to 60 s for one");
+MH4N_OPTION("runner", "--hub-name", "NAME", "the hub's name (--hub-host), or the hub to join (--hub-join)");
+MH4N_OPTION("runner", "--hub-key", "TEXT", "the hubs' matchmaking key (--hub-host, --hub-join; default: public)");
+MH4N_OPTION("runner", "--hub-room-port", "PORT", "the UDP port of the room a hub hosts on the loopback (default 24872)");
 
 // What ties the runtime's local-wireless service to the process's room client: the listener that hands each frame to
 // the scheduler thread, and the frame callback that gives the shared page the room's MAC address. Owned by the runtime
@@ -1599,6 +1611,127 @@ std::string TitleOf(Runtime& rt) {
     }
 }
 
+// --hub-host / --hub-join: a hub (mh4n/hubs.h) instead of a room, before the game starts, as --room-host / --room-join.
+// The game's program id chooses the hubs' region. A failure ends the run with status 5.
+bool HubFromOptions(Runtime& rt, const std::string& console_id_hash, u64 program_id) {
+    const Options& options = rt.GetOptions();
+    const bool host = options.Has("--hub-host");
+    const bool join = options.Has("--hub-join");
+    if (host && join) {
+        MH4N_LOG(Error, kLog, "--hub-host and --hub-join exclude each other");
+        rt.RequestExit(2, "bad hub options");
+        return false;
+    }
+    const std::string nickname = options.GetString("--nick", "runner");
+    if (!rooms::ValidNickname(nickname)) {
+        MH4N_LOG(Error, kLog, "bad --nick: {}", nickname);
+        rt.RequestExit(2, "bad --nick");
+        return false;
+    }
+    const std::string key = options.GetString("--hub-key");
+    const std::string name = options.GetString("--hub-name");
+    rooms::JoinRequest request;
+    request.nickname = nickname;
+    request.password = options.GetString("--room-password");
+    request.console_id_hash = console_id_hash;
+    std::string error;
+    if (host) {
+        const s64 port = options.GetInt("--hub-room-port", rooms::kDefaultPort);
+        if (port <= 0 || port > 65535) {
+            MH4N_LOG(Error, kLog, "bad --hub-room-port: {}", options.GetString("--hub-room-port"));
+            rt.RequestExit(2, "bad --hub-room-port");
+            return false;
+        }
+        rooms::HostRequest room;
+        room.port = static_cast<u16>(port);
+        room.bind_address = "127.0.0.1";  // (only through the hub server)
+        room.name = name.empty() ? "MH4U - " + nickname : name;
+        room.slots = 4;
+        room.password = request.password;
+        room.host_username = nickname;
+        room.preferred_game_id = program_id;
+        if (!rooms::Host(room, &error)) {
+            MH4N_LOG(Error, kLog, "hub: could not open its room on port {}: {}", port, error);
+            rt.RequestExit(5, "could not host a hub");
+            return false;
+        }
+        request.host = "127.0.0.1";
+        request.port = room.port;
+        if (!rooms::Join(request, &error) || !rooms::WaitJoined(10000)) {
+            MH4N_LOG(Error, kLog, "hub: could not join its own room");
+            rt.RequestExit(5, "could not host a hub");
+            return false;
+        }
+        hubs::HostRequest hub;
+        hub.server = options.GetString("--hub-host");
+        hub.key = key;
+        hub.program_id = program_id;
+        hub.room_port = room.port;
+        hub.name = room.name;
+        hub.password = !request.password.empty();
+        hub.app_version = "runner";
+        if (!hubs::Host(hub, &error)) {
+            MH4N_LOG(Error, kLog, "hub: {}", error);
+            rt.RequestExit(5, "could not host a hub");
+            return false;
+        }
+        std::printf("hub: hosting \"%s\" on the hub server %s\n", hub.name.c_str(), hub.server.c_str());
+        std::fflush(stdout);
+        return true;
+    }
+    const std::string server = options.GetString("--hub-join");
+    const hubs::Region region = hubs::RegionOfProgram(program_id);
+    hubs::Hub chosen;
+    for (int tries = 0; tries < 30 && chosen.id == 0; ++tries) {
+        const hubs::ListResult list = hubs::List(server, region, key);
+        for (const hubs::Hub& h : list.hubs) {
+            if (chosen.id == 0 && (name.empty() || h.name == name)) {
+                chosen = h;
+            }
+        }
+        if (chosen.id == 0) {
+            std::this_thread::sleep_for(std::chrono::seconds(2));
+        }
+    }
+    if (chosen.id == 0) {
+        MH4N_LOG(Error, kLog, "hub: no hub{} on {} after 60 s", name.empty() ? "" : " named " + name, server);
+        rt.RequestExit(5, "no hub to join");
+        return false;
+    }
+    hubs::JoinRequest hub_join;
+    hub_join.server = server;
+    hub_join.key = key;
+    hub_join.program_id = program_id;
+    hub_join.hub_id = chosen.id;
+    hub_join.hub_name = chosen.name;
+    hub_join.room = request;
+    if (!hubs::Join(hub_join, &error)) {
+        MH4N_LOG(Error, kLog, "hub: {}", error);
+        rt.RequestExit(5, "could not join the hub");
+        return false;
+    }
+    const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    while (std::chrono::steady_clock::now() < end) {
+        const rooms::Status st = rooms::GetStatus();
+        if ((st.state == rooms::State::Joined || st.state == rooms::State::Moderator) && hubs::InHub(st)) {
+            std::printf("hub: joined \"%s\" through %s as %s, MAC %02X:%02X:%02X:%02X:%02X:%02X\n", chosen.name.c_str(),
+                        server.c_str(), nickname.c_str(), st.mac[0], st.mac[1], st.mac[2], st.mac[3], st.mac[4],
+                        st.mac[5]);
+            std::fflush(stdout);
+            return true;
+        }
+        if (hubs::GetJoinStatus().state == hubs::JoinState::Idle) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    MH4N_LOG(Error, kLog, "hub: could not join \"{}\" ({}, room {})", chosen.name,
+             hubs::JoinErrorName(hubs::GetJoinStatus().error), rooms::ErrorName(rooms::GetStatus().error));
+    hubs::Leave();
+    rt.RequestExit(5, "could not join the hub");
+    return false;
+}
+
 // --room-join / --room-host: the reference runner's, before the game starts (Azahar's local-wireless service talks
 // to the room the client is in when it starts). Waits until the room has taken or refused this console; a failure ends
 // the run with status 5, as the reference's does.
@@ -1606,6 +1739,15 @@ bool JoinFromOptions(Runtime& rt, const std::string& console_id_hash) {
     const Options& options = rt.GetOptions();
     const bool join = options.Has("--room-join");
     const bool host = options.Has("--room-host");
+    const bool hub = options.Has("--hub-host") || options.Has("--hub-join");
+    if (hub && (join || host)) {
+        MH4N_LOG(Error, kLog, "--hub-host / --hub-join and --room-join / --room-host exclude each other");
+        rt.RequestExit(2, "bad room options");
+        return false;
+    }
+    if (hub) {
+        return HubFromOptions(rt, console_id_hash, rt.GetLoader() != nullptr ? rt.GetLoader()->Image().program_id : 0);
+    }
     if (!join && !host) {
         return true;
     }
@@ -1700,6 +1842,7 @@ void StartNwm(Runtime& rt) {
     const std::string console_id_hash = rooms::ConsoleIdHash(cfg::GetConsoleUniqueId(context));
     if (rt.GetLoader() != nullptr) {
         client.SetGameInfo({TitleOf(rt), rt.GetLoader()->Image().program_id});
+        hubs::SetGameProgram(rt.GetLoader()->Image().program_id);  // (the hubs' region)
     }
     if (!JoinFromOptions(rt, console_id_hash)) {
         return;
@@ -1724,6 +1867,12 @@ void StartNwm(Runtime& rt) {
     rt.OnFinish([link] {
         link->Stop();
         rooms::Default().WithdrawConsole();
+        // (a hub of the runner's options: its threads end within a moment)
+        hubs::Leave();
+        hubs::StopHosting();
+        for (int i = 0; i < 40 && hubs::detail::RunningThreads() > 0; ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
     });
 
     SystemPages* pages = rt.Pages();

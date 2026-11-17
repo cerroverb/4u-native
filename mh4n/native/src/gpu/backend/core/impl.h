@@ -80,6 +80,10 @@ struct Backend::Impl : std::enable_shared_from_this<Backend::Impl> {
     bool present_wait_available = false;
     bool display_timing_available = false;
     bool present_wait_measures_display = false;
+    // A pass may begin with a clear as its load op (plume patches 17 and 20: LoadOp::DontCare's colour and a depth clear
+    // over the render area). Off on an Adreno with a Vulkan 1.1 driver (ClearLoadOpsFor, device.cpp): there such a pass
+    // loads its attachments, and its depth clear is a clear command inside it.
+    bool clear_load_ops = true;
     VkPhysicalDeviceLimits limits = {};
     VkPhysicalDevice physical_device = VK_NULL_HANDLE;
 

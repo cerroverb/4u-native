@@ -16,6 +16,7 @@
 #include "chat/chat_overlay.h"
 #include "chat/chat_text.h"
 #include "imgui.h"
+#include "mh4n/hubs.h"
 #include "mh4n/rooms.h"
 #include "net_rooms.h"
 #include "settings_panel.h"
@@ -65,12 +66,20 @@ void chat_app_init() {
 // the room's chat on (both chats start off, and this notice with them: 0.1.9.3 had none)
 void room_notice() {
     static bool was;
-    const bool now = in_room(rooms::GetStatus());
-    if (now && !was && chat::hub_chat())
-        settings_panel_notice("In the room. Now, in the game: go to the Gathering Hall and choose Local Play. One hunter "
-                              "creates a hall, the others search for it there. The chat button talks to the room.",
-                              "Ya estás en la sala. Ahora, en el juego: ve al Gathering Hall y elige Local Play (juego local). "
-                              "Un cazador crea la sala del gremio y los demás la buscan ahí. El botón del chat habla con la sala.");
+    const rooms::Status st = rooms::GetStatus();
+    const bool now = in_room(st);
+    if (now && !was && chat::hub_chat()) {
+        if (mh4n::hubs::InHub(st) || (st.hosting && mh4n::hubs::GetHostStatus().active))  // (1.0.1: a hub is a room too)
+            settings_panel_notice("In the hub. Now, in the game: go to the Gathering Hall and choose Local Play. One hunter "
+                                  "creates a hall, the others search for it there. The chat button talks to the hub.",
+                                  "Ya estás en el hub. Ahora, en el juego: ve al Gathering Hall y elige Local Play (juego local). "
+                                  "Un cazador crea la sala del gremio y los demás la buscan ahí. El botón del chat habla con el hub.");
+        else
+            settings_panel_notice("In the room. Now, in the game: go to the Gathering Hall and choose Local Play. One hunter "
+                                  "creates a hall, the others search for it there. The chat button talks to the room.",
+                                  "Ya estás en la sala. Ahora, en el juego: ve al Gathering Hall y elige Local Play (juego local). "
+                                  "Un cazador crea la sala del gremio y los demás la buscan ahí. El botón del chat habla con la sala.");
+    }
     was = now;
 }
 

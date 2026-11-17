@@ -18,10 +18,13 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <unordered_set>
+#include <vector>
 
 #include "gpu/cpuvertex/geometry_pipeline.h"
+#include "mh4n/ab_switches.h"
 #include "gpu/cpuvertex/native_programs.h"
 #include "gpu/cpuvertex/shader_interpreter.h"
 #include "gpu/pica/regs.h"
@@ -225,6 +228,14 @@ struct CpuVertexRunner::Impl final : public VertexSink {
     std::array<bool, kVertexCacheSize> vertex_cache_valid{};
     std::array<u16, kVertexCacheSize> vertex_cache_ids{};
     std::array<AttributeBuffer, kVertexCacheSize> vertex_cache{};
+    // (opt101) The cache's search by a table: for each 16-bit id, its entry while vertex_slot_stamp says it is this draw's.
+    // Exact while the ids of the valid entries are unique, which holds as long as every vertex of the draw so far is below
+    // 65536 (only a miss stores an id; a larger vertex never hits and is stored under its low 16 bits, which may be an id
+    // another entry has: from then on the draw searches the 64 entries in order, as before). MH4N_VERTEX_CACHE_TABLE=0:
+    // the search in order always.
+    std::vector<u16> vertex_slot_stamp = std::vector<u16>(65536, 0);
+    std::vector<u8> vertex_slot = std::vector<u8>(65536, 0);
+    u16 vertex_stamp = 0;
 
     // ---- the pieces of a run --------------------------------------------------------------------------------------
     void ReadOutputMap(const pica::PicaState& s);
@@ -537,6 +548,15 @@ RunStatus CpuVertexRunner::Impl::RunLoadVertices(gpu::Host& host, const pica::Dr
     // Simple circular-replacement vertex cache
     vertex_cache_valid.fill(false);
     u32 vertex_cache_pos = 0;
+    static const bool cache_table_on = [] {
+        const char* v = std::getenv("MH4N_VERTEX_CACHE_TABLE");
+        return v == nullptr || *v != '0';
+    }();
+    bool cache_table = cache_table_on && is_indexed && !ab::g_vertex_cache_table_off.load(std::memory_order_relaxed);
+    if (cache_table && ++vertex_stamp == 0) {  // (a new stamp each draw; at the wrap the table starts clean)
+        std::fill(vertex_slot_stamp.begin(), vertex_slot_stamp.end(), u16{0});
+        vertex_stamp = 1;
+    }
 
     std::vector<OutputVertex>& vertices = out.vertices;
     // (reserve a draw's worth, at most 64K entries up front: a geometry shader can emit more)
@@ -555,11 +575,20 @@ RunStatus CpuVertexRunner::Impl::RunLoadVertices(gpu::Host& host, const pica::Dr
                 continue;
             }
 
-            for (std::size_t i = 0; i < kVertexCacheSize; ++i) {
-                if (vertex_cache_valid[i] && vertex == vertex_cache_ids[i]) {
-                    vs_output = vertex_cache[i];
+            if (cache_table && vertex > 0xFFFFu) {
+                cache_table = false;  // (stored below under its low 16 bits: the ids may no longer be unique)
+            } else if (cache_table) {
+                if (vertex_slot_stamp[vertex] == vertex_stamp) {
+                    vs_output = vertex_cache[vertex_slot[vertex]];
                     vertex_cache_hit = true;
-                    break;
+                }
+            } else {
+                for (std::size_t i = 0; i < kVertexCacheSize; ++i) {
+                    if (vertex_cache_valid[i] && vertex == vertex_cache_ids[i]) {
+                        vs_output = vertex_cache[i];
+                        vertex_cache_hit = true;
+                        break;
+                    }
                 }
             }
         }
@@ -615,6 +644,15 @@ RunStatus CpuVertexRunner::Impl::RunLoadVertices(gpu::Host& host, const pica::Dr
 
             // Cache the vertex when doing indexed rendering.
             if (is_indexed) {
+                if (cache_table) {
+                    const u16 old_id = vertex_cache_ids[vertex_cache_pos];
+                    if (vertex_cache_valid[vertex_cache_pos] && vertex_slot_stamp[old_id] == vertex_stamp &&
+                        vertex_slot[old_id] == vertex_cache_pos) {
+                        vertex_slot_stamp[old_id] = 0;  // (the entry it had is overwritten)
+                    }
+                    vertex_slot_stamp[static_cast<u16>(vertex)] = vertex_stamp;
+                    vertex_slot[static_cast<u16>(vertex)] = static_cast<u8>(vertex_cache_pos);
+                }
                 vertex_cache[vertex_cache_pos] = vs_output;
                 vertex_cache_valid[vertex_cache_pos] = true;
                 vertex_cache_ids[vertex_cache_pos] = static_cast<u16>(vertex);

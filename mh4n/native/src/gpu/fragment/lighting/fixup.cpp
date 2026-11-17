@@ -1,7 +1,7 @@
 // Derived from Azahar src/video_core/shader/generator/glsl_shader_gen.cpp (GetGSCommonSource, GenerateFixedGeometryShader,
 // the VSUniformBlockDef text and SanitizeVertex) at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-2.0-or-later; the file
 // says "Licensed under GPLv2 or any later version"). The glslang call is written from glslang's public API, after
-// fragment/spirv_compile.cpp.
+// our own fragment/spirv_compile.
 // Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project (glsl_shader_gen.cpp)
 //
 // See fixup.h.

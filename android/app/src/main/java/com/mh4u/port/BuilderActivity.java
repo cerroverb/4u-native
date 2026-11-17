@@ -39,8 +39,10 @@ public class BuilderActivity extends Activity {
     static final String EXTRA_FOLDER = "folder";
     /** Started from the game's settings: the game is running and has to start again to load the new library. */
     static final String EXTRA_FROM_GAME = "from_game";
+    /** Started from the error screen (a library that doesn't match the game's code): once made, Play starts the game. */
+    static final String EXTRA_FROM_ERROR = "from_error";
 
-    private boolean es, fromGame;
+    private boolean es, fromGame, fromError;
     private File folder, game, update;
     /** Which code mods go in: phone_build.py's option (--game-mods, --user-mods) and its folder, or none. */
     private static final class ModChoice {
@@ -52,7 +54,7 @@ public class BuilderActivity extends Activity {
     private LinearLayout stagesBox;
     private TextView summary, status, detail, modRow, rightTitle;
     private ProgressBar bar;
-    private Button go, close, free;
+    private Button go, close, free, again;
     private final Runnable refresh = this::show;
 
     @Override
@@ -61,6 +63,7 @@ public class BuilderActivity extends Activity {
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         es = Look.es();
         fromGame = getIntent().getBooleanExtra(EXTRA_FROM_GAME, false);
+        fromError = getIntent().getBooleanExtra(EXTRA_FROM_ERROR, false);
         String path = getIntent().getStringExtra(EXTRA_FOLDER);
         if (path == null && !BuilderService.job.folder.isEmpty()) path = BuilderService.job.folder;  // (from the notification)
         if (path == null) path = BuilderTools.readText(new File(AppHome.home(this), "game_folder.txt"));
@@ -169,7 +172,7 @@ public class BuilderActivity extends Activity {
         left.addView(modRow);
         Button modButton = Look.button(this, es ? "Cambiar los mods de código" : "Change the code mods", false);
         modButton.setOnClickListener(v -> {
-            if (BuilderService.job.active()) return;
+            if (BuilderService.busy()) return;
             mod = (mod + 1) % mods.size();
             show();
         });
@@ -177,20 +180,39 @@ public class BuilderActivity extends Activity {
         mb.setMargins(0, Look.dp(this, 6), 0, 0);
         left.addView(modButton, mb);
         modButton.setVisibility(mods.size() < 2 ? View.GONE : View.VISIBLE);
+        // Start over: a build that was cut, cancelled or failed leaves its work folder and the record it goes on from
+        // (inputs.txt); this deletes them, so the next build starts from the beginning (the tools stay unless chosen)
+        again = Look.button(this, es ? "Empezar de cero" : "Start over", false);
+        again.setOnClickListener(v -> {
+            if (BuilderService.busy()) return;
+            long size = BuilderService.halfDoneSize(this), tools = Math.max(0, BuilderTools.used(this) - size);
+            Look.notice(this, es ? "¿EMPEZAR DE CERO?" : "START OVER?", es
+                            ? "Se borra lo que dejó la creación sin terminar (" + mb(size) + "): sus archivos de trabajo y el registro "
+                              + "desde donde seguía. La próxima vez que toques Crear, empieza desde el principio.\n\nLas herramientas "
+                              + "descargadas (" + mb(tools) + ") quedan, salvo que elijas borrarlas también. La librería que ya está "
+                              + "en tu carpeta no se toca."
+                            : "What the unfinished build left (" + mb(size) + ") is deleted: its work files and the record it went on "
+                              + "from. The next time you tap Build, it starts from the beginning.\n\nThe downloaded tools (" + mb(tools)
+                              + ") stay, unless you choose to delete them too. The library already in your folder is not touched.",
+                    new Look.Choice(es ? "Empezar de cero" : "Start over", true, () -> clear(false)),
+                    new Look.Choice(es ? "Empezar de cero y borrar las herramientas" : "Start over and delete the tools", false,
+                            () -> clear(true)),
+                    new Look.Choice(es ? "Cancelar" : "Cancel", false, null));
+        });
+        LinearLayout.LayoutParams ab = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, Look.dp(this, 38));
+        ab.setMargins(0, Look.dp(this, 6), 0, 0);
+        left.addView(again, ab);
         // (the tools stay for the next build: this gives their space back; a later build downloads them again)
         free = Look.button(this, "", false);
         free.setOnClickListener(v -> {
-            if (BuilderService.job.active()) return;
+            if (BuilderService.busy()) return;
             long size = BuilderTools.used(this);
             Look.notice(this, es ? "BORRAR LAS HERRAMIENTAS" : "DELETE THE TOOLS", es
                             ? "Se borran las herramientas y lo que haya quedado de una creación (" + mb(size) + "). La librería que "
                               + "ya creaste queda en tu carpeta. Si vuelves a crearla, se descargan otra vez."
                             : "The tools and anything left from a build are deleted (" + mb(size) + "). The library you already "
                               + "made stays in your folder. If you build it again, they are downloaded again.",
-                    new Look.Choice(es ? "Borrar" : "Delete", true, () -> {
-                        BuilderTools.deleteTree(BuilderTools.root(this));
-                        show();
-                    }),
+                    new Look.Choice(es ? "Borrar" : "Delete", true, () -> clear(true)),
                     new Look.Choice(es ? "Cancelar" : "Cancel", false, null));
         });
         LinearLayout.LayoutParams fb = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, Look.dp(this, 38));
@@ -264,6 +286,27 @@ public class BuilderActivity extends Activity {
     }
 
     private static String mb(long bytes) { return (bytes >> 20) + " MB"; }
+
+    /**
+     * Start over (tools: and Delete the tools): BuilderService.startOver on a thread of its own (thousands of files: not
+     * on the main thread), never while a run or its thread is going; meanwhile no run starts (BuilderService.clearing)
+     * and this screen's buttons wait. Then the screen is as before any build: Build, not Go on, and no stages.
+     */
+    private void clear(boolean tools) {
+        if (BuilderService.busy()) return;
+        BuilderService.clearing = true;
+        show();
+        final android.content.Context app = getApplicationContext();
+        final String dest = folder != null ? folder.getAbsolutePath() : BuilderService.job.folder;
+        new Thread(() -> {
+            try {
+                BuilderService.startOver(app, dest, tools);
+            } finally {
+                BuilderService.clearing = false;
+                BuilderService.forget(app);  // (and the screen shown again, on the main thread)
+            }
+        }, "builder-clear").start();
+    }
 
     private long free() {
         try {
@@ -359,12 +402,14 @@ public class BuilderActivity extends Activity {
             detail.setText(t);
         }
 
+        boolean clearing = BuilderService.clearing;
         int percent = j.status.equals("done") ? 100 : ran ? BuilderText.percent(j) : 0;
         bar.setIndeterminate(active && percent < 0);
         bar.setProgress(Math.max(0, percent));
         bar.setVisibility(ran ? View.VISIBLE : View.INVISIBLE);
-        status.setTextColor(j.status.equals("failed") ? Look.ALERT : Look.GOLD);
-        status.setText(active ? BuilderText.status(j, es) + (percent >= 0 ? "  (" + percent + " %)" : "")
+        status.setTextColor(j.status.equals("failed") && !clearing ? Look.ALERT : Look.GOLD);
+        status.setText(clearing ? (es ? "Borrando…" : "Deleting…")
+                : active ? BuilderText.status(j, es) + (percent >= 0 ? "  (" + percent + " %)" : "")
                 : j.status.equals("failed") ? (es ? "Se detuvo en: " : "Stopped at: ") + BuilderText.stage(j.stage, es)
                 : j.status.equals("cancelled") ? (es ? "Cancelada. Puedes seguir cuando quieras." : "Cancelled. You can go on whenever you like.")
                 : j.status.equals("done") ? (es ? "El código del juego está listo." : "The game code is ready.")
@@ -382,10 +427,13 @@ public class BuilderActivity extends Activity {
                     ? (es ? "Seguir" : "Go on") : (es ? "Crear" : "Build"));
             go.setEnabled(ready);
         }
+        if (clearing) go.setEnabled(false);
         close.setText(active ? (es ? "Ocultar" : "Hide") : (es ? "Volver" : "Back"));
-        long used = active ? 0 : BuilderTools.used(this);
+        boolean busy = BuilderService.busy();
+        long used = busy ? 0 : BuilderTools.used(this);
         free.setText((es ? "Borrar las herramientas (" : "Delete the tools (") + mb(used) + ")");
         free.setVisibility(used > (1 << 20) ? View.VISIBLE : View.GONE);
+        again.setVisibility(!busy && BuilderService.halfDone(this) ? View.VISIBLE : View.GONE);
     }
 
     private String es(String spanish, String english) { return es ? spanish : english; }
@@ -415,6 +463,7 @@ public class BuilderActivity extends Activity {
 
     private void press() {
         BuilderService.Job j = BuilderService.job;
+        if (BuilderService.clearing) return;
         if (j.active()) {
             Look.notice(this, es ? "¿CANCELAR?" : "CANCEL?", es
                             ? "Lo ya hecho se guarda: la próxima vez sigue desde donde quedó."
@@ -429,6 +478,12 @@ public class BuilderActivity extends Activity {
             if (fromGame) {  // (the game holds the old library: the app starts again, as Import save does)
                 startActivity(new Intent(this, PhoenixActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                         .putExtra(PhoenixActivity.EXTRA_PID, android.os.Process.myPid()));
+                finish();
+                return;
+            }
+            if (fromError) {  // (the game closed: it starts as from the app's icon, with the new library)
+                Intent start = getPackageManager().getLaunchIntentForPackage(getPackageName());
+                if (start != null) startActivity(start.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK));
                 finish();
                 return;
             }

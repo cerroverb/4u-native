@@ -1,5 +1,7 @@
 // The app's own options, mh4u-app.ini (app_settings.h).
 #include "app_settings.h"
+#include "diag.h"
+#include "colour_filter.h"
 #include "first_run.h"
 
 #include <SDL3/SDL.h>
@@ -104,6 +106,17 @@ std::string app_setting(const char* section, const char* key, const std::string&
     return l && !l->value.empty() ? l->value : fallback;
 }
 
+void app_colour(ColourAdjust* out) {
+    const auto get = [](const char* key, int limit) { return std::clamp(app_setting_int("Colour", key, 0), -limit, limit); };
+    out->hue = get("Hue", COLOUR_HUE_MAX);
+    out->temperature = get("Temperature", COLOUR_MAX);
+    out->tint = get("Tint", COLOUR_MAX);
+    out->brightness = get("Brightness", COLOUR_MAX);
+    out->contrast = get("Contrast", COLOUR_MAX);
+    out->saturation = get("Saturation", COLOUR_MAX);
+    out->gamma = get("Gamma", COLOUR_MAX);
+}
+
 int app_setting_int(const char* section, const char* key, int fallback) {
     const std::string v = app_setting(section, key);
     char* end = nullptr;
@@ -186,6 +199,14 @@ bool app_settings_save(std::string* error) {
     }
     g_version.fetch_add(1);
     std::fprintf(stderr, "[Info] App: settings saved (%s)\n", g_path.c_str());
+    {  // (1.0.1, diag) what changed since the last save (or the start), with the session's time
+        static std::map<std::string, std::string> last;
+        static bool have_last = false;
+        auto now = diag_read_ini(g_path);
+        if (have_last) diag_log_changes("mh4u-app.ini", last, now);
+        last = std::move(now);
+        have_last = true;
+    }
     return true;
 }
 

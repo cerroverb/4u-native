@@ -65,6 +65,7 @@ TEST_CASE("other_services_test needs recomp.h (the repository around native/)" *
 #include "../src/services/cecd/cecd_store.h"
 #include "../src/services/cecd/sha256.h"
 #include "../src/services/y2r/y2r_convert.h"
+#include "support/dlc_title.h"
 #include "../src/cpu/recomp_c.h"  // last: it defines macros
 
 using namespace mh4n;
@@ -419,6 +420,125 @@ TEST_CASE("am:app: the DLC and patch queries find nothing, with Azahar's id chec
     CHECK(unknown[0] == ipc::MakeHeader(0x100A, 1, 0));
     CHECK(unknown[1] == kResultSuccess);
     CHECK(f.Logged("unimplemented am:app"));
+}
+
+TEST_CASE("am:app: an add-on content title the player brought is answered from its title metadata (1.0.1)") {
+    Fixture f;
+    TempDir dir;
+    const std::filesystem::path user = std::filesystem::path(dir.File("user"));
+    // indices 0..4: 0 and 1 readable, 2 encrypted, 3 missing, 4 readable
+    const std::vector<test_dlc::App> apps = {
+        {0, 0x00000000, test_dlc::AppKind::Readable, std::vector<u8>(64, 1)},
+        {1, 0x00000001, test_dlc::AppKind::Readable, std::vector<u8>(64, 2)},
+        {2, 0x00000002, test_dlc::AppKind::Encrypted, std::vector<u8>(64, 3)},
+        {3, 0x00000003, test_dlc::AppKind::Missing, std::vector<u8>(64, 4)},
+        {4, 0x00000004, test_dlc::AppKind::Readable, std::vector<u8>(64, 5)},
+    };
+    test_dlc::WriteTitle(test_dlc::SdTitleRoot(user / "sdmc"), 0x0004008C00000102, 7, apps);
+    std::vector<u32> count_sd, count_nand, count_missing, find, find_bad, list, list_tail, titles, titles_two;
+    std::vector<u8> find_out, list_out, list_tail_out, titles_out;
+    const int status = BootWith(f, dir, {"--ms", "100", "--user", user.string()}, [&] {
+        Guest g(*f.runtime);
+        const Handle srv = ConnectSrv(g);
+        const Handle am = OpenService(g, srv, "am:app");
+        const u32 ids = g.Scratch(0), out = g.Scratch(0x200);
+
+        count_sd = g.Request(am, {ipc::MakeHeader(0x1001, 3, 0), 1, 0x00000102, 0x0004008C}, 3);
+        count_nand = g.Request(am, {ipc::MakeHeader(0x1001, 3, 0), 0, 0x00000102, 0x0004008C}, 3);
+        count_missing = g.Request(am, {ipc::MakeHeader(0x1001, 3, 0), 1, 0x00000103, 0x0004008C}, 3);
+
+        // FindDLCContentInfos for indices 4, 1, 2, 3 (what MH4U asks: a list of indices)
+        g.PutBytes(ids, {4, 0, 1, 0, 2, 0, 3, 0});
+        g.PutBytes(out, std::vector<u8>(0x60, 0xEE));
+        find = g.Request(am,
+                         Cat({{ipc::MakeHeader(0x1002, 4, 4), 1, 0x00000102, 0x0004008C, 4},
+                              Mapped(8, ipc::R, ids),
+                              Mapped(0x60, ipc::W, out)}),
+                         3);
+        find_out = g.GetBytes(out, 0x60);
+        // an index the title metadata does not have: Azahar's 0xFFFFFFFF, nothing written
+        g.PutBytes(ids, {1, 0, 9, 0});
+        g.PutBytes(out, std::vector<u8>(0x30, 0xEE));
+        find_bad = g.Request(am,
+                             Cat({{ipc::MakeHeader(0x1002, 4, 4), 1, 0x00000102, 0x0004008C, 2},
+                                  Mapped(4, ipc::R, ids),
+                                  Mapped(0x30, ipc::W, out)}),
+                             3);
+
+        // ListDLCContentInfos: count 10 from 0 into room for 10; then from 3 into room for 1
+        g.PutBytes(out, std::vector<u8>(0xF0, 0xEE));
+        list = g.Request(am,
+                         Cat({{ipc::MakeHeader(0x1003, 5, 2), 10, 1, 0x00000102, 0x0004008C, 0},
+                              Mapped(0xF0, ipc::W, out)}),
+                         3);
+        list_out = g.GetBytes(out, 0xF0);
+        g.PutBytes(out, std::vector<u8>(0x30, 0xEE));
+        list_tail = g.Request(am,
+                              Cat({{ipc::MakeHeader(0x1003, 5, 2), 10, 1, 0x00000102, 0x0004008C, 3},
+                                   Mapped(0x18, ipc::W, out)}),
+                              3);
+        list_tail_out = g.GetBytes(out, 0x30);
+
+        // GetDLCTitleInfos: the title is found; with a second, missing title the list is "not found"
+        g.PutWords(ids, {0x00000102, 0x0004008C, 0x00000103, 0x0004008C});
+        g.PutBytes(out, std::vector<u8>(0x30, 0xEE));
+        titles = g.Request(am,
+                           Cat({{ipc::MakeHeader(0x1005, 2, 4), 1, 1},
+                                Mapped(8, ipc::R, ids),
+                                Mapped(0x18, ipc::W, out)}),
+                           6);
+        titles_out = g.GetBytes(out, 0x18);
+        titles_two = g.Request(am,
+                               Cat({{ipc::MakeHeader(0x1005, 2, 4), 1, 2},
+                                    Mapped(16, ipc::R, ids),
+                                    Mapped(0x30, ipc::W, out)}),
+                               6);
+        ExitProcess(*f.runtime);
+    });
+    CHECK(status == 0);
+    const auto le = [](const std::vector<u8>& b, std::size_t at, int n) {
+        u64 v = 0;
+        for (int i = n - 1; i >= 0; --i) v = (v << 8) | b[at + static_cast<std::size_t>(i)];
+        return v;
+    };
+    // the content count of the title metadata, on the SD card only
+    CHECK(count_sd[1] == kResultSuccess);
+    CHECK(count_sd[2] == 5);
+    CHECK(count_nand[2] == 1);
+    CHECK(count_missing[2] == 1);
+    // ContentInfo: index, type, id, size, ownership (2 owned, 1 downloaded: only a content that can be read)
+    CHECK(find[0] == ipc::MakeHeader(0x1002, 2, 0));
+    CHECK(find[1] == kResultSuccess);
+    CHECK(le(find_out, 0x00, 2) == 4);
+    CHECK(le(find_out, 0x02, 2) == 0x4000);
+    CHECK(le(find_out, 0x04, 4) == 4);
+    CHECK(le(find_out, 0x08, 8) == test_dlc::AppBytesSize(apps[4]));
+    CHECK(find_out[0x10] == 3);
+    CHECK(le(find_out, 0x18, 2) == 1);
+    CHECK(find_out[0x18 + 0x10] == 3);
+    CHECK(le(find_out, 0x30, 2) == 2);
+    CHECK(find_out[0x30 + 0x10] == 2);  // encrypted: owned, not downloaded
+    CHECK(le(find_out, 0x48, 2) == 3);
+    CHECK(find_out[0x48 + 0x10] == 2);  // missing
+    CHECK(find_bad[1] == 0xFFFFFFFFu);
+    CHECK(f.Logged("Attempted to get info for non-existent content index 0009."));
+    CHECK(list[1] == kResultSuccess);
+    CHECK(list[2] == 5);
+    CHECK(le(list_out, 0, 2) == 0);
+    CHECK(list_out[0x10] == 3);
+    CHECK(le(list_out, 4 * 0x18, 2) == 4);
+    CHECK(list_out[5 * 0x18] == 0xEE);  // nothing past the fifth
+    CHECK(list_tail[2] == 1);           // cut to the room the buffer has
+    CHECK(le(list_tail_out, 0, 2) == 3);
+    CHECK(list_tail_out[0x18] == 0xEE);
+    // TitleInfo: title id, size (content 0's), version, type
+    CHECK(titles[1] == kResultSuccess);
+    CHECK(le(titles_out, 0, 8) == 0x0004008C00000102);
+    CHECK(le(titles_out, 8, 8) == test_dlc::AppBytesSize(apps[0]));
+    CHECK(le(titles_out, 16, 2) == 7);
+    CHECK(le(titles_out, 20, 4) == 0x40);
+    CHECK(titles_two[1] == MakeResult(1018, 32, 5, 27));
+    CHECK(f.Logged("the game asks about DLC title 0004008C00000102"));
 }
 
 // ---- nim:aoc -------------------------------------------------------------------------------------------

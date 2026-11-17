@@ -1,6 +1,6 @@
-// The word positions of the framebuffer and colour fill registers are Azahar's, from
-// src/video_core/pica/regs_external.h and regs_lcd.h at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6
-// (GPL-2.0-or-later), as gpu_capture/image.cpp has them; see native/THIRD_PARTY.md. The rest is ours.
+// Derived from Azahar src/video_core/pica/regs_external.h and regs_lcd.h at 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6
+// (GPL-2.0-or-later): the word positions of the framebuffer and colour fill registers, as our gpu_capture/image
+// has them; see native/THIRD_PARTY.md. The rest is ours.
 // Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project (regs_external.h)
 // Copyright 2023-2024 Citra Emulator Project / Azahar Emulator Project (regs_lcd.h)
 #include "display_mem/display_mem.h"

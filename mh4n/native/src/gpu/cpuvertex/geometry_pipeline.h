@@ -107,6 +107,11 @@ private:
     PicaNativeFunction native_ = nullptr;
     bool check_native_ = false;
     std::unique_ptr<GeometryPipelineBackend> backend_;
+    // (opt101) The backends let go kept for the next of their mode, made again in place (Reconfigure runs at every
+    // draw, and each made a backend on the heap and freed one). MH4N_GS_BACKEND_REUSE=0: a new one each time, as before.
+    std::unique_ptr<GeometryPipelineBackend> spare_[3];
+    int backend_kind_ = -1;  // the mode of backend_ (0 Point, 1 VariablePrimitive, 2 FixedPrimitive)
+    void Stash();
     RunError error_;
     bool discarded_partial_input_ = false;
     u64 invocations_ = 0;

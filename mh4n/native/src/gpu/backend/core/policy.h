@@ -66,7 +66,9 @@ Result<CapabilityMask> CombineMasks(const char* environment_text, CapabilityMask
 
 // Whether a queue family with these VkQueueFlags can be the direct family: graphics, compute and transfer, the
 // three bits the vendored backend's own pick asks for (the policy must agree with that pick; relaxing it is a
-// patch of the vendored queue). The bit values are Vulkan's: graphics 1, compute 2, transfer 4.
+// patch of the vendored queue). Transfer is implied by graphics or compute (the spec makes reporting it optional
+// there; patch 21 relaxed the pick the same way), so graphics + compute is enough. The bit values are Vulkan's:
+// graphics 1, compute 2, transfer 4.
 inline constexpr u32 kQueueGraphicsBit = 1, kQueueComputeBit = 2, kQueueTransferBit = 4;
 constexpr bool IsDirectQueueFamily(u32 queue_flags) {
     // (transfer is implied by graphics or compute, as plume's pick takes it: patch 21; Adreno 7xx drivers don't set it)

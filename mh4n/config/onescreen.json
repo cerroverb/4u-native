@@ -1,5 +1,5 @@
 {
- "description": "One screen: where the game's touch-screen menus go on the top screen (port/src/onescreen.cpp draws each root group there; tools/onescreen_table.py measures the layouts of your own game and writes port/src/onescreen_table.h). The data is Heavenfall's single-screen arrangement (Heavenfall Beta by popzol and BlitzWOLF, GPL-3.0, github.com/popzol/4u-heavenfall-mod-beta, core/game/data/curated: single_screen.json and game_gui/), taken at the commit in `source`, kept in its own words and units, without its gameplay changes. top_screen: layouts the game loads on the touch screen that go to the top one. layouts: a layout scaled by factor and pushed against an edge or corner (anchor), then moved by offset (pixels right and down); push: root groups pushed alone to that edge; nudge: root groups moved alone (pixels); hide: root groups not drawn; backdrop: a root group made to cover the top screen; fixed: root groups left as they are; priority and group_priority: the draw order added to the layout's groups (higher in front). arrangement: blocks (root groups of one layout that move together, `default` their place: x, y the top-left corner of what they show, in pixels of the screen they go to, scale, screen top or bottom, priority, hidden) and screens (a rule on the groups shown, all / any / none, and the place of each block there; {} the block's default); the first screen whose rule holds is the one in force. frames: sets of root groups moved together on the top screen while a scene's rule holds (scale and at: a point x, y goes to scale x + at x, scale y + at y). help_top: where the touch menus' description panel (ui006) goes on the top screen; prompt_stay_bottom: what of the yes / no box stays on the touch screen. arrangement.hides: panes inside a root group not drawn while it is placed (Heavenfall's game_gui/fixes.json, but the two it replaces with a picture of its own). What Heavenfall changes in the layout files or the executable beyond the place of a root group (panes inside a group moved, new pictures, the pad on the keyboard and the world map, the character creation's camera) is left out.",
+ "description": "One screen: where the game's touch-screen menus go on the top screen (port/src/onescreen.cpp draws each root group there; tools/onescreen_table.py measures the layouts of your own game and writes port/src/onescreen_table.h). The data is Heavenfall's single-screen arrangement (Heavenfall Beta by popzol and BlitzWOLF, GPL-3.0, github.com/popzol/4u-heavenfall-mod-beta, core/game/data/curated: single_screen.json and game_gui/), taken at the commit in `source`, kept in its own words and units, without its gameplay changes. top_screen: layouts the game loads on the touch screen that go to the top one. layouts: a layout scaled by factor and pushed against an edge or corner (anchor), then moved by offset (pixels right and down); push: root groups pushed alone to that edge; nudge: root groups moved alone (pixels); hide: root groups not drawn; backdrop: a root group made to cover the top screen; fixed: root groups left as they are; priority and group_priority: the draw order added to the layout's groups (higher in front). arrangement: blocks (root groups of one layout that move together, `default` their place: x, y the top-left corner of what they show, in pixels of the screen they go to, scale, screen top or bottom, priority, hidden) and screens (a rule on the groups shown, all / any / none, and the place of each block there; {} the block's default); the first screen whose rule holds is the one in force. frames: sets of root groups moved together on the top screen while a scene's rule holds (scale and at: a point x, y goes to scale x + at x, scale y + at y). help_top: where the touch menus' description panel (ui006) goes on the top screen; prompt_stay_bottom: what of the yes / no box stays on the touch screen. arrangement.hides: panes inside a root group not drawn while it is placed (Heavenfall's game_gui/fixes.json, but the two it replaces with a picture of its own). What Heavenfall changes in the layout files or the executable beyond the place of a root group (panes inside a group moved, new pictures, the pad on the keyboard and the world map, the character creation's camera) is left out. prompt_places: where the yes / no box (the question and its plates) goes in a menu whose content is where the box would be (shift for the whole box, groups a group's own), before its own place; the first that holds wins.",
  "source": {
   "project": "Heavenfall Beta",
   "authors": "popzol, BlitzWOLF",
@@ -168,6 +168,10 @@
      0,
      400
     ]
+   },
+   "group_priority": {
+    "ui418_kami_p": 90,
+    "ui418_l_kyoutsu": 90
    }
   },
   "ui404": {
@@ -2411,6 +2415,11 @@
    ],
    "fancy spit bars": [
     "ui418_kami_nikuyaki"
+   ],
+   "box plates": [
+    "ui006_button00",
+    "ui006_button01",
+    "ui006_button02"
    ]
   },
   "scenes": [
@@ -2547,6 +2556,13 @@
       "at": [
        100.7,
        -70.1
+      ]
+     },
+     "box plates": {
+      "scale": 1,
+      "at": [
+       -195.5,
+       -48.5
       ]
      }
     }
@@ -2792,6 +2808,25 @@
       ]
      }
     }
+   },
+   {
+    "name": "box grid",
+    "all": [
+     "ui400_boxwaku00"
+    ],
+    "any": [],
+    "none": [
+     "ui470_base"
+    ],
+    "frames": {
+     "box plates": {
+      "scale": 1,
+      "at": [
+       -195.5,
+       -48.5
+      ]
+     }
+    }
    }
   ]
  },
@@ -2892,6 +2927,10 @@
      ],
      "ui006_button01": [
       0,
+      0
+     ],
+     "ui036_yazi00": [
+      73,
       0
      ]
     }
@@ -3248,6 +3287,83 @@
    "ui202_tairyoku"
   ]
  },
+ "prompt_places": [
+  {
+   "name": "box",
+   "when": [
+    "ui400_boxwaku00"
+   ],
+   "shift": [
+    -186,
+    0
+   ],
+   "groups": {
+    "ui006_button00": [
+     0,
+     0
+    ],
+    "ui006_button01": [
+     0,
+     0
+    ],
+    "ui006_button02": [
+     0,
+     0
+    ]
+   }
+  },
+  {
+   "name": "quest counter",
+   "when": [
+    "ui409_list"
+   ],
+   "shift": [
+    -186,
+    12
+   ],
+   "groups": {
+    "ui006_button00": [
+     -256.5,
+     31
+    ],
+    "ui006_button01": [
+     -214.5,
+     5
+    ],
+    "ui006_button02": [
+     -174.5,
+     4
+    ]
+   }
+  },
+  {
+   "name": "item shop",
+   "when": [
+    "ui407_listwaku00"
+   ],
+   "unless": [
+    "ui034_b_waku00"
+   ],
+   "shift": [
+    -186,
+    0
+   ],
+   "groups": {
+    "ui006_button00": [
+     -205.5,
+     -48.5
+    ],
+    "ui006_button01": [
+     -205.5,
+     -48.5
+    ],
+    "ui006_button02": [
+     -205.5,
+     -48.5
+    ]
+   }
+  }
+ ],
  "prompt_stay_bottom": [
   "ui006_cross"
  ]

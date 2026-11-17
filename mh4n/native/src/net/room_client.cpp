@@ -17,6 +17,7 @@
 //    frontends need the system to exist before they can join).
 //  - Outgoing messages wait at most 5 ms for the network thread (Azahar's loop waits up to 16 ms in enet_host_service
 //    before it sends what was queued).
+//  - A join may ask for a smaller ENet MTU (JoinRequest::mtu: a hub's tunnel does, mh4n/hubs.h).
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -445,6 +446,9 @@ void Client::Impl::Run(const std::shared_ptr<Session>& s) {
         MH4N_LOG(Error, kLog, "Could not create client");
         fail(Error::UnknownError);
         return;
+    }
+    if (s->request.mtu != 0) {  // (the connect asks for it; the room keeps the smaller of its own and this)
+        enet_host->mtu = std::clamp<enet_uint32>(s->request.mtu, ENET_PROTOCOL_MINIMUM_MTU, ENET_PROTOCOL_MAXIMUM_MTU);
     }
     ENetAddress address{};
     if (enet_address_set_host(&address, s->request.host.c_str()) != 0) {

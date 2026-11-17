@@ -7,6 +7,7 @@
 #include <dirent.h>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <time.h>
 
 #include <algorithm>
 #include <atomic>
@@ -1221,6 +1222,18 @@ void run() {
                     hex(p.n.h + 0x1C0, 8).c_str(), hex(p.n.h + 0x1E0, 8).c_str(),
                     p.known ? " (the original's)" : p.rebuilt ? " (not the original's)" : "");
     for (const std::string& l : r.log) fprintf(stderr, "[verify] %s\n", l.c_str());
+    if (!cancelled) {  // (1.0.1, diag) verify_last.txt in the app's folder: the last check's verdict, which Share log takes
+        if (FILE* last = fopen((P.ext + "/verify_last.txt").c_str(), "w")) {
+            const time_t now = time(nullptr);
+            char when[32] = "?";
+            struct tm tmv {};
+            if (localtime_r(&now, &tmv)) strftime(when, sizeof when, "%Y-%m-%d %H:%M", &tmv);
+            fprintf(last, "Verify game files, %s: %d problem(s)\n", when, r.count);
+            static const char* const kinds[] = {"ok", "PROBLEM", "note", "file", "to do"};
+            for (const VerifyLine& v : r.lines()) fprintf(last, "  %s: %s\n", kinds[v.kind], v.en.c_str());
+            fclose(last);
+        }
+    }
     std::lock_guard<std::mutex> l(G().lock);
     G().state.lines = r.lines();
     G().state.problems = r.count;

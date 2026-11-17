@@ -238,6 +238,7 @@ public class GameFolderActivity extends Activity {
     @Override
     protected void onCreate(Bundle state) {
         super.onCreate(state);
+        Diag.install(this);  // (1.0.1: the versions seen, a Java crash's stack for Share log)
         declareGame();
         es = "es".equals(Locale.getDefault().getLanguage());
         dump = new Dump(es);

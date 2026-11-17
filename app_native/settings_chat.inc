@@ -427,7 +427,8 @@ void friends_page_rows(std::vector<Row>& r) {
         row.menu = true;
         Row copy = row;
         const chat::Person q = p;
-        const bool room = in_room(st);
+        // (a hub's room is not sent: its address is the host's loopback; the friend finds the hub in the hub list)
+        const bool room = in_room(st) && !net_in_hub() && (!st.hosting || net_room_on_lan());
         row.activate = [copy, q, room]() {
             std::vector<std::string> what;
             std::vector<int> act;

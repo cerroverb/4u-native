@@ -51,6 +51,7 @@
 #include "content.h"
 #include "controls.h"
 #include "first_run.h"
+#include "frame_gen.h"
 #include "game_options.h"
 #include "gpu_driver.h"
 #include "imgui.h"
@@ -62,6 +63,7 @@
 #include "perfstats.h"
 #include "app_version.h"
 #include "cache_clear.h"
+#include "colour_filter.h"
 #include "mh4n/pipeline_progress.h"
 #include "settings_icons.h"
 #include "settings_locale.h"
@@ -81,6 +83,7 @@ const char* const page_names[PAGES] = {"Controls", "Graphics & Audio", "Gameplay
                                        "Credits & Licenses"};
 const char* const page_ids[PAGES] = {"controls", "graphics", "gameplay", "multiplayer", "mods", "system", "about"};
 namespace rooms = mh4n::rooms;
+namespace hubs = mh4n::hubs;
 std::atomic<bool> g_chat_asked{false};  // (the chat button: the menu opens on the chat's page)
 void credits_show();  // (the credits shown when the app opens: draw_credits, further down)
 void thanks_show();   // (the thanks card: draw_thanks, further down)
@@ -94,6 +97,14 @@ const char* const DEFAULT_LOBBY = "http://88.198.47.46:5000";
 const char* const LOBBY_LIST[] = {DEFAULT_LOBBY};
 bool lobby_off(const std::string& setting) { return !strcasecmp(setting.c_str(), "off"); }
 std::string lobby_url(const std::string& setting) { return lobby_off(setting) ? "" : setting.empty() ? DEFAULT_LOBBY : setting; }
+// The hub server ([Network] HubServer; mh4n/hubs.h, 1.0.1): empty is this one, the community server MHGU's players run
+// (the same server software lists both games' hubs, each game and region apart), so a later default reaches everyone who
+// kept it; "Off" is none, anything else the one typed. The same short list as the lobby's: the default, Custom..., Off
+const char* const DEFAULT_HUB_SERVER = "hunterhubid-gu-hub.duckdns.org";
+bool hub_server_off(const std::string& setting) { return !strcasecmp(setting.c_str(), "off"); }
+std::string hub_server(const std::string& setting) { return hub_server_off(setting) ? "" : setting.empty() ? DEFAULT_HUB_SERVER : setting; }
+// [Network] PlayWith (Multiplayer > Play online with): this app's hubs, Azahar's and Citra's rooms, or both
+enum { PLAY_HUBS, PLAY_ROOMS, PLAY_BOTH };
 // [Network] RecentLobby1..: how many lobbies typed and saved the Lobby row lists, the last first (MHGU's LDN_RECENT)
 constexpr int kRecentLobbies = 24;
 // A lobby the player typed: not the default (empty), not Off, none of LOBBY_LIST's
@@ -135,6 +146,7 @@ struct TouchButton {
 const TouchButton TOUCH_BUTTONS[] = {
     {"attacks", "Attacks (A / X)", true, 0},        {"dodge", "Evade (B)", true, 0},
     {"guard", "Guard / dash (R)", true, 0},         {"guard_slide", "Keep guarding while sliding", false, 0},
+    {"slide_both", "Slide between buttons: both pressed", true, 0},  // (1.0.1: touch.cpp slide_group)
     {"sheathe", "Sheathe (Y)", true, 0},
     {"zr", "Kick (ZR)", true, 0},                   {"zl", "Target (ZL)", true, 0},
     {"l", "Camera (L)", true, 0},                   {"lock_on", "Lock-on button", true, 0},
@@ -160,18 +172,28 @@ struct Draft {
     // mh4u.ini (game_options.h), as the file has them
     std::string fps, steady, widescreen, hud_edges, bloom, motion_blur, depth_of_field, radial_blur, haze, dither, antialiasing, fov;
     std::string kick, target, skip, skip_end, skip_end_hold;
+    std::string gather_all;  // (Gameplay, Gathering: a gather gives all the point had left, mh4n gather.cpp, 1.0.1)
     std::string qol_gather, qol_flex, qol_sharpen, qol_rewards;  // (the Cheats page's comforts: hooks.cpp Qol*)
     std::string rewards_send_all;  // (Gameplay, After a quest: hooks.cpp QolRewardsSendAll, S43)
+    std::string dlc_flags;  // (DLC and event quests: the installed DLC in every save, mh4n hooks.cpp DlcFlagsStep, 1.0.1)
     std::string single_screen;  // (S45: one screen, onescreen_rows below)
     std::string effects;  // (effects: the game's particle effects, mh4n hooks.cpp EffectsApply)
+    std::string monsters_on_map, damage_numbers;  // (1.0.1, the hunting aids: settings_hunt_aids.inc)
+    std::string monster_health_bar;  // (1.0.1: the monsters' health bars, settings_hunt_aids.inc, hunt_bars.cpp)
+    std::string number_size = "medium", number_colour = "white";  // ([Graphics] DamageNumberSize / DamageNumberColour)
     // mh4u-app.ini (app_settings.h)
     int scale = kRenderScaleDefault, volume = 100;  // scale: the 3D resolution, % of the phone's (0: the 3DS's)
     int low_end = LOW_END_OFF;
+    // [Colour] (colour_filter.h, Graphics & Audio > Colour): every one 0, the screens as the game draws them
+    int hue = 0, temperature = 0, tint = 0, brightness = 0, contrast = 0, saturation = 0, gamma = 0;
     bool stats = false, shadows = true, reverb = true;
+    bool hd_half = false;  // Texture packs > Pack texture size: half ([Graphics] HdPackSize = half; MH4N_HD_SCALE, 1.0.1)
+    bool frame_gen = false;  // [Graphics] FrameGen: a made-up picture between each two of the game's (frame_gen.h)
     bool adreno_fix = true;  // [Graphics] AdrenoFix: auto (first_run.h adreno_fix_applies; its row shows only there)
     bool screen_shown = true;
     int layout = 0, corner = 0, size = 42, opacity = 100;
     bool haptics = true;
+    bool long_press_hide = true;  // [Controls] LongPressHide: a long press on an empty spot hides the touch controls (touch.cpp)
     bool lock_on = true;  // [Controls] LockOn: the Lock-on button, a pad's right stick click (touch.cpp)
     bool gyro_aim = false;  // [Controls] GyroAim, GyroSensitivity (tenths: 2..30): the gyro's aim (controls.cpp)
     int gyro_sens = 10;
@@ -182,6 +204,7 @@ struct Draft {
     // the touch controls (touch_layout.txt)
     int controls = 0, touch_opacity = 80, attack_style = 0;
     float camera = 1.0f;
+    int camera_smooth = 0;  // the drag's turn smoothed, % (touch_layout.txt camera_smooth / 100; 0 off)
     std::vector<char> show = std::vector<char>(TB, 1);
     // a controller's (mh4u-app.ini's [Controls], controls.h): FACE_KEYS, STICK_KEYS, R3_KEYS by index; the camera's
     // speed and the sticks' dead zone in %
@@ -198,6 +221,11 @@ struct Draft {
     std::vector<std::string> lobbies;
     int slots = 4;
     bool notices = true;
+    // (1.0.1) hubs: PlayWith (PLAY_*: both as it comes, so the rooms of 1.0 stay where they were), the hub server (as the
+    // lobby: empty the default) and the hub this phone creates (its room's port is HostPort's)
+    int play_with = PLAY_BOTH;
+    std::string hub_server, hub_name, hub_tags, hub_password;
+    int hub_slots = 4;
     // the GPU driver for the next start (gpu_driver.h): its folder; empty: the system's
     std::string driver;
     // the Mods tab: the mods in load order, each on or off (load/mods/load_order.txt, content.h); the Cheats tab: each
@@ -228,22 +256,34 @@ Draft defaults() {
     d.antialiasing = "on", d.fov = "1";
     d.steady = "off";
     d.kick = "ZR", d.target = "ZL", d.skip = "ZR", d.skip_end = "ZL+ZR", d.skip_end_hold = "1.0";
+    d.gather_all = "off";
     d.qol_gather = d.qol_flex = d.qol_sharpen = d.qol_rewards = "off";
     d.rewards_send_all = "off";
+    d.dlc_flags = "on";
     d.effects = "on";
+    d.monsters_on_map = d.damage_numbers = "off";  // (the owner's: in the app, off)
+    d.monster_health_bar = "off";  // (the same)
     for (int i = 0; i < TB; i++) d.show[i] = TOUCH_BUTTONS[i].on;
     d.binds = controls_default_binds();
     return d;
+}
+// The draft's colour filter as colour_filter.h has it
+ColourAdjust colour_of(const Draft& d) {
+    ColourAdjust a;
+    a.hue = d.hue, a.temperature = d.temperature, a.tint = d.tint, a.brightness = d.brightness, a.contrast = d.contrast;
+    a.saturation = d.saturation, a.gamma = d.gamma;
+    return a;
 }
 // The field of view's factor in mh4u.ini's text (0.5 to 2, 1 when it is not a number)
 float fov_of(const std::string& text) {
     const float f = (float)std::atof(text.c_str());
     return f > 0 ? std::clamp(std::round(f * 20) / 20.f, .5f, 2.f) : 1.f;
 }
-// The frame rate's cap in mh4u.ini's text (30 to 240; the game's own 30 when it is not a number)
+// The frame rate's cap in mh4u.ini's text (15 to 240 since 1.0.1, 30 before; the game's own 30 when it is not a number)
+constexpr int kFpsMin = 15, kFpsMax = 240;
 int fps_of(const std::string& text) {
     const int fps = (int)std::lround(std::atof(text.c_str()));
-    return fps > 0 ? std::clamp(fps, 30, 240) : 30;
+    return fps > 0 ? std::clamp(fps, kFpsMin, kFpsMax) : 30;
 }
 
 bool is_on(const std::string& v) {
@@ -779,25 +819,41 @@ Draft load() {
     d.skip_end = game_option_get("skip_end", f.skip_end);
     d.skip_end_hold = game_option_get("skip_end_hold", f.skip_end_hold);
     d.qol_gather = game_option_get("qol_hold_gather", f.qol_gather);
+    d.gather_all = game_option_get("gather_all", f.gather_all);
     d.qol_flex = game_option_get("qol_flex_cancel", f.qol_flex);
     d.qol_sharpen = game_option_get("qol_sharpen_cancel", f.qol_sharpen);
     d.qol_rewards = game_option_get("qol_rewards_no_limit", f.qol_rewards);
     d.rewards_send_all = game_option_get("rewards_send_all", f.rewards_send_all);
+    d.dlc_flags = game_option_get("dlc_flags", f.dlc_flags);
     d.effects = game_option_get("effects", f.effects);
+    d.monsters_on_map = game_option_get("monsters_on_map", f.monsters_on_map);
+    d.damage_numbers = game_option_get("damage_numbers", f.damage_numbers);
+    d.monster_health_bar = game_option_get("monster_health_bar", f.monster_health_bar);
     d.scale = std::clamp(app_setting_int("Graphics", "RenderScale", kRenderScaleDefault), 0, 100);
     d.adreno_fix = app_adreno_fix();
     d.dither = game_option_get("dither", render_scale_used(d.scale, d.adreno_fix) > 1 ? "off" : "on");  // (android_main.cpp)
     d.low_end = app_low_end_level(app_setting("Graphics", "LowEnd", "off"));
     d.stats = app_setting_bool("Graphics", "FpsCounter", false);
     d.shadows = app_setting_bool("Graphics", "Shadows", true);
+    d.hd_half = app_setting("Graphics", "HdPackSize", "full") == "half";
+    d.number_size = app_setting("Graphics", "DamageNumberSize", "medium");
+    d.number_colour = app_setting("Graphics", "DamageNumberColour", "white");
+    d.frame_gen = app_setting_bool("Graphics", "FrameGen", false);
     d.volume = std::clamp(app_setting_int("Audio", "Volume", 100), 0, 100);
     d.reverb = app_setting_bool("Audio", "Reverb", true);
+    {
+        ColourAdjust colour;
+        app_colour(&colour);
+        d.hue = colour.hue, d.temperature = colour.temperature, d.tint = colour.tint, d.brightness = colour.brightness;
+        d.contrast = colour.contrast, d.saturation = colour.saturation, d.gamma = colour.gamma;
+    }
     d.screen_shown = ui_bottom_wanted();  // (as it is now: its button on the screen changes it too)
     d.layout = std::max(0, index_of(LAYOUT_KEYS, app_setting("Display", "Layout", "overlay")));
     d.corner = std::max(0, index_of(CORNER_KEYS, app_setting("Display", "Corner", "bottom-right")));
     d.size = std::clamp(app_setting_int("Display", "Size", 42), 20, 60);
     d.opacity = std::clamp(app_setting_int("Display", "Opacity", 100), 30, 100);
     d.haptics = app_setting_bool("Controls", "Haptics", true);
+    d.long_press_hide = app_setting_bool("Controls", "LongPressHide", true);
     d.face = std::max(0, index_of(FACE_KEYS, app_setting("Controls", "FaceButtons", "position")));
     d.right_stick = std::max(0, index_of(STICK_KEYS, app_setting("Controls", "RightStick", "camera")));
     d.stick_speed = std::clamp(app_setting_int("Controls", "StickSpeed", 100) / 25 * 25, 25, 300);
@@ -823,6 +879,8 @@ Draft load() {
     if (!v.empty()) d.touch_opacity = std::clamp((int)std::lround(std::atof(v.c_str()) * 100), 20, 100);
     v = touch_setting("camera_speed");
     if (!v.empty()) d.camera = std::clamp((float)std::round(std::atof(v.c_str()) * 20) / 20.f, .2f, 5.f);
+    v = touch_setting("camera_smooth");
+    if (!v.empty()) d.camera_smooth = std::clamp((int)std::lround(std::atof(v.c_str()) * 10) * 10, 0, 100);
     v = touch_setting("attack_style");
     if (!v.empty()) d.attack_style = std::clamp(std::atoi(v.c_str()), 0, 2);
     for (int i = 0; i < TB; i++) {
@@ -840,6 +898,15 @@ Draft load() {
     d.host_port = std::to_string(std::clamp(app_setting_int("Network", "HostPort", rooms::kDefaultPort), 1, 65535));
     d.slots = std::clamp(app_setting_int("Network", "Slots", 4), 2, 16);
     d.notices = app_setting_bool("Network", "Notices", true);
+    {
+        const std::string with = app_setting("Network", "PlayWith", "both");
+        d.play_with = !strcasecmp(with.c_str(), "hubs") ? PLAY_HUBS : !strcasecmp(with.c_str(), "rooms") ? PLAY_ROOMS : PLAY_BOTH;
+    }
+    d.hub_server = app_setting("Network", "HubServer");
+    d.hub_name = app_setting("Network", "HubName");
+    d.hub_tags = app_setting("Network", "HubTags");
+    d.hub_password = app_setting("Network", "HubPassword");
+    d.hub_slots = std::clamp(app_setting_int("Network", "HubSlots", 4), 2, 4);
     gpu_driver_reload();
     d.driver = gpu_driver_status().chosen;
     g_mod_info = content_mods();
@@ -884,6 +951,12 @@ void set_network(const Draft& d) {
     app_setting_set("Network", "HostPort", d.host_port);
     app_setting_set_int("Network", "Slots", d.slots);
     app_setting_set("Network", "Notices", d.notices ? "on" : "off");
+    app_setting_set("Network", "PlayWith", d.play_with == PLAY_HUBS ? "hubs" : d.play_with == PLAY_ROOMS ? "rooms" : "both");
+    app_setting_set("Network", "HubServer", d.hub_server);
+    app_setting_set("Network", "HubName", d.hub_name);
+    app_setting_set("Network", "HubTags", d.hub_tags);
+    app_setting_set("Network", "HubPassword", d.hub_password);
+    app_setting_set_int("Network", "HubSlots", d.hub_slots);
 }
 
 bool dirty() { return !(s.draft == s.saved); }
@@ -910,6 +983,23 @@ void frame_cap(float fps) {
     env->DeleteLocalRef(activity);
 }
 
+// [Graphics] FrameGen on or off to GameActivity.setFrameGen: the screen's refresh rate picked again (twice the FPS limit
+// or more with it on, where the screen has such a rate)
+void frame_gen_to_activity(bool on) {
+    auto* env = static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
+    auto activity = static_cast<jobject>(SDL_GetAndroidActivity());
+    if (!env || !activity) return;
+    jclass cls = env->GetObjectClass(activity);
+    jmethodID id = env->GetStaticMethodID(cls, "setFrameGen", "(Z)V");
+    if (id) env->CallStaticVoidMethod(cls, id, static_cast<jboolean>(on ? JNI_TRUE : JNI_FALSE));
+    if (env->ExceptionCheck()) {
+        env->ExceptionDescribe();
+        env->ExceptionClear();
+    }
+    env->DeleteLocalRef(cls);
+    env->DeleteLocalRef(activity);
+}
+
 void remember_typed(Draft& d, const Draft& before);  // (the lobbies typed and saved: with the Lobby row, further down)
 bool save() {
     remember_typed(s.draft, s.saved);
@@ -923,9 +1013,12 @@ bool save() {
         {"antialiasing", &Draft::antialiasing}, {"fov", &Draft::fov},
         {"kick", &Draft::kick},     {"target", &Draft::target},           {"skip", &Draft::skip},
         {"skip_end", &Draft::skip_end}, {"skip_end_hold", &Draft::skip_end_hold},
+        {"gather_all", &Draft::gather_all},
         {"qol_hold_gather", &Draft::qol_gather}, {"qol_flex_cancel", &Draft::qol_flex},
         {"qol_sharpen_cancel", &Draft::qol_sharpen}, {"qol_rewards_no_limit", &Draft::qol_rewards},
-        {"rewards_send_all", &Draft::rewards_send_all}, {"effects", &Draft::effects}};
+        {"rewards_send_all", &Draft::rewards_send_all}, {"dlc_flags", &Draft::dlc_flags}, {"effects", &Draft::effects},
+        {"monsters_on_map", &Draft::monsters_on_map}, {"damage_numbers", &Draft::damage_numbers},
+        {"monster_health_bar", &Draft::monster_health_bar}};
     for (const auto& [key, field] : game)
         if (d.*field != o.*field) game_option_set(key, d.*field);
     // (S45) the touch screen's corner follows single-screen mode turned on or off: hidden with the menus on the top
@@ -943,8 +1036,24 @@ bool save() {
     app_setting_set("Graphics", "LowEnd", LOW_END_KEYS[std::clamp(d.low_end, 0, 2)]);
     app_setting_set("Graphics", "FpsCounter", d.stats ? "on" : "off");
     app_setting_set("Graphics", "Shadows", d.shadows ? "on" : "off");
+    if (d.hd_half != o.hd_half) app_setting_set("Graphics", "HdPackSize", d.hd_half ? "half" : "full");
+    if (d.number_size != o.number_size) app_setting_set("Graphics", "DamageNumberSize", d.number_size);
+    if (d.number_colour != o.number_colour) app_setting_set("Graphics", "DamageNumberColour", d.number_colour);
+    if (d.frame_gen != o.frame_gen) app_setting_set("Graphics", "FrameGen", d.frame_gen ? "on" : "off");
     app_setting_set_int("Audio", "Volume", d.volume);
     app_setting_set("Audio", "Reverb", d.reverb ? "on" : "off");
+    {  // ([Colour]: written once one changed, so a file stays without them until then)
+        const ColourAdjust now = colour_of(d), was = colour_of(o);
+        if (std::memcmp(&now, &was, sizeof now)) {
+            app_setting_set_int("Colour", "Hue", d.hue);
+            app_setting_set_int("Colour", "Temperature", d.temperature);
+            app_setting_set_int("Colour", "Tint", d.tint);
+            app_setting_set_int("Colour", "Brightness", d.brightness);
+            app_setting_set_int("Colour", "Contrast", d.contrast);
+            app_setting_set_int("Colour", "Saturation", d.saturation);
+            app_setting_set_int("Colour", "Gamma", d.gamma);
+        }
+    }
     app_setting_set("Interface", "PauseInBackground", d.pause_background ? "on" : "off");
     app_setting_set("Interface", "Updates", d.updates ? "on" : "off");
     app_setting_set("Interface", "PauseInMenu", d.pause_menu ? "on" : "off");
@@ -954,6 +1063,7 @@ bool save() {
     app_setting_set_int("Display", "Size", d.size);
     app_setting_set_int("Display", "Opacity", d.opacity);
     app_setting_set("Controls", "Haptics", d.haptics ? "on" : "off");
+    app_setting_set("Controls", "LongPressHide", d.long_press_hide ? "on" : "off");
     app_setting_set("Controls", "FaceButtons", FACE_KEYS[d.face]);
     app_setting_set("Controls", "RightStick", STICK_KEYS[d.right_stick]);
     app_setting_set_int("Controls", "StickSpeed", d.stick_speed);
@@ -1007,6 +1117,7 @@ bool save() {
     if (d.controls != o.controls) touch.emplace_back("controls", CONTROLS_KEYS[d.controls]);
     if (d.touch_opacity != o.touch_opacity) snprintf(text, sizeof text, "%.2f", d.touch_opacity / 100.f), touch.emplace_back("opacity", text);
     if (d.camera != o.camera) snprintf(text, sizeof text, "%.2f", d.camera), touch.emplace_back("camera_speed", text);
+    if (d.camera_smooth != o.camera_smooth) snprintf(text, sizeof text, "%.2f", d.camera_smooth / 100.f), touch.emplace_back("camera_smooth", text);
     if (d.attack_style != o.attack_style) touch.emplace_back("attack_style", std::to_string(d.attack_style));
     for (int i = 0; i < TB; i++)
         if (d.show[i] != o.show[i]) touch.emplace_back(std::string("show_") + TOUCH_BUTTONS[i].key, d.show[i] ? "1" : "0");
@@ -1020,6 +1131,7 @@ bool save() {
     if (d.volume != o.volume) app_live_volume(d.volume);
     if (d.reverb != o.reverb) app_live_reverb(d.reverb);
     if (d.shadows != o.shadows) app_live_shadows(d.shadows);
+    if (d.frame_gen != o.frame_gen) frame_gen_set_enabled(d.frame_gen), frame_gen_to_activity(d.frame_gen);
     perfstats_set(d.stats, fps, spanish());
     if (d.screen_shown != ui_bottom_wanted()) ui_toggle_bottom();
     s.saved = s.draft;
@@ -1035,6 +1147,8 @@ void remember_network() {
     const Draft& d = s.draft;
     o.nick = d.nick, o.address = d.address, o.password = d.password, o.lobby = d.lobby, o.lobbies = d.lobbies;
     o.host_port = d.host_port, o.slots = d.slots;
+    o.play_with = d.play_with, o.hub_server = d.hub_server, o.hub_name = d.hub_name, o.hub_tags = d.hub_tags;
+    o.hub_password = d.hub_password, o.hub_slots = d.hub_slots;
     set_network(o);
     if (!app_settings_save()) s.error = tr("Could not save the settings.");
 }
@@ -1451,6 +1565,21 @@ std::string error_text(rooms::Error e) {
     default: return "";
     }
 }
+// Why joining a hub failed, or why its link ended (mh4n/hubs.h), and what to try
+std::string hub_error_text(hubs::JoinError e) {
+    switch (e) {
+    case hubs::JoinError::ServerNotFound: return say("The hub server's name has no address: check it, and that the phone is online.", "El nombre del servidor de hubs no tiene dirección: revísalo, y que el teléfono tenga conexión.");
+    case hubs::JoinError::ServerUnreachable: return say("Can't reach the hub server. It is run by players and may be down, or this network blocks it: try later, or on another network.", "No se puede llegar al servidor de hubs. Lo mantienen jugadores y puede estar caído, o esta red lo bloquea: prueba más tarde o con otra red.");
+    case hubs::JoinError::ServerBusy: return say("The hub server is busy: try again in a moment.", "El servidor de hubs está ocupado: vuelve a probar en un momento.");
+    case hubs::JoinError::ServerVersion: return say("The hub server runs another version.", "El servidor de hubs usa otra versión.");
+    case hubs::JoinError::HubGone: return say("That hub is gone: show the hubs again.", "Ese hub ya no está: vuelve a ver los hubs.");
+    case hubs::JoinError::NoAnswer: return say("The hub's host did not answer: their app may be closed or in the background.", "El anfitrión del hub no respondió: puede tener la app cerrada o en segundo plano.");
+    case hubs::JoinError::OtherGame: return say("That hub's host has another version of the game, or of this app.", "El anfitrión de ese hub tiene otra versión del juego, o de esta app.");
+    case hubs::JoinError::HubFull: return say("That hub is full.", "Ese hub está lleno.");
+    case hubs::JoinError::Lost: return say("The link to the hub's host was lost, or the host closed the hub.", "Se perdió el enlace con el anfitrión del hub, o el anfitrión cerró el hub.");
+    default: return "";
+    }
+}
 // A line of the room's, in the menu's language (who said a chat line is the note's value, apart)
 std::string line_text(const NetLine& l) {
     switch (l.kind) {
@@ -1461,6 +1590,7 @@ std::string line_text(const NetLine& l) {
     case NetLine::Failed: return error_text(l.error);
     case NetLine::YouJoined: return l.text.empty() ? tr("You joined the room.") : fmt("You joined %s.", l.text.c_str());
     case NetLine::YouLeft: return tr("You left the room.");
+    case NetLine::HubFailed: return hub_error_text(l.hub_error);
     default: return l.text;
     }
 }
@@ -1468,16 +1598,29 @@ ImU32 line_ink(const NetLine& l) {
     switch (l.kind) {
     case NetLine::Chat: case NetLine::Mine: return 0;
     case NetLine::Joined: case NetLine::YouJoined: return NET_GREEN;
-    case NetLine::Failed: case NetLine::Kicked: case NetLine::Banned: return theme().warn;
+    case NetLine::Failed: case NetLine::Kicked: case NetLine::Banned: case NetLine::HubFailed: return theme().warn;
     default: return touch_look().dim;
     }
 }
 std::string status_text(const rooms::Status& st) {
+    const hubs::JoinStatus hub = hubs::GetJoinStatus();
+    const bool in_hub = hubs::InHub(st), hosting_hub = st.hosting && hubs::GetHostStatus().active;
+    if (st.state == rooms::State::Idle && hub.state == hubs::JoinState::Connecting)
+        return say("Connecting to the hub server...", "Conectando con el servidor de hubs...");
+    if (st.state == rooms::State::Idle && hub.state == hubs::JoinState::Waiting)
+        return say("Waiting for the hub's host...", "Esperando al anfitrión del hub...");
     switch (st.state) {
     case rooms::State::Joining: return tr(st.waiting_for_console ? "Waiting for the game..." : "Connecting...");
-    case rooms::State::Joined: return tr(st.hosting ? "Hosting, in the room" : "In the room");
-    case rooms::State::Moderator: return tr(st.hosting ? "Hosting, in the room" : "In the room, moderator");
-    default: return st.hosting ? fmt("Room open on UDP %d", (int)st.hosted_port) : tr("Not in a room");
+    case rooms::State::Joined:
+        if (in_hub) return say("In the hub", "En el hub");
+        if (hosting_hub) return say("Hosting a hub, in it", "Anfitrión de un hub, adentro");
+        return tr(st.hosting ? "Hosting, in the room" : "In the room");
+    case rooms::State::Moderator:
+        if (hosting_hub) return say("Hosting a hub, in it", "Anfitrión de un hub, adentro");
+        return tr(st.hosting ? "Hosting, in the room" : "In the room, moderator");
+    default:
+        if (hosting_hub) return say("Hub open", "Hub abierto");
+        return st.hosting ? fmt("Room open on UDP %d", (int)st.hosted_port) : tr("Not in a room");
     }
 }
 ImU32 status_ink(const rooms::Status& st) {
@@ -1486,6 +1629,21 @@ ImU32 status_ink(const rooms::Status& st) {
     return st.error != rooms::Error::None ? theme().warn : touch_look().dim;
 }
 std::string status_help(const rooms::Status& st) {
+    if (in_room(st) && hubs::InHub(st)) {
+        const hubs::JoinStatus hub = hubs::GetJoinStatus();
+        return fmt(say("%s, through the hub server %s. The game's Local Play now reaches its hunters: one creates a Gathering Hall and the others find it.",
+                       "%s, a través del servidor de hubs %s. El juego local (Local Play) ya llega a sus cazadores: uno crea un Gathering Hall y los demás lo buscan."),
+                   st.room.name.c_str(), hub.server.c_str());
+    }
+    if (in_room(st) && st.hosting && hubs::GetHostStatus().active) {
+        const hubs::HostStatus host = hubs::GetHostStatus();
+        const std::string where = host.state == hubs::ServerState::Online
+                                      ? fmt(say("listed on the hub server %s", "listado en el servidor de hubs %s"), host.server.c_str())
+                                      : fmt(say("not listed on the hub server %s yet", "todavía sin listar en el servidor de hubs %s"), host.server.c_str());
+        return fmt(say("%s, %s. The others find it in Multiplayer > Join a hub, with no port to open. The game's Local Play reaches its hunters: one creates a Gathering Hall and the others find it.",
+                       "%s, %s. Los demás lo encuentran en Multijugador > Entrar a un hub, sin abrir puertos. El juego local (Local Play) llega a sus cazadores: uno crea un Gathering Hall y los demás lo buscan."),
+                   st.room.name.c_str(), where.c_str());
+    }
     if (in_room(st)) {
         std::string at = st.host + ":" + std::to_string(st.port);
         if (st.hosting) {  // (this phone's room: where the others find it, not the loopback)
@@ -1801,6 +1959,10 @@ void status_rows(std::vector<Row>& r) {  // (where this phone is: its colour at 
     row.help = status_help(st);
     r.push_back(std::move(row));
     if (st.state == rooms::State::Idle && st.error != rooms::Error::None) note(r, "net.why", error_text(st.error), theme().warn);
+    const hubs::JoinStatus hub = hubs::GetJoinStatus();
+    if (st.state == rooms::State::Idle && st.error == rooms::Error::None && hub.state == hubs::JoinState::Idle &&
+        hub.error != hubs::JoinError::None)
+        note(r, "net.hubwhy", hub_error_text(hub.error), theme().warn);
 }
 MENU_ENTRY("multiplayer", 10, status_rows);
 void rows_multiplayer_20(std::vector<Row>& r) {
@@ -1817,12 +1979,26 @@ void rows_multiplayer_25(std::vector<Row>& r) {
     if (in_room(st) || joining) action(r, "net.join", tr(joining ? "Stop joining" : "Leave the room"), []() { net_leave(); }, true, "Leave");
 }
 MENU_ENTRY("multiplayer", 25, rows_multiplayer_25);
-MENU_PAGE("multiplayer/join", "Join a room", "multiplayer", 30, {}, [](Row& r) {
+// (1.0.1) Play online with: the hubs' pages, the rooms' pages, or both
+bool hubs_shown() { return s.draft.play_with != PLAY_ROOMS; }
+bool rooms_shown() { return s.draft.play_with != PLAY_HUBS; }
+MENU_PAGE("multiplayer/hubs", "Join a hub", "multiplayer", 28, hubs_shown, [](Row& r) {
+    const rooms::Status st = rooms::GetStatus();
+    if (hubs::InHub(st)) r.value = st.room.name, r.ink = NET_GREEN;
+    r.help = en_es("The hubs of the hub server, for your copy of the game: a tap joins one. No address to type and no port to open.",
+                   "Los hubs del servidor de hubs, para tu copia del juego: un toque entra a uno. Sin dirección que escribir ni puertos que abrir.");
+});
+MENU_PAGE("multiplayer/hubhost", "Create a hub", "multiplayer", 29, hubs_shown, [](Row& r) {
+    if (net_hosting_hub()) r.value = en_es("Hub open", "Hub abierto"), r.ink = NET_GREEN;
+    r.help = en_es("A hub on this phone, listed on the hub server: the others join it from their own hub list.",
+                   "Un hub en este teléfono, listado en el servidor de hubs: los demás entran desde su propia lista de hubs.");
+});
+MENU_PAGE("multiplayer/join", "Join a room", "multiplayer", 30, rooms_shown, [](Row& r) {
     r.value = s.draft.address;  // (the address it joins)
     r.help = say("Its address and password, the rooms on this Wi-Fi, and the public rooms of the lobby.",
                  "Su dirección y contraseña, las salas en esta Wi-Fi y las salas públicas del lobby.");
 });
-MENU_PAGE("multiplayer/host", "Host a room", "multiplayer", 35, {}, [](Row& r) {
+MENU_PAGE("multiplayer/host", "Host a room", "multiplayer", 35, rooms_shown, [](Row& r) {
     const rooms::Status st = rooms::GetStatus();
     if (st.hosting) r.value = tr("Room open"), r.ink = NET_GREEN;
     r.help = say("A room on this phone, which the others join.", "Una sala en este teléfono, a la que entran los demás.");
@@ -1833,7 +2009,7 @@ MENU_PAGE("multiplayer/room", "Hunters in the room", "multiplayer", 38, in_room_
 });
 MENU_PAGE("multiplayer/chat", "Chat", "multiplayer", 40);  // (1.0: empty, the chat's rows are on the section's page)
 MENU_PAGE("multiplayer/friends", "Friends", "multiplayer", 50);              // (1.0: the chat group's, S32)
-MENU_PAGE("multiplayer/crossplay", "Play with emulators", "multiplayer", 60);  // (1.0: the cross group's, S36)
+MENU_PAGE("multiplayer/crossplay", "Play with emulators", "multiplayer", 60, rooms_shown);  // (1.0: the cross group's, S36)
 MENU_PAGE("multiplayer/guide", "How to play online", "multiplayer", 90);       // (1.0: S34)
 // Multiplayer > Join a room
 MENU_ENTRY("multiplayer/join", 5, status_rows);
@@ -1880,9 +2056,19 @@ void rows_multiplayer_join_30(std::vector<Row>& r) {
     if (lobby.busy) r.back().ink = touch_look().glow;
     if (answered && !lobby.list.ok) {  // (the runtime's reason, in English, goes to the log)
         r.back().ink = theme().warn;
-        note(r, "net.lobby.why", say("The lobby did not answer with a list of rooms. Check its address: http://name:port.",
-                                     "El lobby no respondió con una lista de salas. Revisa su dirección: http://nombre:puerto."),
-             theme().warn);
+        // (the default lobby's address is right: players run it and it is down at times, or a network blocks its port
+        // 5000 - a player told to check the address had nothing to fix, #bug-reports "MH4U Online error")
+        if (url == DEFAULT_LOBBY)
+            note(r, "net.lobby.why",
+                 say("The public lobby did not answer. Players run it and it is down at times, or this network blocks it: "
+                     "try again later, or on another network (Wi-Fi or mobile data). Rooms by address still work.",
+                     "El lobby público no respondió. Lo mantienen jugadores y a veces se cae, o esta red lo bloquea: prueba "
+                     "más tarde o con otra red (Wi-Fi o datos móviles). Las salas por dirección siguen funcionando."),
+                 theme().warn);
+        else
+            note(r, "net.lobby.why", say("The lobby did not answer with a list of rooms. Check its address: http://name:port.",
+                                         "El lobby no respondió con una lista de salas. Revisa su dirección: http://nombre:puerto."),
+                 theme().warn);
     }
     if (!answered || !lobby.list.ok) return;
     int shown = 0;
@@ -1991,7 +2177,308 @@ MENU_ENTRY("multiplayer/room", 10, rows_multiplayer_room_10, {}, in_room_now);
 // while in one
 void reset_chat_rows() { s.draft.notices = defaults().notices; }
 MENU_ENTRY("multiplayer", 40, chat_entry_rows, reset_chat_rows);
-MENU_ENTRY("multiplayer", 27, [](std::vector<Row>& r) { chat_share_room_row(r, rooms::GetStatus()); }, {}, in_room_now);
+// (not in a hub: its room's address is this phone's loopback, of no use to anyone else; a hub is found in the hub list)
+MENU_ENTRY("multiplayer", 27, [](std::vector<Row>& r) { chat_share_room_row(r, rooms::GetStatus()); }, {},
+           []() { return in_room_now() && !net_in_hub() && (!rooms::GetStatus().hosting || net_room_on_lan()); });
+
+// ---------------------------------------------------------------- internet hubs (mh4n/hubs.h, 1.0.1)
+// Multiplayer > Play online with: this app's hubs (a hub server lists them and carries the players: no address, no port),
+// Azahar's and Citra's rooms (as in 1.0), or both. It only chooses which pages show; a room or hub joined stays.
+void rows_multiplayer_15(std::vector<Row>& r) {
+    add_choice(r, "net.playwith", en_es("Play online with", "Jugar en línea con"), s.draft.play_with,
+               {en_es("This app's hubs", "Los hubs de esta app"), en_es("Azahar and Citra rooms", "Salas de Azahar y Citra"),
+                en_es("Both", "Los dos")},
+               [](int v) { s.draft.play_with = std::clamp(v, 0, 2); });
+    r.back().help = en_es("This app's hubs: a hub server lists them and carries the players, so nobody types an address or opens a port; only this app's players, with the same region of the game. Azahar and Citra rooms: the rooms of 1.0 (an address, this Wi-Fi, the public lobby), with the emulators' players too. Both: both lists, and a hub you create also takes Azahar and Citra players at this phone's address. A room or hub you are in stays.",
+                          "Los hubs de esta app: un servidor de hubs los lista y lleva a los jugadores, así que nadie escribe una dirección ni abre un puerto; solo jugadores de esta app, con la misma región del juego. Salas de Azahar y Citra: las salas de la 1.0 (una dirección, esta Wi-Fi, el lobby público), también con los jugadores de los emuladores. Los dos: las dos listas, y un hub que crees también recibe a jugadores de Azahar y Citra en la dirección de este teléfono. La sala o el hub en que estás sigue.");
+}
+void reset_multiplayer_15() { s.draft.play_with = defaults().play_with; }
+MENU_ENTRY("multiplayer", 15, rows_multiplayer_15, reset_multiplayer_15);
+
+// The hub server: the default (players run it), Custom... (typed) and Off, as the lobby's row
+std::string g_custom_hub_server;
+void hub_server_row(std::vector<Row>& rows) {
+    const std::string now = s.draft.hub_server;
+    const int custom = 1, off = 2;
+    const int selected = now.empty() ? 0 : hub_server_off(now) ? off : custom;
+    if (selected == custom) g_custom_hub_server = now;
+    std::vector<std::string> names = {std::string(DEFAULT_HUB_SERVER) + "  (" + tr("Default") + ")",
+                                      selected == custom ? fmt("Custom: %s", now.c_str()) : std::string(tr("Custom...")),
+                                      en_es("Off: no hubs", "Ninguno: sin hubs")};
+    Row r;
+    r.id = "net.hubserver", r.title = en_es("Hub server", "Servidor de hubs");
+    r.value = selected == 0 ? std::string(DEFAULT_HUB_SERVER) : selected == off ? std::string(en_es("No hubs", "Sin hubs")) : now;
+    r.help = fmt(en_es("The server that lists the hubs and carries their players: everyone who uses the same one finds the others' hubs. The default, %s, is run by players, not by this project (MHGU's players use it too: each game's hubs are apart). Custom: type another, a name or IP and :port if it is not 39510. Off: no hubs.",
+                       "El servidor que lista los hubs y lleva a sus jugadores: todos los que usan el mismo encuentran los hubs de los demás. El predeterminado, %s, lo mantienen jugadores, no este proyecto (también lo usan los jugadores de MHGU: los hubs de cada juego van aparte). Otro: escribe otro, un nombre o una IP y :puerto si no es el 39510. Ninguno: sin hubs."),
+                 DEFAULT_HUB_SERVER);
+    auto set = [custom, off](int i) {
+        if (i == custom) {
+            open_keyboard(en_es("Hub server", "Servidor de hubs"), g_custom_hub_server, KB_ADDRESS, 200,
+                          en_es("A name or an IP, and :port if it is not 39510.", "Un nombre o una IP, y :puerto si no es el 39510."),
+                          [](const std::string& typed, std::string& error) {
+                              std::string host;
+                              std::uint16_t port = 0;
+                              if (!typed.empty() && !hub_server_off(typed) && !hubs::ParseServer(typed, &host, &port)) {
+                                  error = en_es("That is not a server's address: a name or an IP, and :port if it is not 39510.",
+                                                "Esa no es la dirección de un servidor: un nombre o una IP, y :puerto si no es el 39510.");
+                                  return false;
+                              }
+                              s.draft.hub_server = typed;
+                              if (!typed.empty() && !hub_server_off(typed)) g_custom_hub_server = typed;
+                              return true;
+                          });
+            return;
+        }
+        s.draft.hub_server = i == off ? "Off" : "";
+    };
+    r.adjust = [selected, set](int) { set(selected == 0 ? 2 : 0); };  // (left / right: the default and Off; Custom... types)
+    Row copy = r;
+    r.menu = true;
+    r.activate = [copy, names, selected, set]() { choices(copy, names, selected, set); };
+    rows.push_back(std::move(r));
+}
+// What the hub server answered last (its list, this region's public hubs), as the Check row's value
+std::string hub_state_text(const NetHubs& h) {
+    switch (h.list.state) {
+    case hubs::ServerState::Online: return fmt(en_es("Online, %d ms, %d hub(s)", "En línea, %d ms, %d hub(s)"), h.list.ms, (int)h.list.hubs.size());
+    case hubs::ServerState::NotFound: return en_es("Not found", "No encontrado");
+    case hubs::ServerState::Unreachable: return en_es("Unreachable", "Inalcanzable");
+    case hubs::ServerState::Lost: return en_es("Connection lost", "Conexión perdida");
+    case hubs::ServerState::NoAnswer: return en_es("No answer", "Sin respuesta");
+    case hubs::ServerState::Busy: return en_es("Busy", "Ocupado");
+    case hubs::ServerState::Version: return en_es("Other version", "Otra versión");
+    case hubs::ServerState::Refused: return en_es("Refused", "Rechazado");
+    default: return "";
+    }
+}
+std::string g_hubs_asked;  // (the hub server the Join a hub page asked by itself since the menu opened)
+void ask_hubs() {
+    const std::string server = hub_server(s.draft.hub_server);
+    online_then(server, [server]() { net_hubs_fetch(server); });
+}
+// The game's region has hubs (MH4U, USA or Europe): a note when it hasn't, or before the game has started
+bool hub_game_ok(std::vector<Row>& r) {
+    if (hubs::RegionOfProgram(hubs::GameProgram()) != hubs::Region::None) return true;
+    note(r, "net.hubgame",
+         hubs::GameProgram() == 0 ? en_es("Hubs work once the game has started.", "Los hubs funcionan una vez que arrancó el juego.")
+                                  : en_es("This copy of the game has no hubs: they are for MH4U, USA or Europe (Monster Hunter 4G can't join them).",
+                                          "Esta copia del juego no tiene hubs: son para MH4U, de EE. UU. o de Europa (Monster Hunter 4G no puede entrar)."),
+         theme().warn);
+    return false;
+}
+// Multiplayer > Join a hub
+void join_hub(const hubs::Hub& hub, const std::string& password) {
+    const std::string server = hub_server(s.draft.hub_server);
+    switch (net_hub_join(server, hub, s.draft.nick, password)) {
+    case NetProblem::Nickname: s.error = tr("Choose a nickname first."); focus("net.nick"); return;
+    case NetProblem::NoGame: s.error = en_es("Hubs work once the game has started.", "Los hubs funcionan una vez que arrancó el juego."); return;
+    case NetProblem::NoServer: s.error = en_es("Choose a hub server first.", "Primero elige un servidor de hubs."); focus("net.hubserver"); return;
+    case NetProblem::None: break;
+    default: s.error = en_es("Could not join the hub.", "No se pudo entrar al hub."); return;
+    }
+    s.error.clear();
+    remember_network();
+    focus("net.status");
+}
+void rows_multiplayer_hubs_10(std::vector<Row>& r) {
+    hub_server_row(r);
+    const std::string server = hub_server(s.draft.hub_server);
+    const NetHubs got = net_hubs();
+    const bool answered = got.done && got.server == server;
+    // (asked as the page shows it, once the notice about playing online was closed: once a menu for each server)
+    if (!server.empty() && !got.busy && !answered && g_hubs_asked != server && g_online_seen &&
+        hubs::RegionOfProgram(hubs::GameProgram()) != hubs::Region::None) {
+        g_hubs_asked = server;
+        net_hubs_fetch(server);
+    }
+    action(r, "net.hubcheck", en_es("Check hub server", "Comprobar el servidor de hubs"), []() { ask_hubs(); }, !server.empty());
+    r.back().value = got.busy ? std::string(en_es("Checking...", "Comprobando...")) : answered ? hub_state_text(got) : std::string(en_es("Not checked", "Sin comprobar"));
+    r.back().ink = got.busy ? touch_look().glow : answered && got.list.state == hubs::ServerState::Online ? NET_GREEN : answered ? theme().warn : 0;
+    r.back().help = en_es("Asks the hub server above whether it answers: how long it takes, and how many hubs it lists for your copy of the game. It also shows them below.",
+                          "Le pregunta al servidor de hubs de arriba si responde: cuánto tarda y cuántos hubs lista para tu copia del juego. También los muestra abajo.");
+    if (answered && got.list.state != hubs::ServerState::Online && got.list.state != hubs::ServerState::Unknown)
+        note(r, "net.hubserver.why",
+             server == DEFAULT_HUB_SERVER
+                 ? en_es("The default hub server did not answer. Players run it and it is down at times, or this network blocks it: try again later, or on another network (Wi-Fi or mobile data). Rooms still work.",
+                         "El servidor de hubs predeterminado no respondió. Lo mantienen jugadores y a veces se cae, o esta red lo bloquea: prueba más tarde o con otra red (Wi-Fi o datos móviles). Las salas siguen funcionando.")
+                 : en_es("The hub server did not answer. Check its address: a name or an IP, and :port if it is not 39510.",
+                         "El servidor de hubs no respondió. Revisa su dirección: un nombre o una IP, y :puerto si no es el 39510."),
+             theme().warn);
+}
+void reset_multiplayer_hubs_10() { s.draft.hub_server = defaults().hub_server; }
+MENU_ENTRY("multiplayer/hubs", 5, status_rows);
+MENU_ENTRY("multiplayer/hubs", 10, rows_multiplayer_hubs_10, reset_multiplayer_hubs_10);
+void rows_multiplayer_hubs_20(std::vector<Row>& r) {
+    header(r, "net.hubs.head", en_es("Hubs", "Hubs"));
+    if (!hub_game_ok(r)) return;
+    const std::string server = hub_server(s.draft.hub_server);
+    const NetHubs got = net_hubs();
+    const bool answered = got.done && got.server == server && got.list.state == hubs::ServerState::Online;
+    const rooms::Status st = rooms::GetStatus();
+    if (in_room(st) || st.state == rooms::State::Joining || hubs::GetJoinStatus().state != hubs::JoinState::Idle)
+        action(r, "net.join", tr(st.state == rooms::State::Joining || !in_room(st) ? "Stop joining" : "Leave the room"), []() { net_leave(); }, true, "Leave");
+    if (!answered) {
+        if (!server.empty() && !got.busy && got.done && got.server == server) return;  // (the reason is under Check)
+        note(r, "net.hubs.none", server.empty() ? en_es("No hub server: choose one above.", "Sin servidor de hubs: elige uno arriba.")
+                                                : got.busy ? en_es("Asking the hub server...", "Preguntando al servidor de hubs...")
+                                                           : en_es("Check hub server shows its hubs.", "Comprobar el servidor de hubs muestra sus hubs."),
+             touch_look().dim);
+        return;
+    }
+    if (got.list.hubs.empty()) {
+        note(r, "net.hubs.empty", en_es("No hub open now for your copy of the game. Create one, and the others find it here.",
+                                        "Ahora no hay ningún hub abierto para tu copia del juego. Crea uno, y los demás lo encuentran aquí."),
+             touch_look().dim);
+        return;
+    }
+    int shown = 0;
+    for (const hubs::Hub& hub : got.list.hubs) {
+        if (++shown > 40) break;
+        Row row;
+        row.id = "net.hub." + std::to_string(shown), row.title = hub.name.empty() ? hub.host : hub.name;
+        row.value = fmt("%d / %d", (int)hub.players, (int)hub.slots);
+        if (hub.password) row.value = std::string(tr("Password")) + "  " + row.value;
+        if (hub.players >= hub.slots) row.ink = touch_look().dim;
+        std::string hunters;
+        for (const std::string& h : hub.hunters) hunters += (hunters.empty() ? "" : ", ") + h;
+        row.help = fmt(en_es("%sHost: %s. Hunters: %s. App %s. %s A tap joins it.", "%sAnfitrión: %s. Cazadores: %s. App %s. %s Un toque entra."),
+                       hub.description.empty() ? "" : (hub.description + ". ").c_str(), hub.host.empty() ? "-" : hub.host.c_str(),
+                       hunters.empty() ? "-" : hunters.c_str(), hub.app_version.empty() ? "-" : hub.app_version.c_str(),
+                       hub.password ? en_es("It has a password.", "Tiene contraseña.") : en_es("No password.", "Sin contraseña."));
+        row.arrow = true;
+        const hubs::Hub picked = hub;
+        row.activate = [picked]() {
+            const std::string server = hub_server(s.draft.hub_server);
+            if (!picked.password) {
+                online_then(server, [picked]() { join_hub(picked, ""); });
+                return;
+            }
+            open_keyboard(tr("Password"), s.draft.password, KB_SECRET, 64, en_es("This hub has a password.", "Este hub tiene contraseña."),
+                          [picked, server](const std::string& typed, std::string&) {
+                              s.draft.password = typed;
+                              online_then(server, [picked, typed]() { join_hub(picked, typed); });
+                              return true;
+                          });
+        };
+        r.push_back(std::move(row));
+    }
+}
+MENU_ENTRY("multiplayer/hubs", 20, rows_multiplayer_hubs_20);
+
+// Multiplayer > Create a hub: a room on this phone (on the loopback; in Both also at this phone's address), listed
+void create_hub() {
+    Draft& d = s.draft;
+    const std::string server = hub_server(d.hub_server);
+    switch (net_hub_create(server, d.hub_name, d.hub_tags, d.hub_slots, d.nick, d.hub_password, d.host_port, d.play_with == PLAY_BOTH)) {
+    case NetProblem::Nickname: s.error = tr("Choose a nickname first."); focus("net.nick"); return;
+    case NetProblem::NoGame: s.error = en_es("Hubs work once the game has started.", "Los hubs funcionan una vez que arrancó el juego."); return;
+    case NetProblem::NoServer: s.error = en_es("Choose a hub server first.", "Primero elige un servidor de hubs."); focus("net.hubserver"); return;
+    case NetProblem::Port: s.error = tr("A port is a number from 1 to 65535."); focus("net.hubport"); return;
+    case NetProblem::PortBusy: s.error = fmt("UDP port %s is in use on this phone: choose another one.", d.host_port.c_str()); focus("net.hubport"); return;
+    default: break;
+    }
+    s.error.clear();
+    remember_network();
+    focus("net.status");
+}
+void rows_multiplayer_hubhost_10(std::vector<Row>& r) {
+    Draft& c = s.draft;
+    if (!hub_game_ok(r)) return;
+    const bool hosting = net_hosting_hub();
+    add_text(r, "net.hubname", en_es("Hub name", "Nombre del hub"), &c.hub_name, KB_ANY, 48, "HubName",
+             c.hub_name.empty() ? (c.nick.empty() ? std::string("MH4U") : "MH4U - " + c.nick) : c.hub_name,
+             en_es("As the hub list shows it.", "Como lo muestra la lista de hubs."));
+    r.back().help = en_es("The hub's name in everyone's hub list. Empty: MH4U - your nickname.", "El nombre del hub en la lista de todos. Vacío: MH4U - tu apodo.");
+    add_text(r, "net.hubtags", en_es("Description", "Descripción"), &c.hub_tags, KB_ANY, 100, "HubTags",
+             c.hub_tags.empty() ? std::string(en_es("None", "Ninguna")) : c.hub_tags,
+             en_es("For example: HR 7, G-rank, English.", "Por ejemplo: HR 7, rango G, español."));
+    r.back().help = en_es("A few words the hub list shows under its name: your rank, what you hunt, your language.",
+                          "Unas palabras que la lista de hubs muestra bajo su nombre: tu rango, qué cazas, tu idioma.");
+    add_text(r, "net.hubpassword", en_es("Password", "Contraseña"), &c.hub_password, KB_SECRET, 64, "HubPassword",
+             c.hub_password.empty() ? std::string(tr("No password")) : "\xE2\x80\xA2\xE2\x80\xA2\xE2\x80\xA2\xE2\x80\xA2\xE2\x80\xA2\xE2\x80\xA2",
+             en_es("Empty: anyone can join.", "Vacía: puede entrar cualquiera."));
+    r.back().help = en_es("Players who join the hub type it. The hub list shows a lock; the password itself never leaves this phone and the room. Empty: anyone can join.",
+                          "Los que entran al hub la escriben. La lista de hubs muestra un candado; la contraseña nunca sale de este teléfono y la sala. Vacía: puede entrar cualquiera.");
+    add_number(r, "net.hubslots", en_es("Hunters", "Cazadores"), &c.hub_slots, 2, 4, 1, "%d");
+    r.back().help = en_es("How many hunters the hub takes, you included (the Gathering Hall has 4 places).",
+                          "Cuántos cazadores entran al hub, contándote a ti (el Gathering Hall tiene 4 lugares).");
+    if (c.play_with == PLAY_BOTH) {
+        add_text(r, "net.hubport", en_es("Port (UDP)", "Puerto (UDP)"), &c.host_port, KB_DIGITS, 5, "HostPort", c.host_port,
+                 tr("1 to 65535; rooms use 24872."), check_port);
+        r.back().help = en_es("Play online with is Both: the hub also takes Azahar and Citra players, who join this phone's address and this port as a room (from the internet, once the port is forwarded to this phone). This app's players come through the hub server.",
+                              "Jugar en línea con está en Los dos: el hub también recibe a jugadores de Azahar y Citra, que entran a la dirección de este teléfono y este puerto como a una sala (desde internet, cuando el puerto se redirige a este teléfono). Los jugadores de esta app llegan por el servidor de hubs.");
+    }
+    hub_server_row(r);
+    if (!hosting) {
+        action(r, "net.hubcreate", en_es("Create the hub", "Crear el hub"), []() {
+            online_then(hub_server(s.draft.hub_server), []() { create_hub(); });
+        }, !hub_server(c.hub_server).empty());
+        r.back().help = en_es("Opens a hub on this phone, lists it on the hub server and joins it as its moderator. The others join it from their hub list: no address and no port. It stays open until you close it or close the app; keep the app open while others play in it.",
+                              "Abre un hub en este teléfono, lo lista en el servidor de hubs y entra como su moderador. Los demás entran desde su lista de hubs: sin dirección ni puertos. Queda abierto hasta que lo cierres o cierres la app; deja la app abierta mientras otros juegan en él.");
+        return;
+    }
+    const hubs::HostStatus host = hubs::GetHostStatus();
+    action(r, "net.hubcreate", en_es("Close the hub", "Cerrar el hub"), []() { net_hub_close(); });
+    std::string listed;
+    switch (host.state) {
+    case hubs::ServerState::Online: listed = en_es("Listed", "Listado"); break;
+    case hubs::ServerState::Checking: listed = en_es("Listing...", "Listando..."); break;
+    default: listed = en_es("Not listed", "Sin listar"); break;
+    }
+    if (host.links > 0) listed += fmt(en_es(", %d through the server", ", %d por el servidor"), (int)host.links);
+    r.back().value = listed;
+    r.back().ink = host.state == hubs::ServerState::Online ? NET_GREEN : host.state == hubs::ServerState::Checking ? touch_look().glow : theme().warn;
+    r.back().help = en_es("Closes the hub: it leaves the list, and everyone in it leaves.", "Cierra el hub: sale de la lista, y salen todos.");
+    if (host.state != hubs::ServerState::Online && host.state != hubs::ServerState::Checking) {
+        std::string why;
+        switch (host.state) {
+        case hubs::ServerState::NotFound: why = en_es("its name has no address", "su nombre no tiene dirección"); break;
+        case hubs::ServerState::Unreachable: why = en_es("it can't be reached", "no se llega a él"); break;
+        case hubs::ServerState::Lost: why = en_es("the connection was lost", "se perdió la conexión"); break;
+        case hubs::ServerState::Busy: why = en_es("it is busy (too many hubs from this address)", "está ocupado (demasiados hubs desde esta dirección)"); break;
+        case hubs::ServerState::Version: why = en_es("it runs another version", "usa otra versión"); break;
+        default: why = en_es("it did not answer", "no respondió"); break;
+        }
+        note(r, "net.hubhost.why",
+             fmt(en_es("Your hub is not listed on %s: %s. It tries again by itself; players already in it stay.",
+                       "Tu hub no está listado en %s: %s. Vuelve a probar solo; los que ya están adentro siguen."),
+                 host.server.c_str(), why.c_str()),
+             theme().warn);
+    }
+    if (c.play_with == PLAY_BOTH) {
+        std::vector<std::string> mine = net_local_addresses();
+        const rooms::Status st = rooms::GetStatus();
+        note(r, "net.hubhost.cross",
+             fmt(en_es("Azahar and Citra players join it as a room at %s:%d (UDP).", "Los jugadores de Azahar y Citra entran como a una sala en %s:%d (UDP)."),
+                 mine.empty() ? "?" : mine[0].c_str(), (int)st.hosted_port),
+             touch_look().dim);
+    }
+}
+void reset_multiplayer_hubhost_10() {
+    Draft f = defaults();
+    s.draft.hub_name = f.hub_name;
+    s.draft.hub_tags = f.hub_tags;
+    s.draft.hub_password = f.hub_password;
+    s.draft.hub_slots = f.hub_slots;
+}
+MENU_ENTRY("multiplayer/hubhost", 5, status_rows);
+MENU_ENTRY("multiplayer/hubhost", 10, rows_multiplayer_hubhost_10, reset_multiplayer_hubhost_10);
+
+// Multiplayer > How to play online (S34's page, empty until 1.0.1): the hubs and the rooms in a few lines
+void rows_multiplayer_guide_10(std::vector<Row>& r) {
+    header(r, "guide.hubs", en_es("Hubs (this app's players)", "Hubs (jugadores de esta app)"));
+    note(r, "guide.hubs.1", en_es("One hunter: Multiplayer > Create a hub. The others: Multiplayer > Join a hub, and a tap on it. Nobody types an address or opens a port: the hub server carries the players.",
+                                  "Un cazador: Multijugador > Crear un hub. Los demás: Multijugador > Entrar a un hub, y un toque en él. Nadie escribe una dirección ni abre un puerto: el servidor de hubs lleva a los jugadores."));
+    note(r, "guide.hubs.2", en_es("Then, in the game: the Gathering Hall's Local Play. One creates a hall, the others find it there. The chat button talks to the hub.",
+                                  "Después, en el juego: Local Play (juego local) en el Gathering Hall. Uno crea una sala del gremio y los demás la buscan ahí. El botón del chat habla con el hub."));
+    note(r, "guide.hubs.3", en_es("Everyone needs the same region of the game (USA with USA, Europe with Europe) and should have the same version of this app. Keep the app open while you play together.",
+                                  "Todos necesitan la misma región del juego (EE. UU. con EE. UU., Europa con Europa) y conviene la misma versión de esta app. Deja la app abierta mientras juegan juntos."));
+    header(r, "guide.rooms", en_es("Rooms (also Azahar and Citra)", "Salas (también Azahar y Citra)"));
+    note(r, "guide.rooms.1", en_es("Join a room by its address, on this Wi-Fi or from the public lobby, or host one on this phone (from the internet, its UDP port must be forwarded to this phone). Emulator players can be in the same room.",
+                                   "Entra a una sala por su dirección, en esta Wi-Fi o desde el lobby público, o crea una en este teléfono (desde internet, hay que redirigir su puerto UDP a este teléfono). Los jugadores de emuladores pueden estar en la misma sala."));
+    note(r, "guide.rooms.2", en_es("Play online with chooses which of the two the Multiplayer section shows.", "Jugar en línea con elige cuál de los dos muestra la sección Multijugador."));
+}
+MENU_ENTRY("multiplayer/guide", 10, rows_multiplayer_guide_10);
 
 // ---------------------------------------------------------------- the GPU driver (gpu_driver.h)
 // Why an import did not install anything (DriverActivity.java's codes)
@@ -2251,8 +2738,8 @@ std::string mod_help(const mh4n::mods::Mod& m) {
     else
         text = say("It has nothing the game reads: no romfs and no exefs.", "No tiene nada que el juego lea: ni romfs ni exefs.");
     if (m.code)
-        text += " " + std::string(say("The code library must be made on the PC with it turned on, or the game won't start.",
-                                      "La librería de código tiene que hacerse en la PC con él activado, o el juego no arranca."));
+        text += " " + std::string(say("The code library must be made with it turned on (System › Game code › Build the game code), or the game won't start.",
+                                      "La librería de código tiene que hacerse con él activado (Sistema › Código del juego › Crear el código del juego), o el juego no arranca."));
     text += " " + std::string(say("A tap turns it on or off, moves it or removes it. Lower in the list wins where two mods change the same file. It loads when the game starts.",
                                   "Un toque lo activa o lo desactiva, lo mueve o lo quita. Más abajo en la lista gana donde dos mods cambian el mismo archivo. Se carga al iniciar el juego."));
     if (m.from_game_folder)
@@ -2349,7 +2836,7 @@ void mods_rows(std::vector<Row>& r) {
                 s.mods_note = fmt("Added: %s. The code library was made with it, so it is on: save, then restart the game.", name.c_str());
                 s.mods_note_bad = false;
             } else {
-                s.mods_note = fmt("Added: %s, off. It changes the game's code and the code library was not made with it: make the library again on the PC with this mod before turning it on, or the game won't start.", name.c_str());
+                s.mods_note = fmt("Added: %s, off. It changes the game's code and the code library was not made with it: make the library again with this mod (System › Game code › Build the game code) before turning it on, or the game won't start.", name.c_str());
                 s.mods_note_bad = true;
             }
         }
@@ -2458,8 +2945,8 @@ void mods_rows(std::vector<Row>& r) {
         } else {
             row.value = tr("Doesn't match");
             row.ink = theme().warn;
-            row.help = say("With the code mods turned on here, the game's code is not the code your library was made from: the game won't start. Make the library again on the PC with the same code mods on (step 3 of the guide, answering Yes and choosing the mods), or turn them back as they were.",
-                           "Con los mods de código activados aquí, el código del juego no es el código con que se hizo tu librería: el juego no arranca. Haz la librería de nuevo en la PC con los mismos mods de código activados (el paso 3 de la guía, respondiendo Sí y eligiendo los mods), o déjalos como estaban.");
+            row.help = say("With the code mods turned on here, the game's code is not the code your library was made from: the game won't start. Make the library again with the same code mods on (System › Game code › Build the game code, on this phone; or the guide's tool on a PC), or turn them back as they were.",
+                           "Con los mods de código activados aquí, el código del juego no es el código con que se hizo tu librería: el juego no arranca. Haz la librería de nuevo con los mismos mods de código activados (Sistema › Código del juego › Crear el código del juego, en este teléfono; o la herramienta de la guía en una PC), o déjalos como estaban.");
         }
         r.push_back(std::move(row));
     }
@@ -2652,8 +3139,19 @@ void rows_controls_50(std::vector<Row>& r) {
     row.number = true;
     row.adjust = [](int d) { s.draft.camera = std::clamp(std::round((s.draft.camera + d * .05f) * 20) / 20.f, .2f, 5.f); };
     r.push_back(std::move(row));
+    // (1.0.1: the drag's turn smoothed, off by default; the MHGU port's the same row)
+    Row smooth;
+    if (s.draft.camera_smooth > 0) snprintf(text, sizeof text, "%d%%", s.draft.camera_smooth);
+    else snprintf(text, sizeof text, "%s", tr("Off"));
+    smooth.id = "touch.smooth", smooth.title = tr("Camera smoothing"), smooth.key = "camera_smooth", smooth.value = text;
+    smooth.number = true;
+    smooth.adjust = [](int d) { s.draft.camera_smooth = std::clamp(s.draft.camera_smooth + d * 10, 0, 100); };
+    r.push_back(std::move(smooth));
 }
-void reset_controls_50() { s.draft.camera = defaults().camera; }
+void reset_controls_50() {
+    s.draft.camera = defaults().camera;
+    s.draft.camera_smooth = defaults().camera_smooth;
+}
 MENU_ENTRY("controls", 50, rows_controls_50, reset_controls_50);
 void rows_controls_60(std::vector<Row>& r) {
     add_bool(r, "lock_on", "Lock-on", &s.draft.lock_on, "LockOn");  // (the MHGU port's name)
@@ -2692,8 +3190,12 @@ void reset_controls_touch_20() { s.draft.attack_style = defaults().attack_style;
 MENU_ENTRY("controls/touch", 20, rows_controls_touch_20, reset_controls_touch_20);
 void rows_controls_touch_40(std::vector<Row>& r) {
     add_bool(r, "haptics", "Vibrate on touch", &s.draft.haptics, "Haptics");
+    add_bool(r, "touch.lphide", "Long-press hides the controls", &s.draft.long_press_hide, "LongPressHide");  // (1.0.1)
 }
-void reset_controls_touch_40() { s.draft.haptics = defaults().haptics; }
+void reset_controls_touch_40() {
+    s.draft.haptics = defaults().haptics;
+    s.draft.long_press_hide = defaults().long_press_hide;
+}
 MENU_ENTRY("controls/touch", 40, rows_controls_touch_40, reset_controls_touch_40);
 // Controls > Controller (a controller's, controls.h: read as soon as they are saved)
 void rows_controls_pad_10(std::vector<Row>& r) {
@@ -2776,12 +3278,14 @@ void rows_graphics_10(std::vector<Row>& r) {
 void reset_graphics_10() { s.draft.low_end = defaults().low_end; }
 MENU_ENTRY("graphics", 10, rows_graphics_10, reset_graphics_10);
 void rows_graphics_20(std::vector<Row>& r) {  // as MHGU's limit row: left / right one frame a second more or less, a tap the common ones
-    static const int presets[] = {30, 60, 90, 120, 144, 240};  // (MHGU's same list)
+    // (MHGU's list, and 15, 20 and 25 below 30 since 1.0.1: 15 and 20 are a whole 4 and 3 of a 60 Hz screen's vsyncs a
+    // frame, paced on them as 30 is; 25 is not, see its help)
+    static const int presets[] = {15, 20, 25, 30, 60, 90, 120, 144, 240};
     const int now = fps_of(s.draft.fps);
     Row row;
     row.id = "fps", row.title = tr("Frame rate limit"), row.key = "fps", row.value = std::to_string(now);
     row.number = true;
-    row.adjust = [now](int d) { s.draft.fps = std::to_string(std::clamp(now + d, 30, 240)); };
+    row.adjust = [now](int d) { s.draft.fps = std::to_string(std::clamp(now + d, kFpsMin, kFpsMax)); };
     Row copy = row;
     row.menu = true;
     row.activate = [copy, now]() {
@@ -2861,6 +3365,58 @@ void rows_graphics_picture_80(std::vector<Row>& r) {
 }
 void reset_graphics_picture_80() { s.draft.reverb = defaults().reverb; }
 MENU_ENTRY("graphics/picture", 80, rows_graphics_picture_80, reset_graphics_picture_80);
+// Graphics & Audio > Colour (1.0.1, the owner's item 9: a filter of our own, colour_filter.h, as MHGU's): the game's two
+// screens as they reach the window (the 3D, its HUD, its menus, the touch screen), not the touch controls or this menu.
+// Every control at 0 is the picture as the game draws it, byte for byte. The screens follow the rows while the menu is
+// open (settings_panel: shared_screens_set_colour); Save keeps them, closing without saving puts the saved ones back.
+// (The HDR output is MHGU's alone: this app's window is SDL's OpenGL ES one, which has no HDR picture.)
+MENU_PAGE("graphics/colour", "Colour", "graphics", 85);
+void colour_number(std::vector<Row>& r, const char* id, const char* en, const char* es, int* p, const char* key, int high,
+                   const char* unit, const char* help_en, const char* help_es) {
+    add_number(r, id, en, p, -high, high, 5, "%d", key);
+    char text[32];
+    std::snprintf(text, sizeof text, *p > 0 ? "+%d%s" : "%d%s", *p, unit);
+    r.back().title = en_es(en, es);
+    r.back().value = text;
+    r.back().help = en_es(help_en, help_es);
+}
+void rows_graphics_colour_10(std::vector<Row>& r) {
+    Draft& d = s.draft;
+    note(r, "colour.note", en_es("Changes the game's two screens, its HUD and its menus; the touch controls and this menu stay as they are. Each change shows at once; Save keeps it.",
+                                 "Cambia las dos pantallas del juego, su HUD y sus menús; los controles táctiles y este menú quedan como están. Cada cambio se ve en el momento; Guardar lo conserva."));
+    colour_number(r, "colour.hue", "Hue", "Tono", &d.hue, "Hue", COLOUR_HUE_MAX, "\xC2\xB0",
+                  "Turns every colour of the game's picture round the colour wheel, in degrees. 0: the game's own colours.",
+                  "Gira todos los colores de la imagen del juego por la rueda de colores, en grados. 0: los colores del propio juego.");
+    colour_number(r, "colour.temp", "Temperature", "Temperatura", &d.temperature, "Temperature", COLOUR_MAX, "",
+                  "Warmer (+: more orange) or cooler (-: more blue) whites and colours.",
+                  "Blancos y colores más cálidos (+: más anaranjados) o más fríos (-: más azulados).");
+    colour_number(r, "colour.tint", "Tint", "Tinte", &d.tint, "Tint", COLOUR_MAX, "",
+                  "Magenta (+) or green (-), to correct a screen that leans to one of them.",
+                  "Magenta (+) o verde (-), para corregir una pantalla que tira hacia uno de los dos.");
+    colour_number(r, "colour.bright", "Brightness", "Brillo", &d.brightness, "Brightness", COLOUR_MAX, "",
+                  "Raises or lowers the whole picture, its dark parts too.", "Sube o baja toda la imagen, también sus partes oscuras.");
+    colour_number(r, "colour.contrast", "Contrast", "Contraste", &d.contrast, "Contrast", COLOUR_MAX, "",
+                  "More (+) or less (-) difference between the dark and the bright parts.",
+                  "Más (+) o menos (-) diferencia entre las partes oscuras y las claras.");
+    colour_number(r, "colour.sat", "Saturation", "Saturación", &d.saturation, "Saturation", COLOUR_MAX, "",
+                  "More vivid (+) or paler (-) colours; -100 is black and white.",
+                  "Colores más vivos (+) o más apagados (-); -100 es blanco y negro.");
+    colour_number(r, "colour.gamma", "Gamma", "Gamma", &d.gamma, "Gamma", COLOUR_MAX, "",
+                  "Brightens (+) or darkens (-) the middle tones and leaves black and white where they are: to see into a dark cave without washing the picture out.",
+                  "Aclara (+) u oscurece (-) los tonos medios y deja el negro y el blanco donde están: para ver en una cueva oscura sin lavar la imagen.");
+    const ColourAdjust now = colour_of(d);
+    action(r, "colour.reset", en_es("Reset colour", "Restablecer el color"), []() {
+        Draft& d = s.draft;
+        d.hue = d.temperature = d.tint = d.brightness = d.contrast = d.saturation = d.gamma = 0;
+    }, !colour_neutral(&now));
+    r.back().help = en_es("Puts every colour control back to 0: the picture exactly as the game draws it.",
+                          "Vuelve todos los controles de color a 0: la imagen tal como la dibuja el juego.");
+}
+void reset_graphics_colour_10() {
+    Draft& d = s.draft;
+    d.hue = d.temperature = d.tint = d.brightness = d.contrast = d.saturation = d.gamma = 0;
+}
+MENU_ENTRY("graphics/colour", 10, rows_graphics_colour_10, reset_graphics_colour_10);
 // Graphics & Audio > Screen and HUD (the Display tab of 0.1.9, the widescreen and the HUD at its edges)
 void rows_graphics_screen_40(std::vector<Row>& r) {
     Draft& c = s.draft;
@@ -2919,6 +3475,7 @@ void reset_graphics_screen_100() {
     c.screen_shown = f.screen_shown, c.layout = f.layout, c.corner = f.corner, c.size = f.size, c.opacity = f.opacity;
 }
 MENU_ENTRY("graphics/screen", 100, rows_graphics_screen_100, reset_graphics_screen_100);
+#include "settings_hunt_aids.inc"  // (1.0.1: Monsters always on the map, Damage numbers)
 // Graphics & Audio > Advanced
 void rows_graphics_advanced_10(std::vector<Row>& r) {
     add_switch(r, "steady", "Steady frame rate", &s.draft.steady, "steady");
@@ -2934,6 +3491,11 @@ void reset_graphics_advanced_20() { s.draft.adreno_fix = defaults().adreno_fix; 
 MENU_ENTRY("graphics/advanced", 20, rows_graphics_advanced_20, reset_graphics_advanced_20, adreno_fix_applies);
 void reset_graphics_advanced_60() { s.draft.driver = defaults().driver; }
 MENU_ENTRY("graphics/advanced", 60, driver_rows, reset_graphics_advanced_60);
+void rows_graphics_advanced_70(std::vector<Row>& r) {  // [Graphics] FrameGen (frame_gen.h)
+    add_bool(r, "framegen", "Frame generation", &s.draft.frame_gen, "FrameGen");
+}
+void reset_graphics_advanced_70() { s.draft.frame_gen = defaults().frame_gen; }
+MENU_ENTRY("graphics/advanced", 70, rows_graphics_advanced_70, reset_graphics_advanced_70);
 
 // ---- Gameplay
 void rows_gameplay_10(std::vector<Row>& r) {
@@ -2947,6 +3509,25 @@ void reset_gameplay_10() {
     s.draft.kick = f.kick, s.draft.target = f.target, s.draft.skip = f.skip;
 }
 MENU_ENTRY("gameplay", 10, rows_gameplay_10, reset_gameplay_10);
+// 1.0.1, the owner's idea: one gather at a gathering point, or one carve, gives everything it had left at once (mh4n
+// port/src/gather.cpp: gather_all in mh4u.ini, applied at the game's next frame; MHGU for Android has the same option, name
+// and texts). Off by default (the owner: in the app, off): one item a gather, as the game does.
+void gather_rows(std::vector<Row>& r) {
+    header(r, "gather.head", en_es("Gathering", "Recolección"));
+    add_switch(r, "gather.all", en_es("Gather everything in one press", "Recolectar todo de un toque"), &s.draft.gather_all,
+               "gather_all");
+    r.back().help = en_es("One gather at a gathering point (herbs, mushrooms, honey, bugs, bones, ore...) or one carve gives "
+                          "everything it had left at once, with the game's own rules: your gathering and carving skills, and "
+                          "pickaxes and bug nets that can break. It stops if the pouch fills up: the rest stays. Off: one "
+                          "item each time, as the game does it.",
+                          "Una recolección en un punto (hierbas, hongos, miel, insectos, huesos, minerales...) o un tallado "
+                          "da de una vez todo lo que le quedaba, con las reglas del juego: tus habilidades de recolección y "
+                          "de tallado, y las piquetas y redes que se pueden romper. Se detiene si la bolsa se llena: lo "
+                          "demás queda. Apagado: un objeto cada vez, como lo hace el juego.");
+}
+void reset_gather() { s.draft.gather_all = defaults().gather_all; }
+// (before After a quest, order 60, so that its rows stay under its header)
+MENU_ENTRY("gameplay", 50, gather_rows, reset_gather);
 void rows_gameplay_60(std::vector<Row>& r) {
     Draft& c = s.draft;
     header(r, "end.head", tr("After a quest"));
@@ -2980,15 +3561,16 @@ void rows_gameplay_comforts_10(std::vector<Row>& r) {
 }
 
 // S43, Alfonso's idea: "Send to Item Box" on the rewards screen sends every reward at once (mh4n hooks.cpp
-// QolRewardsSendAll; MHGU for Android has the same option, name and texts). Off: one reward an A, as the game does.
+// QolRewardsSendAll; MHGU for Android has the same option, name and texts), the Palico's lists too since 1.0.1 (Dark_Light,
+// #suggestions "Hacia el Baúl"). Off: one reward an A, as the game does.
 void rewards_send_all_row(std::vector<Row>& r) {
     add_switch(r, "end.rewards", "Send all to the box", &s.draft.rewards_send_all, "rewards_send_all");
     r.back().help = say("At the end of a quest, the game's Send to Item Box sends every reward at once, as in the newer "
-                        "games. What doesn't fit in the box stays in the list. Off: one at a time, as the game does it. "
-                        "Alfonso's idea.",
+                        "games, and the Palico's items too. What doesn't fit in the box stays in the list. Off: one at a "
+                        "time, as the game does it. Alfonso's idea.",
                         "Al terminar una misión, la opción del juego de enviar a la caja de objetos manda todas las "
-                        "recompensas de una vez, como en los juegos más nuevos. Lo que no entra en la caja queda en la "
-                        "lista. Apagado: de a una, como lo hace el juego. Idea de Alfonso.");
+                        "recompensas de una vez, como en los juegos más nuevos, y también los objetos del Felyne. Lo que no "
+                        "entra en la caja queda en la lista. Apagado: de a una, como lo hace el juego. Idea de Alfonso.");
 }
 
 // S37: the player's own DLC and event quests, from a folder they choose (android/.../ExtraImportActivity.java; MHGU for
@@ -2996,12 +3578,14 @@ void rewards_send_all_row(std::vector<Row>& r) {
 void extra_import_row(std::vector<Row>& r) {
     action(r, "save.extra", say("Import DLC and event quests", "Importar DLC y misiones de evento"),
            []() { app_call_activity("showExtraImport"); });
-    r.back().help = say("Brings the event quests you already have, from an emulator or a backup of your console. Only the "
-                        "quest files are copied: your hunters, guild cards and Palico stay. The app includes none: you "
-                        "bring your own, at your own risk.",
-                        "Trae las misiones de evento que ya tienes, de un emulador o de una copia de tu consola. Solo se "
-                        "copian los archivos de misiones: tus cazadores, tarjetas de gremio y Felyne quedan. La app no "
-                        "incluye ninguna: las traes tú, bajo tu responsabilidad.");
+    r.back().help = say("Brings the event quests and the DLC you already have, from an emulator (the DLC you installed in "
+                        "Azahar), a backup of your console or a decrypted .cia of your own. Only the quest files and the "
+                        "DLC are copied: your hunters, guild cards and Palico stay. The app includes none and decrypts "
+                        "nothing: you bring your own, at your own risk.",
+                        "Trae las misiones de evento y el DLC que ya tienes, de un emulador (el DLC que instalaste en "
+                        "Azahar), de una copia de tu consola o de un .cia descifrado tuyo. Solo se copian los archivos de "
+                        "misiones y el DLC: tus cazadores, tarjetas de gremio y Felyne quedan. La app no incluye nada ni "
+                        "descifra nada: los traes tú, bajo tu responsabilidad.");
 }
 
 // S56: a shortcut on the phone's home screen with an image the player picks (android/.../ShortcutActivity.java; the
@@ -3014,11 +3598,29 @@ void shortcut_row(std::vector<Row>& r) {
                         "Pone un acceso directo al juego en la pantalla de inicio, con una imagen que elijas de tu teléfono "
                         "y el nombre que quieras. El ícono propio de la app queda como está.");
 }
+// 1.0.1, the owner's call: the DLC the player imported is used in every save, not only in one whose DLC flag a console
+// set (mh4n hooks.cpp DlcFlagsStep sets the flag from the title screen on; the save is copied to save_backups first). On
+// by default.
+void dlc_flags_row(std::vector<Row>& r) {
+    add_switch(r, "dlc.flags", "DLC in every save", &s.draft.dlc_flags, "dlc_flags");
+    r.back().help = say("The DLC you imported is used in every save. The game uses it only in a save that got its DLC on "
+                        "a console, through an online step that no longer exists, so when the game starts with a save "
+                        "without that mark, the app sets it, and the game keeps it when it saves. "
+                        "Before that, a copy of your save goes to save_backups. Nothing happens without imported DLC. "
+                        "Off: only saves that already had DLC use it (a mark already saved stays).",
+                        "El DLC que importaste se usa en todas las partidas. El juego solo lo usa en una partida que "
+                        "recibió su DLC en una consola, con un paso en línea que ya no existe; así que cuando el juego "
+                        "arranca con una partida sin esa marca, la app se la pone, y el juego la guarda al guardar. "
+                        "Antes, una copia de tu partida queda en save_backups. Sin DLC importado no pasa nada. Apagado: "
+                        "solo lo usan las partidas que ya tenían DLC (una marca ya guardada queda).");
+}
+void reset_dlc_flags() { s.draft.dlc_flags = defaults().dlc_flags; }
 void reset_rewards_send_all() { s.draft.rewards_send_all = defaults().rewards_send_all; }
 // The qol group's places (MENU.md 3.3, 3.5, 3.6): Send all under After a quest (its header: order 60), the import on DLC
 // and event quests, the shortcut on System
 MENU_ENTRY("gameplay", 70, rewards_send_all_row, reset_rewards_send_all);
 MENU_ENTRY("mods/dlc", 10, extra_import_row);
+MENU_ENTRY("mods/dlc", 20, dlc_flags_row, reset_dlc_flags);
 MENU_ENTRY("system", 75, shortcut_row);
 // S45, one screen: the game's touch-screen menus drawn on the top screen by the game itself (mh4n port/src/onescreen.cpp,
 // after Heavenfall's single-screen arrangement by popzol and BlitzWOLF, GPL-3.0), in every language. mh4u.ini's
@@ -3211,6 +3813,16 @@ MENU_ENTRY("mods/textures", 10, [](std::vector<Row>& r) {
          say("Put the pack's folder in your game folder's textures. Each texture takes memory as it's drawn.",
              "Pon la carpeta del pack en la carpeta textures de tu juego. Cada textura ocupa memoria al dibujarse."));
 });
+// 1.0.1 (4u-native #56): the pack's textures at their full size (the pack's own look, the default) or at half their width
+// and height, a quarter of the memory, for a phone short of it (mh4n hd_textures.h, MH4N_HD_SCALE=half: only files four
+// times the game's texture or more, so they stay at least twice it). Applied at the next start.
+void hd_size_rows(std::vector<Row>& r) {
+    add_choice(r, "textures.size", "Pack texture size", s.draft.hd_half ? 1 : 0, {tr("Full"), tr("Half")},
+               [](int v) { s.draft.hd_half = v == 1; }, "HdPackSize");
+    r.back().cold = true;
+}
+void reset_hd_size() { s.draft.hd_half = defaults().hd_half; }
+MENU_ENTRY("mods/textures", 20, hd_size_rows, reset_hd_size);
 // 1.0's credits (MENU.md 3.7: one note each, under who made it): tabarong's designs (the layout and chat groups), the
 // builder's idea (builder_credit_rows), Heavenfall's authors for single-screen mode's base (the onescreen group),
 // Alfonso's idea (the qol group)
@@ -3892,10 +4504,14 @@ const Help HELP[] = {
      "Tostadora: la batería y el calor del teléfono antes que todo. 30 FPS parejos, los de la propia 3DS (la mitad del trabajo del teléfono que a 60), la resolución de la 3DS, sin filtros de pantalla, antialiasing ni sombras, y sin reverberación. La imagen más simple, para cacerías largas con una sola carga. Después puedes cambiar cada uno."},
     {"steady", "When the phone cannot hold the frame rate limit, the game runs at an even half of it (a third, ...) instead of swinging between the two: 60 steady rather than 70 to 110 on a 120 FPS limit. It tries the full rate again now and then, and keeps it when the phone holds it. Smoother to the eye, fewer frames.",
      "Cuando el teléfono no llega al límite de FPS, el juego va a la mitad justa (un tercio, ...) en vez de ir y venir entre los dos: 60 parejos en lugar de 70 a 110 con un límite de 120. Cada tanto vuelve a probar el ritmo completo y se queda en él si el teléfono lo sostiene. Más suave a la vista, menos cuadros."},
-    {"fps", "The most frames a second, 30 to 240: left and right change it by one, a tap offers the usual ones. 60 is smoother; 30 is the 3DS's, heats the phone less and saves battery. Above 60 for fast phones with a screen that fast: the game keeps its speed, only more frames are drawn.",
-     "El máximo de cuadros por segundo, de 30 a 240: izquierda y derecha lo cambian de a uno, un toque ofrece los habituales. 60 se ve más fluido; 30 es el de la 3DS, calienta menos el teléfono y gasta menos batería. Más de 60, para teléfonos rápidos con una pantalla así de rápida: el juego mantiene su velocidad, solo se dibujan más cuadros."},
+    {"fps", "The most frames a second, 15 to 240: left and right change it by one, a tap offers the usual ones. 60 is smoother; 30 is the 3DS's, heats the phone less and saves battery. Above 60 for fast phones with a screen that fast: the game keeps its speed, only more frames are drawn. 15, 20 and 25 for a phone that cannot hold 30, or for the longest battery: the game still keeps its speed, with fewer frames. 15 and 20 are shown as evenly as 30; 25 does not divide a 60 Hz screen, so its frames last two and three refreshes in turn (less even than 20 or 30).",
+     "El máximo de cuadros por segundo, de 15 a 240: izquierda y derecha lo cambian de a uno, un toque ofrece los habituales. 60 se ve más fluido; 30 es el de la 3DS, calienta menos el teléfono y gasta menos batería. Más de 60, para teléfonos rápidos con una pantalla así de rápida: el juego mantiene su velocidad, solo se dibujan más cuadros. 15, 20 y 25, para un teléfono que no llega a 30 o para que la batería dure lo más posible: el juego sigue a su velocidad, con menos cuadros. 15 y 20 se muestran tan parejos como 30; 25 no divide una pantalla de 60 Hz, así que sus cuadros duran dos y tres refrescos alternados (menos parejo que 20 o 30)."},
     {"antialiasing", "The game's own anti-aliasing, which smooths the edges. Off saves its pass: at a high 3D resolution the edges stay fine, and a weak phone gains frames.",
      "El antialiasing del propio juego, que suaviza los bordes. Apagado se ahorra su pasada: con mucha resolución 3D los bordes siguen finos, y un teléfono débil gana cuadros."},
+    {"HdPackSize", "Full: each texture of the pack as it comes, the pack's own look. Half: half its width and height, a quarter of the memory, for a phone that runs short of it with a whole pack (only textures four times the game's or more, so they stay at least twice as sharp as the game's own). It applies at the next start.",
+     "Completo: cada textura del pack como viene, el aspecto propio del pack. Mitad: la mitad de ancho y de alto, un cuarto de la memoria, para un teléfono al que no le alcanza con un pack entero (solo las texturas de cuatro veces la del juego o más, así siguen siendo al menos el doble de nítidas que las del juego). Se aplica al volver a abrir el juego."},
+    {"FrameGen", "Doubles the frames you see: a picture made between each two of the game's, so 30 FPS look like 60. It works only when the FPS limit is half the screen's refresh rate or less (30 FPS on a 60 Hz screen) and not in the game's menus. It adds a little input delay (about one refresh of the screen), fast movement can show artifacts (smears at the edges of what moves), and it costs GPU work: if the game falls below its FPS limit with it for a few seconds (a weak phone), it pauses itself. The HUD is never warped. Off by default.",
+     "Duplica los cuadros que ves: una imagen hecha entre cada dos del juego, así 30 FPS se ven como 60. Funciona solo cuando el límite de FPS es la mitad de la frecuencia de la pantalla o menos (30 FPS en una pantalla de 60 Hz) y fuera de los menús del juego. Agrega un poco de retraso a los controles (más o menos un refresco de la pantalla), en los movimientos rápidos pueden verse defectos (manchas en los bordes de lo que se mueve) y le cuesta trabajo a la GPU: si con ella el juego baja de su límite de FPS unos segundos (un teléfono débil), se pausa sola. El HUD nunca se deforma. Apagado por defecto."},
     {"Shadows", "The shadows of the hunters, the monsters and the scenery. Off: none are drawn, faster on a weak phone. It applies at once.",
      "Las sombras de los cazadores, los monstruos y el escenario. Apagado: no se dibujan, más rápido en un teléfono débil. Se aplica al momento."},
     // (1.0's S22 and S28: why the HUD softens with it, and why there is no 55 % or exact size as in MHGU: the game draws
@@ -3949,11 +4565,15 @@ const Help HELP[] = {
      "Automático: se ven mientras no haya un mando conectado. Nunca: solo queda el botón de opciones."},
     {"opacity", "How solid the touch controls look.", "Qué tan sólidos se ven los controles táctiles."},
     {"camera_speed", "How far the camera turns for a drag.", "Cuánto gira la cámara al arrastrar."},
+    {"camera_smooth", "The camera follows your drag over a moment instead of at once, and glides to a stop after your finger does: a steadier turn. Higher is smoother, and a little slower to answer. Off: as before.",
+     "La cámara sigue tu arrastre en un momento en vez de al instante, y frena suave después de tu dedo: un giro más parejo. Más alto es más suave, y responde un poco más tarde. No: como antes."},
     {"attack_style", "Pill: A on its upper half, X on the lower, both on the seam. Two buttons: A and X apart. Corner band: the attacks and the guard round the screen's corner.",
      "Píldora: A en su mitad de arriba, X en la de abajo, las dos en la unión. Dos botones: A y X separados. Banda en la esquina: los ataques y la guardia alrededor de la esquina."},
     {"editor", "Move and resize each control: drag one, pinch it or use - and + for its size, then Save. Holding the settings button opens it too.",
      "Mueve y cambia el tamaño de cada control: arrástralo, pellízcalo o usa - y + para su tamaño, y luego Guardar. Mantener apretado el botón de opciones también lo abre."},
     {"Haptics", "A short vibration when you press a touch control.", "Una vibración corta al tocar un control."},
+    {"LongPressHide", "Hold your finger still on an empty part of the screen (no button there) for a moment: every touch control hides, for a cutscene or a picture. Another long press shows them again. A drag of the camera, a hold on a button or two fingers never hide them.",
+     "Mantén el dedo quieto un momento en una parte vacía de la pantalla (sin botones): se ocultan todos los controles táctiles, para una escena o una captura. Otra pulsación larga los vuelve a mostrar. Arrastrar la cámara, mantener un botón o usar dos dedos nunca los oculta."},
     {"GyroAim", "Aiming a bow or a bowgun (a gun's aim, its scope, crouching fire; a bow's aiming mode), turning the phone turns the aim too, from where it was as the aim began, with what your fingers or the sticks do. A controller with a gyro is read instead of the phone. The gyroscope is read only while you aim.",
      "Al apuntar con un arco o una ballesta (la mira de la ballesta, su visor, el disparo agachado; el modo de apuntar del arco), girar el teléfono también mueve la mira, desde donde estaba al empezar a apuntar, junto con lo que hagan tus dedos o las palancas. Si el mando tiene giroscopio, se usa el del mando en vez del teléfono. El giroscopio solo se lee mientras apuntas."},
     {"GyroSensitivity", "How far the aim turns for a turn of the phone or the controller: 1.0x the same angle.",
@@ -3994,8 +4614,10 @@ const Help HELP[] = {
      "Activado: la palanca de movimiento aparece donde apoyas el pulgar cerca de ella, y vuelve a su lugar al levantarlo. Desactivado: se queda donde está."},
     {"show_stick_run", "On: push the movement stick past its edge to run, as before. Slide it up onto the small circle with a padlock that shows above it, which lights up, and lift your thumb there: the run locks and the hunter keeps running forward (steer with the camera), until you touch the stick or the circle again, draw the weapon or open a menu. Off: the stick only walks, and a Run button shows above the attacks instead: it runs while held.",
      "Activado: empuja la palanca de movimiento más allá de su borde para correr, como siempre. Deslízala hacia arriba hasta el círculo chico con un candado que aparece encima, que se ilumina, y levanta el pulgar ahí: la carrera se fija y el cazador sigue corriendo hacia adelante (giras con la cámara), hasta que vuelvas a tocar la palanca o el círculo, desenvaines o abras un menú. Desactivado: la palanca solo camina, y aparece un botón Correr sobre los ataques: corre mientras lo mantienes."},
-    {"show_guard_slide", "On: with the weapon out, a thumb that lands on Guard and slides onto the attacks keeps guarding (R held), for the moves that need R and an attack together, like a lance's counter or a shield's thrust. Off: the slide lets go of R.",
-     "Activado: con el arma desenvainada, un pulgar que se apoya en Guardia (R) y se desliza a los ataques sigue en guardia (R mantenido), para los movimientos que piden R junto con un ataque, como el contraataque de la lanza o el empujón del escudo. Desactivado: al deslizar se suelta R."},
+    {"show_guard_slide", "With Slide between buttons off: with the weapon out, a thumb that lands on Guard and slides onto the attacks keeps guarding (R held), for the moves that need R and an attack together, like a lance's counter or a shield's thrust. Off: the slide lets go of R. With Slide between buttons on, every slide keeps both.",
+     "Con Deslizar entre botones desactivado: con el arma desenvainada, un pulgar que se apoya en Guardia (R) y se desliza a los ataques sigue en guardia (R mantenido), para los movimientos que piden R junto con un ataque, como el contraataque de la lanza o el empujón del escudo. Desactivado: al deslizar se suelta R. Con Deslizar entre botones activado, todo deslizamiento mantiene los dos."},
+    {"show_slide_both", "On: a finger that slides from one button onto another keeps the first pressed with the second, as two fingers would: R onto A or X for the Insect Glaive's kinsect, R onto B, Guard onto the attacks. Back onto the first, that one alone. Not in the game's menus. Off: as before, the slide lets go of the first.",
+     "Activado: un dedo que se desliza de un botón a otro mantiene el primero apretado junto con el segundo, como harían dos dedos: R a A o X para el kinsecto de la glaive insecto, R a B, Guardia a los ataques. Al volver al primero, solo ese. No en los menús del juego. Desactivado: como antes, al deslizar se suelta el primero."},
     {"show_select", "SELECT during a hunt. MH4U's hunts do without it. While it is off, the menu pad has a small SELECT below it.",
      "SELECT durante una cacería. Las cacerías de MH4U no lo necesitan. Mientras está desactivado, el pad de menú tiene un SELECT chico debajo."},
     {"show_dpad", "The D-pad during a hunt. In the game's menus the menu pad takes its place, unless D-pad in menus is on.",
@@ -4075,8 +4697,8 @@ const Help HELP[] = {
      "Agrega un mod desde su .zip: un mod para MH4U de EE. UU., con una carpeta romfs, una carpeta exefs o las dos, o con la estructura de los emuladores de 3DS, con una carpeta 0004000000126300. Se copia dentro de la app: después puedes borrar el .zip."},
     {"ModFolderImport", "Adds a mod from its folder, unpacked: the folder with romfs and exefs in it, or the one that holds 0004000000126300. It is copied into the app.",
      "Agrega un mod desde su carpeta, ya descomprimida: la que tiene romfs y exefs adentro, o la que contiene 0004000000126300. Se copia dentro de la app."},
-    {"CodeLibrary", "A mod with an exefs folder changes the game's code, and this port runs that code translated ahead of time: your code library has to be made on the PC with the same code mods turned on (step 3 of the guide, answering Yes and choosing the mod). If they don't match, the game won't start.",
-     "Un mod con carpeta exefs cambia el código del juego, y este port ejecuta ese código traducido de antemano: tu librería de código tiene que hacerse en la PC con los mismos mods de código activados (el paso 3 de la guía, respondiendo Sí y eligiendo el mod). Si no coinciden, el juego no arranca."},
+    {"CodeLibrary", "A mod with an exefs folder changes the game's code, and this port runs that code translated ahead of time: your code library has to be made with the same code mods turned on (System › Game code › Build the game code, on this phone; or the guide's tool on a PC). If they don't match, the game won't start.",
+     "Un mod con carpeta exefs cambia el código del juego, y este port ejecuta ese código traducido de antemano: tu librería de código tiene que hacerse con los mismos mods de código activados (Sistema › Código del juego › Crear el código del juego, en este teléfono; o la herramienta de la guía en una PC). Si no coinciden, el juego no arranca."},
     {"ModConflicts", "Mods that change the same game files: where both are on, the one lower in the list is used. Select it to see each pair and choose which mod is used.",
      "Mods que cambian los mismos archivos del juego: donde los dos están activados, se usa el de más abajo en la lista. Selecciónalo para ver cada par y elegir qué mod se usa."},
     {"ModSuggest", "Orders the mods that change the same files from the biggest to the smallest, so a small tweak wins over a large overhaul. The others keep their places.",
@@ -4830,14 +5452,17 @@ void touch_panel(bool* open) {
     const Look k = touch_look();
     float H = vp->WorkSize.y;
     ImVec2 panel(std::min(vp->WorkSize.x * .94f, H * 2.6f), H * .94f);
-    {  // (the game under it dimmed, the touch controls with it)
+    // (1.0.1) Graphics & Audio > Colour: the game round the menu as it is, not dimmed, and the panel a little see-through,
+    // as in the MHGU port: each change shows on the picture at once (shared_screens_set_colour, below)
+    const bool colour_page = s.view == View::Page && s.at == "graphics/colour";
+    if (!colour_page) {  // (the game under it dimmed, the touch controls with it)
         ImDrawList* bg = ImGui::GetBackgroundDrawList();
         bg->AddRectFilled(vp->Pos, ImVec2(vp->Pos.x + vp->Size.x, vp->Pos.y + vp->Size.y), IM_COL32(0, 0, 0, 140));
     }
     ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + (vp->WorkSize.x - panel.x) * .5f, vp->WorkPos.y + (vp->WorkSize.y - panel.y) * .5f),
                             ImGuiCond_Always);
     ImGui::SetNextWindowSize(panel, ImGuiCond_Always);
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, vec(look.panel));
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, vec(colour_page ? fade(look.panel, .85f) : look.panel));
     ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0, 0, 0, 0));
     ImGui::PushStyleColor(ImGuiCol_Text, vec(look.text));
     ImGui::PushStyleColor(ImGuiCol_Border, vec(look.edge));
@@ -5016,7 +5641,8 @@ void touch_panel(bool* open) {
             const char* name = tr(page_names[i]);
             float tx = mx + mark * .5f + f * .5f, room = r.Max.x - tx - f * .35f, size = small ? std::floor(f * .8f) : f;
             float wide = font->CalcTextSizeA(size, FLT_MAX, 0, name).x;
-            float text = wide > room ? std::floor(size * room / wide) : size;  // (a long name: smaller, on one line)
+            // (a long name: smaller, on one line; never below 1, whatever room a window that small leaves)
+            float text = wide > room ? std::max(1.f, std::floor(size * room / wide)) : size;
             ImVec2 ts = font->CalcTextSizeA(text, FLT_MAX, 0, name);
             shadow_text(dl, text, ImVec2(tx, cy - ts.y * .5f), active ? bright : k.dim, name);
         }
@@ -5240,11 +5866,35 @@ float app_notice(float y) {
 // official one is, so a copy passed around elsewhere still says so (ADDITIONAL-TERMS: these lines must stay)
 double g_credits_at = -1;
 bool g_credits_asked = false;  // (Show the credits: over the menu too)
-void credits_show() { g_credits_at = SDL_GetTicks() / 1000.0, g_credits_asked = true; }
+// A tap closes them (1.0.1, a player's suggestion: "disappear after touching the screen"; MHGU for Android's the same): a
+// finger put on the screen (settings_panel_thanks_event, the first to see each event: credits_tap) once they are in
+// (kCreditsArm: a finger already down as they opened puts none) fades them out in kCreditsOut instead of their 8 seconds.
+// The tap still goes where it went before (they never took input); they still show at every start and from Credits &
+// Licenses
+constexpr double kCreditsShown = 8, kCreditsArm = .4, kCreditsOut = .25;
+double g_credits_shown = kCreditsShown;  // (how long they stay this time: less once a tap closed them)
+std::atomic<bool> g_credits_tap{false};
+void credits_show() {
+    g_credits_at = SDL_GetTicks() / 1000.0, g_credits_asked = true;
+    g_credits_shown = kCreditsShown, g_credits_tap = false;  // (the tap on Show the credits is not one on them)
+}
+void credits_tap(const SDL_Event& e) {
+    if (e.type == SDL_EVENT_FINGER_DOWN || e.type == SDL_EVENT_MOUSE_BUTTON_DOWN) g_credits_tap = true;
+}
+// (each frame they are drawn) a tap since the last one
+void credits_tapped(double now) {
+    if (!g_credits_tap.exchange(false) || g_credits_at < 0) return;
+    const double t = now - g_credits_at;
+    if (t < kCreditsArm || t >= g_credits_shown - kCreditsOut) return;
+    g_credits_shown = t + kCreditsOut;
+    std::fprintf(stderr, "[Info] App: the credits were closed by a tap after %.1f s\n", t);
+}
 void draw_credits() {
-    constexpr double kShown = 8, kIn = .4, kFade = .9;
+    constexpr double kIn = .4;
     const double now = SDL_GetTicks() / 1000.0;
     if (g_credits_at < 0) g_credits_at = now;
+    credits_tapped(now);
+    const double kShown = g_credits_shown, kFade = kShown < kCreditsShown ? kCreditsOut : .9;
     const double t = now - g_credits_at;
     if (t > kShown) return;
     const float a = (float)std::clamp(std::min(t / kIn, (kShown - t) / kFade), 0.0, 1.0);
@@ -5364,7 +6014,8 @@ void thanks_first_run() {
     static int state = 0;  // 0 not asked yet, 1 waiting for the credits to go, 2 done
     if (state == 2) return;
     if (state == 0) state = app_setting_bool("Interface", "ThanksShown", false) ? 2 : 1;
-    if (state == 1 && g_credits_at >= 0 && SDL_GetTicks() / 1000.0 - g_credits_at > 8.2) thanks_show(), state = 2;
+    if (state == 1 && g_credits_at >= 0 && SDL_GetTicks() / 1000.0 - g_credits_at > g_credits_shown + .2)
+        thanks_show(), state = 2;
 }
 // Each frame of the menu's, before its rows: while the card shows, and until the press that closed it has let go, the
 // mouse (a finger, as SDL's mouse events) is the card's, so nothing under it is pressed, held or tapped
@@ -5581,6 +6232,7 @@ void settings_panel(bool* open) {
         s.scroll = 0;
         s.driver_note.clear();
         s.lobby_asked.clear();
+        g_hubs_asked.clear();
         s.reopen.clear();
         if (!g_online_seen) g_online_seen = app_setting_bool("Network", "OnlineNoticeShown", false);
         request_back = false;
@@ -5604,6 +6256,7 @@ void settings_panel(bool* open) {
     text_input(*open && s.view == View::Keyboard ? std::max(1, g_text_input) : 0);
     if (!net_lines().empty()) s.seen_line = net_lines().back().serial;
     is_dirty = *open && (dirty() || confirmation());
+    shared_screens_set_colour(colour_of(*open ? s.draft : s.saved));  // (Graphics & Audio > Colour: the screens follow the draft)
     if (!*open) {
         s.editing = false;
         s.dropdown.open = false;
@@ -5621,6 +6274,7 @@ void settings_panel(bool* open) {
 bool settings_panel_thanks_open() { return g_thanks_open; }
 
 bool settings_panel_thanks_event(const SDL_Event& e) {
+    credits_tap(e);  // (the credits shown at the start close at a tap: draw_credits)
     if (!g_thanks_open) return false;
     switch (e.type) {
     case SDL_EVENT_FINGER_DOWN:

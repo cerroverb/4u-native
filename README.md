@@ -10,6 +10,28 @@ runtime of its own that does the console's work, with its graphics drawn through
 
 Talk with other players and ask for help in the community's [Discord](https://discord.gg/sk5xEjEMwF).
 
+**The same save on your PC and your phone?** See [Play on PC and phone with the same save (Google Drive)](#play-on-pc-and-phone-with-the-same-save-google-drive).
+
+## Play on PC and phone with the same save (Google Drive)
+
+One save for your phone, your tablet and an emulator on your PC (Azahar or Citra), with Google Drive in between. The app
+has no cloud of its own and doesn't sync by itself: a free sync app does it on the phone, and on the PC you copy the save
+in and out by hand.
+
+- **Between phones and tablets, by itself:** in the game, **Save folder** puts your save in a folder of the phone, and a
+  sync app (**FolderSync** or **Autosync for Google Drive**) keeps that folder the same as one in your Google Drive. Step
+  by step: [Keep your save in the cloud](#keep-your-save-in-the-cloud-google-drive-and-the-like).
+- **With an emulator on the PC, by hand:** install **Google Drive for desktop** on the PC: your Drive shows up in File
+  Explorer, so the phone's synced folder is right there. `MH4U save` is in the emulators' own layout (an `sdmc` folder).
+  - **Phone to PC:** save on the phone and let the sync app finish. Open the emulator's user folder, the one with `sdmc` in it
+    (from the emulator's **File** menu), keep a copy of its `sdmc` folder, and copy the `sdmc` folder of your Drive's
+    `MH4U save` over it, replacing the files. The guild cards, event quests and Palico come along.
+  - **PC to phone:** in the emulator, right-click the game, **Open Save Data Location**, and copy that folder into the Drive
+    folder the phone syncs. On the phone, once the sync app has brought it down: gear, **System**, **Your game**, **Import
+    save**, **Choose a folder**, and pick it.
+- Play on one device at a time, and save before you switch. On the phone the save it replaces is kept in `save_backups`.
+  More: [Import your save](#import-your-save) and [Export your save](#export-your-save).
+
 ## What it does
 
 ### Display and performance
@@ -17,7 +39,7 @@ Talk with other players and ask for help in the community's [Discord](https://di
 - **Your phone's own resolution:** the 3D picture is drawn at your screen's resolution by default (three times the
   3DS's on a 720-line screen). Lower it under the gear, **Graphics & Audio**, **3D resolution**, down to the 3DS's own
 - **Widescreen that matches your screen**, from ultra-wide phones to 4:3 handhelds, with no bars
-- **Up to 240 fps:** the **Frame rate limit** goes from 30 to 240. The game keeps its speed; only more frames are drawn.
+- **15 to 240 fps:** the **Frame rate limit** goes from 15 to 240. The game keeps its speed; only more or fewer frames are drawn.
   **Steady frame rate**, off by default, runs an even half of the limit when the phone can't hold it
 - **Low-end mode**, for weak phones: 60 fps (30 on a phone without a fast core), the 3D picture at a third of your
   screen's resolution, and no screen filters, anti-aliasing or shadows. On a weak phone it is turned on by itself the first
@@ -31,6 +53,9 @@ Talk with other players and ask for help in the community's [Discord](https://di
   [Step 2](#step-2-optional-one-screen)
 - **Effects** can be turned off for speed, and **HD texture packs** made for Azahar and Citra load: see [Settings](#settings)
   and [Mods and cheats](#mods-and-cheats)
+- **Colour:** gear, **Graphics & Audio**, **Colour**: hue, temperature, tint, brightness, contrast, saturation and gamma for
+  the game's picture on both screens (never the touch controls or this menu), all at 0, no change, by default, with
+  **Reset colour**
 - **Your own GPU driver** on an Adreno, at your own risk: gear, **Graphics & Audio**, **Advanced**, **GPU driver**. If one fails, the app
   goes back to the system's by itself and says so
 
@@ -71,12 +96,23 @@ Talk with other players and ask for help in the community's [Discord](https://di
   **Profile**; or gear, **Controls**, **Control profiles**. They are kept in the `layout profiles` folder of your save
   folder, and your layout from before is profile 1. Designed by tabarong
 - **Buttons that stay pressed:** in the editor, tap a button and turn on **Hold**: a tap holds it down, the next lets go
-- **Your own button pictures:** in the editor, tap a button and choose **Picture** (add them there with **Add pictures**,
-  or gear, **Controls**, **Touch controls**, **Button images**). What you add is your own responsibility
+- **Your own button pictures:** in the editor, tap a control and choose **Picture** (add them there with **Add pictures**,
+  or gear, **Controls**, **Touch controls**, **Button images**). Every control the editor places takes one, the stick's
+  base and knob each their own (**For: base / knob**), and your picture is the control's whole look: only your PNG is
+  drawn, a little smaller and darker while pressed. What you add is your own responsibility
 - **Floating stick**, off by default: gear, **Controls**, **Touch controls**, **Floating stick**. The movement stick comes
   to where your thumb lands near it, and goes back when you lift it
+- **Hide the controls:** hold one finger still for a moment on an empty spot (no button there) and every touch control
+  hides, the gear too; do it again anywhere to bring them back. A camera drag, a hold on a button or a second finger never
+  hides them. On by default: gear, **Controls**, **Touch controls**, **Long-press hides the controls**
+- **Slide between buttons:** a thumb that slides from one button onto another keeps both pressed, as two fingers would
+  (R onto A is R + A, R onto X is R + X, as the Insect Glaive needs); slid back onto the first, that one alone. On by
+  default: gear, **Controls**, **Buttons on the screen**, **Slide between buttons: both pressed**
+- **The item bar's touch area:** in the editor, tap the item bar and use - / + (or pinch) to make the area where a tap uses
+  the item and a swipe turns the bar bigger or smaller (the bar itself is the game's)
 - Your phone's keyboard for your hunter's name and the chat
-- Vibration on touch, adjustable opacity and camera speed
+- Vibration on touch, adjustable opacity and camera speed, and **Camera smoothing** (gear, **Controls**, off by default):
+  a drag's turn of the camera eased in, the whole turn still given
 
 ### Controllers and keyboard
 
@@ -99,10 +135,12 @@ Talk with other players and ask for help in the community's [Discord](https://di
 - Mods, with load order and conflicts, HD texture packs, and cheats in Azahar's format: see
   [Mods and cheats](#mods-and-cheats)
 - Playing together over network rooms, and finding rooms on the same Wi-Fi: see [Playing together](#playing-together)
+- **Hubs**, online with no address to type and no port to open, through the same hub server as MHGU's: see
+  [Hubs](#hubs-online-with-no-ports-to-open)
 - Import your save from Azahar, Citra, or a Checkpoint or JKSM backup, and export it for them
 - Keep your save in a folder a sync app shares with your other devices: see
   [Choose where your save is kept](#choose-where-your-save-is-kept), and in the cloud with a sync app
-- Bring the event quests you already have: see [Import DLC and event quests](#import-dlc-and-event-quests)
+- Bring the event quests and the DLC you already have: see [Import DLC and event quests](#import-dlc-and-event-quests)
 - **Send all to the box** at the end of a quest, and a **home screen shortcut** with your own picture: see
   [Settings](#settings)
 - **The game's code built on the phone**, no PC needed: see [Step 3](#step-3-build-the-games-code)
@@ -170,7 +208,9 @@ of the picture, so there is nothing to install and no library to make again. Wit
 hidden; its button (on the left) brings it back for what still needs a finger: the town's map, the World Map, the
 keyboard and the character creation. While a menu of the game's is on the top screen, a touch button with half its
 picture or more over it is drawn faint so the whole menu reads (it still works and doesn't move), and on a 4:3 screen the
-gear waits in the bottom-left corner.
+gear waits in the bottom-left corner. On a screen wider than the console's, those menus are cut to the console screen's
+width, as the console cut them. The touch screen's plates and yes / no questions go beside the boxes, lists and cards
+instead of over them.
 Nothing changes in a hunt. It is based on the single-screen mode of
 [Heavenfall](https://github.com/popzol/4u-heavenfall-mod-beta), by popzol and BlitzWOLF, without Heavenfall's changes to
 the game.
@@ -213,7 +253,10 @@ the game's code, for one).
 - In the app it took about 32 minutes on an Anbernic RG406V (a mid-range Mali-G57), and about 92 minutes on a Galaxy
   S25 Ultra that kept pausing for heat; a low-end phone should take about 2 hours. It goes on with the screen off or in
   another app, with its progress in a notification, and if it is cut (the phone restarts, the app is closed) **Go on** goes on from
-  where it stopped, straight to the files still to compile, without analysing the game's code again.
+  where it stopped, straight to the files still to compile, without analysing the game's code again. **Start over**, on the
+  same screen after a build was cut, cancelled or failed, deletes what it left (its work files and the record it goes on
+  from), so the next **Build** starts from the beginning; it asks first, and keeps the downloaded tools unless you choose
+  to delete them too.
 - The phone gets warm: keep it charging, out of its case if you can. Warm, it goes slower; too hot, it waits until the
   phone cools down.
 
@@ -316,8 +359,9 @@ does. Change what you like and tap **Save**; a few options say they need a resta
   the console's own, for the weakest phones. It can only be a whole number of times the console's screen (400x240: 1x,
   2x, 3x...), so each percentage goes to the nearest of them, shown in brackets: there is no 55% or exact size, as in the
   MHGU port. The game draws its HUD and text into the same picture, so they are as sharp as this resolution.
-- **Frame rate limit:** 30 to 240. 30 is the 3DS's, heats the phone less and saves battery; above 60 is for fast phones with
-  a screen that fast.
+- **Frame rate limit:** 15 to 240. 30 is the 3DS's, heats the phone less and saves battery; above 60 is for fast phones with
+  a screen that fast. 15, 20 and 25 are for a phone that can't hold 30, or for the longest battery: 15 and 20 are as even as
+  30 on a 60 Hz screen, 25 is less even (it doesn't divide 60).
 - **Low-end mode:** **Off**, **On** or **Toaster**, as described [above](#display-and-performance). You can still change each
   of its options afterwards.
 - **Effects:** off, the game's particle effects are not drawn (hits, sparks, fire, breath, dust, rain): faster where there
@@ -329,7 +373,7 @@ does. Change what you like and tap **Save**; a few options say they need a resta
   a picture that shows something wrong after a GPU driver update or a crash. While the list is compiled, a small plate
   says how far it is.
 - **Send all to the box:** at the end of a quest, the game's **Send to Item Box** sends every reward at once, as in the
-  newer games; what doesn't fit in the box stays in the list. Off by default: gear, **Gameplay**, **Send all to the box**.
+  newer games, and the Palico's items too; what doesn't fit in the box stays in the list. Off by default: gear, **Gameplay**, **Send all to the box**.
   Alfonso's idea.
 - **Home screen shortcut:** gear, **System**, **Home screen shortcut** puts the game on your home screen with a picture and
   a name you choose. The app's own icon stays as it is.
@@ -375,6 +419,22 @@ bring your own, at your own risk.
   kept in `Android/data/com.mh4u.native/files/save_backups`.
 - They must be for the same region as your game (USA: `00001263`, Europe: `00001261`). The app says so when they aren't.
 - Your game needs its extra data first: start a game and save once before you import them.
+
+**The DLC itself** (the packs of the game's own DLC shop) is a title of its own, apart from the event quests. Since 1.0.1
+the same **Import DLC and event quests** brings it too, from your own copy:
+
+1. Copy to the device the emulator's user folder you installed it in (Azahar or Citra: the one with `sdmc` in it), or a
+   folder with your own DLC `.cia`.
+2. Gear, **Mods & Cheats**, **DLC and event quests**, **Import DLC and event quests**, **Choose a folder**, pick that
+   folder, and **Import and restart**.
+
+- It must be decrypted: the app decrypts nothing. If the emulator compressed it when it installed it, turn that option off
+  there and install it again, or use the `.cia`. The app tells you when a file can't be used, and why.
+- It must be for the same region as your game.
+- The game uses the DLC only for a save that already received it (one from your console or an emulator): the game's own DLC
+  menu needs an online service that no longer exists, so a save that never got it can't get it now.
+- The log says which DLC the game found and whether the game asked for it (gear, **System**, **Your game**, **Share
+  log**). This was tried with test files only: tell us how it goes with yours.
 
 ## Choose where your save is kept
 
@@ -444,9 +504,12 @@ drinking. Turned off, the effect lasts until the next quest.
 The texture packs made for Azahar and Citra work as they come: put the pack's folder (the one with the `tex1_...png` files and,
 if it has one, `pack.json`) inside a `textures` folder in your game folder, beside the `.cci` and `mods`. Azahar's own layout,
 `textures/0004000000126300/...`, works too. Only PNG textures are used (DDS and KTX files are left out). Each texture is read
-the first time the game draws it, so the first visit to an area can stutter, and every HD texture takes the phone's memory
-(a 1024x1024 texture is 4 MB): a big pack can close the game on a phone with little RAM. That's your call: the log says how
-many textures came from the pack and how much memory they take. No pack comes with this app: get it from its author.
+and decoded in the background the first time the game draws it (the game's own texture shows for a moment), and every HD
+texture takes the phone's memory (a 1024x1024 texture is 4 MB). The pack gets a share of the memory the app gives textures,
+by your phone's RAM: past it some textures stay the game's own, and those of areas you've left go after a while. If a whole
+pack is too much for your phone, gear, **Mods & Cheats**, **Texture packs**, **Pack texture size: Half** draws the pack's big
+textures at half their width and height (a quarter of the memory; it applies at the next start). The log says how many
+textures came from the pack and how much memory they take. No pack comes with this app: get it from its author.
 
 ### Comforts
 
@@ -474,7 +537,54 @@ comforts off. Their *Send All Rewards To Item Box (Hold X+Y)* isn't needed: the 
 ## Playing together
 
 The game's local play goes through a network room, the same kind of rooms Azahar uses: players of this app and of Azahar can
-share one.
+share one. From 1.0.1, this app's players can also meet in **hubs**, with no address to type and no port to open (below).
+
+### Hubs: online with no ports to open
+
+As MHGU for Android's players do, you can meet in **hubs**: a hub server lists the hubs and carries their players, so
+nobody types an address or forwards a port on a router.
+
+1. Gear, **Multiplayer**: choose a **Nickname**. **Play online with** chooses what the section shows: **This app's hubs**,
+   **Azahar and Citra rooms** (the rooms below, as in 1.0) or **Both** (as it comes).
+2. One hunter: **Create a hub**. Give it a **Hub name** and, if you like, a **Description** (your rank, what you hunt, your
+   language), a **Password** if only your friends should come in, and how many **Hunters** (2 to 4). Then **Create the
+   hub**. Keep the app open while the others play in it.
+3. The others: **Join a hub**. It lists the hubs open now for their copy of the game, with their hunters and a lock when
+   they have a password. A tap joins one.
+4. Then, as in a room: in the game, the **Gathering Hall**'s **Local Play**. One hunter creates a hall and the others find
+   it there. The chat's **Room** chat is the hub's.
+
+Only copies of the same region play together: USA with USA, Europe with Europe (Monster Hunter 4G has no hubs). Everyone
+should have the same version of this app.
+
+**Hub server** chooses the server. The default, `hunterhubid-gu-hub.duckdns.org`, is the community server MHGU's players
+run (not this project); the same server keeps each game's and region's hubs apart. **Custom...** types another (a name or
+an IP, and `:port` if it is not 39510), and **Off** turns hubs off. **Check hub server** says whether it answers, how long
+it takes, and how many hubs it lists. Like any server on the internet, it sees your IP address; the other players don't.
+
+With **Play online with: Both**, a hub you create also takes Azahar and Citra players: they join it as a room, at your
+phone's address and its **Port (UDP)** (from the internet, once that port is forwarded to the phone).
+
+A hub is a room on the host's phone that the others reach through the hub server: its game traffic goes by UDP through the
+server when that gets through, else through the server's TCP connection. The game's own limits on local play still apply:
+a slow connection, or a phone that stops for a moment, can drop a hunter, as in a room.
+
+### Host a hub server
+
+The hub server is the same program as MHGU for Android's,
+[gu-native's `server/`](https://github.com/khorne-hub/gu-native/tree/main/server): one small Go program with no database
+and no configuration file, and one running server serves both games. To run your own, for your group or closer to you:
+
+```
+git clone https://github.com/khorne-hub/gu-native
+cd gu-native/server
+go build -o mhgurecomp-hubserver .     # Go 1.22 or newer
+./mhgurecomp-hubserver -addr :39510
+```
+
+Open port **39510 for TCP and UDP** in the firewall (and forward it, behind a router). Its options (limits per address,
+bandwidth), Docker and systemd are in its README. The players then choose **Hub server**, **Custom...**, and its name or
+address. A hub's game traffic goes through the server: put it where the players have a good connection.
 
 **Crossplay with Azahar and Citra:** the rooms are the same as the multiplayer rooms of Azahar, Citra and Lime3DS, so their
 players join a room of this app and you join theirs, the same way (by address, or from **Public rooms**: that lobby is where

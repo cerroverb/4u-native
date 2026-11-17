@@ -41,6 +41,7 @@ struct SyncData {
     std::mutex frame_mutex;
     bool timestamps_checked = false;
     bool timestamps_usable = false;
+    u32 unrun_frames = 0;  // frames whose submission passed with their timestamps never written (HarvestFrames)
     std::vector<FrameQuery> frames;
     std::vector<std::unique_ptr<::plume::RenderQueryPool>> spare_pools;  // pools of read frames, reset before reuse
     u64 next_frame_id = 1;

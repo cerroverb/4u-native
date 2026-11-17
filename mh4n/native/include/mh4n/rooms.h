@@ -188,6 +188,9 @@ struct JoinRequest {
                                      ///< without a lobby ignore it)
     std::string console_id_hash;     ///< empty: the running game's (PublishConsole)
     std::optional<MacAddress> preferred_mac;  ///< none: the room gives one (Azahar's NoPreferredMac)
+    /// The largest datagram ENet sends both ways (the smaller of the two ends' is used); 0: ENet's own (1392). A hub's
+    /// tunnel (mh4n/hubs.h) asks for less, so a datagram with the tunnel's headers is never cut into IP fragments.
+    u16 mtu = 0;
 };
 
 /// Something that happened in the room, for the app's chat and notices.

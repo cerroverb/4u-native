@@ -62,6 +62,14 @@ bool shared_screens_show(SharedScreenView& view, const std::shared_ptr<const mh4
 // target's picture turned upright, flipped and shifted as the display transfer and the display would, in a GL pass of
 // its own in SDL's order (SDL's queue goes to GL first). Nothing when it has nothing. `alpha`: the texture's alpha mod.
 void shared_screens_draw(SharedScreenView& view, const SDL_FRect& dst, int win_w, int win_h, Uint8 alpha = 255);
+// The colour filter the screens are drawn with from now on ([Colour], colour_filter.h; the settings panel's draft while it
+// is open, the saved values otherwise: android_main.cpp). All 0: SDL's own draw and the render target's program as before.
+struct ColourAdjust;
+void shared_screens_set_colour(const ColourAdjust& colour);
+// The screen upright at `w` x `h`, the whole of what is bound now (an SDL render target of that size: frame_gen.cpp keeps
+// the top screen's pictures so), drawn as shared_screens_draw draws it into the window but with nothing added to its
+// colours (the made picture is drawn with shared_screens_draw, which adds them once).
+void shared_screens_draw_upright(SharedScreenView& view, int w, int h);
 // MH4N_TARGET_SCREENS_CHECK=1 (a measurement aid; the renderer draws the upright copy as well): now and then the screen
 // drawn both ways into a texture of the window's size and compared pixel by pixel; logged, and the first pair saved as
 // BMPs into `dir`.

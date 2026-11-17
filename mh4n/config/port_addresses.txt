@@ -133,7 +133,20 @@
 0x006654b4 LM_FIND_LINE                         # swkbd_bridge.cpp
 0x003ae264 KBD_FINISH                           # swkbd_bridge.cpp
 0x010571d4 FRAME_COUNTER                        # runtime.h kFrameCounterAddress
+0x00fb8a1c SPOP                                 # gather.cpp (and SPLAYER, GAME_CONTROL, ITEM_BOX_OWNER, QUEST_HOLDER,
+#                                                  FRAMES_SUBMITTED's frame counter, FN_IS_LOCAL, FN_HOLDER_ENDING, SENEMY)
+0x01083854 ITEM_WINDOW                          # gather.cpp
+0x005b95b0 FN_POINT_COUNT                       # gather.cpp
+0x005b9b78 FN_POINT_ROLL                        # gather.cpp
+0x00c2347c FN_COUNT_GATHER                      # gather.cpp
+0x00c260f0 FN_COUNT_RARE                        # gather.cpp
+0x006b3ca0 FN_QUEST_101                         # gather.cpp
+0x006b3cd4 FN_QUEST_102                         # gather.cpp
+0x00be2898 FN_QUEST_NOTE                        # gather.cpp
+0x00b109a4 FN_GIVE                              # gather.cpp
+0x0092600c FN_CARVE_POINT                       # gather.cpp (its tests)
 0x01057534 SMHLAYOUT_INSTANCE                   # onescreen.cpp
 0x00ae655c FN_GROUP_CHANGED                     # onescreen.cpp
 0x0109cdc8 PROMPT_OWNER                         # onescreen.cpp
 0x00ae6b78 FN_PANE_REDRAW                       # onescreen.cpp
+0x005deb68 FN_ROOM_MORE                         # onescreen.cpp

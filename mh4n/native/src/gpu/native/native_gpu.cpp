@@ -4,8 +4,8 @@
 // 5f3306d13cab40bbd5cf38f2cf3ae8b6e6eedca6 (GPL-3.0-or-later: vk_rasterizer.cpp says "Licensed under GPLv3 or any later
 // version"; the others say "Licensed under GPLv2 or any later version"): the viewport, scissor and draw rectangle of a draw
 // (mirrored when the framebuffer is flipped; FramebufferHelper's res_scale for --scale), the surfaces a draw uses, the
-// register positions of the framebuffer block. The scaled screen's shader restates, at N x, what gx/blitter.cpp and
-// gpu_capture/image.cpp take from Azahar src/video_core/renderer_software/sw_blitter.cpp (the display transfer's flip and
+// register positions of the framebuffer block. The scaled screen's shader restates, at N x, what our gx/blitter and
+// gpu_capture/image take from Azahar src/video_core/renderer_software/sw_blitter.cpp (the display transfer's flip and
 // crop), renderer_software.cpp (the screen read out of the framebuffer, rotated, with its one-pixel shift) and
 // src/common/color.h (Convert8To5 and kin, Convert5To8 and kin), and the GX command words of src/video_core/gpu.cpp.
 // The rest (the targets, the write-back, the recorder and ring management, the counters, the scaled targets and the
@@ -48,6 +48,7 @@
 #include "gpu/backend/state/state.h"
 #include "gpu/backend/vulkan_access.h"
 #include "gpu/cpuvertex/cpu_vertex.h"
+#include "mh4n/ab_switches.h"
 #include "gpu/cpuvertex/primitive_assembly.h"
 #include "gpu/cpuvertex/shader_interpreter.h"
 #include "gpu/cpuvertex/triangle_batch.h"
@@ -125,6 +126,26 @@ u64 TextureBudgetBytes() {
     }();
     return budget;
 }
+// The HD pack's share of the texture budget (1.0.1, 4u-native #56): five eighths of it (120 MB up to 3 GB, 160 up to
+// 4.5 GB, 240 up to 6.5 GB, 480 more), MH4N_HD_BUDGET_MB=<n> another. A new HD image is made only while the pack's images
+// fit in it (TextureImage); past it the texture stays the game's own until room is made (HdHousekeeping). Before, the
+// images counted only in the whole budget, and a 4x pack's area on a 4 GB phone (256 MB) went past it: the budget's
+// LRU let go of images the next frames drew again, and each was read and decoded from its file again (a Moto g06 in
+// the village: 1444 decodes of 380 files, 82 frames over 33 ms in a minute). The game's own textures keep the rest.
+u64 HdBudgetBytes() {
+    static const u64 budget = [] {
+        if (const char* v = std::getenv("MH4N_HD_BUDGET_MB"); v != nullptr && std::atoi(v) > 0) {
+            return static_cast<u64>(std::atoi(v)) << 20;
+        }
+        return TextureBudgetBytes() / 8 * 5;
+    }();
+    return budget;
+}
+// An HD image not bound in this many screen pictures (two a game frame: 30 s at 60 FPS, a minute at 30) is long idle: it
+// goes once the pack's images pass half their share (an area left behind)
+constexpr u64 kHdIdlePictures = 3600;
+// One not bound in this many (2.5 s at 60 FPS) may go to make room for a new one the frames draw now
+constexpr u64 kHdRoomIdlePictures = 300;
 // Below this much of the system's memory available (MH4N_LOWMEM_MB, as the MHGU port's: Android 14 and newer no longer
 // tell a foreground app memory runs low), the images and cache entries not used for two seconds go (TrimForMemory).
 [[maybe_unused]] long LowMemoryKb() {
@@ -773,6 +794,7 @@ struct TexImageKey {
 struct TexImage {
     std::shared_ptr<rhi::Image> image;
     int hd = -1;  // the HD pack's file the image holds (HdTextures), -1 the game's own texture
+    bool hd_ready = false;  // its pixels uploaded: the same file's are never read again for it
     u32 width = 0, height = 0;  // the image's size (a pack's texture: its file's)
     std::array<u32, 6> generation{};  // of the cache's decoded face the image holds
     u64 bytes = 0;
@@ -843,10 +865,20 @@ public:
             if (texture_cache_) {
                 texture_cache_->NextFrame();  // (a screen's picture is done: each texture's spot check once a picture)
                 MemoryHousekeeping();
+                hd_upload_bytes_ = 0;  // (and the HD pack's uploads start again: TextureImage)
+                hd_.Tick();
             }
             if (AbFrames() != 0 && fragment_state_ != nullptr && AbOffFor("shaders") != fragment::ShadersAsBefore()) {
                 fragment::SetShadersAsBefore(AbOffFor("shaders"));
                 fragment_state_->Invalidate();
+            }
+            if (AbFrames() != 0) {  // (opt101's cuts; "opt101": all of them at once)
+                const bool all = AbOffFor("opt101");
+                cpuvertex::SetDecodedInterpreterOff(all || AbOffFor("decoded"));
+                cpuvertex::SetDecodedVectorsOff(all || AbOffFor("decvec"));
+                ab::g_vertex_cache_table_off.store(all || AbOffFor("vtable"), std::memory_order_relaxed);
+                ab::g_gs_backend_reuse_off.store(all || AbOffFor("gsreuse"), std::memory_order_relaxed);
+                ab::g_pipeline_mru_off.store(all || AbOffFor("pmru"), std::memory_order_relaxed);
             }
             TraceTransfer(GxPhysical(command.words[1]), GxPhysical(command.words[2]));
             FragStatsTransfer();
@@ -1845,7 +1877,7 @@ private:
             } else if (std::optional<std::string> user = options_.options.Get("--user")) {
                 packs = *user + "/load/textures";
             }
-            hd_.Load(packs);
+            hd_.Load(packs, options_.options.Has("--deterministic"));
         }
 
         vertex::VertexCaps vertex_caps;
@@ -1942,6 +1974,16 @@ private:
         }
         EnsureRecording();
     }
+
+    // MH4N_OPEN_LATE (DrawImpl): the recording opened after the hidden touch screen's draws are left out.
+    static bool OpenLateEnv() {
+        static const bool on = [] {
+            const char* v = std::getenv("MH4N_OPEN_LATE");
+            return v == nullptr || *v != '0';
+        }();
+        return on;
+    }
+    bool OpenLateOn() const { return OpenLateEnv() && !AbOffFor("openlate") && !AbOffFor("opt101"); }
 
     // At a draw's start: the recording is submitted once it has kMaxDrawsPerRecording draws, but not while the draw most
     // likely goes on in the open pass (the same colour and depth buffers as the last draw recorded, and that pass still
@@ -4267,10 +4309,15 @@ private:
                 shared_->Acquire(*rec_, *slot->image);  // (the app's reads of it are over: it let go of its picture)
             }
             rhi::Image& target = slot != nullptr ? slot->image->GetImage() : *entry->image;
+            // Loaded, not cleared: the triangle writes every pixel of the picture (alpha 1 too), so the clear was never
+            // seen, and it was the only colour clear command inside a pass the renderer recorded each frame
+            // (vkCmdClearAttachments; the game's are load ops). A PowerVR BXM-8-256 on driver 1.15 ran its shader
+            // compiler at the end of the pass, every frame, and kept a large allocation each time: two map entries a
+            // frame, 65,000 after ten minutes, then an abort (4u-native #31; Discord, balter: both logs ended in that
+            // compile, called from vkCmdEndRenderPass here). The pass loaded the picture before the clear as well.
             rhi::TargetPassDesc pass;
             pass.color = &target;
-            pass.color_load = rhi::LoadOp::Clear;
-            pass.clear_color = {0.0f, 0.0f, 0.0f, 1.0f};
+            pass.color_load = rhi::LoadOp::Load;
             pass.area = rhi::Rect{0, 0, image_width, image_height};
             rec_->BeginTargetPass(pass);
             rec_->SetPipeline(*screen_pipeline_);
@@ -4554,6 +4601,7 @@ private:
         if (frame % 600 == 0) {
             texture_cache_->Sweep(36000, 600);
         }
+        HdHousekeeping(frame);
 #if !defined(_WIN32)
         if (frame % 120 == 0 && LowMemoryKb() > 0) {
             const long available = AvailableMemoryKb();
@@ -4573,6 +4621,62 @@ private:
         if (now >= next_memory_line_us_) {
             next_memory_line_us_ = now + every_us;
             MemoryLine();
+        }
+    }
+
+    // The HD pack's images at each screen picture (MemoryHousekeeping; 1.0.1, 4u-native #56). A new one that did not fit
+    // in the pack's share (TextureImage, hd_room_wanted_): those not bound in the last kHdRoomIdlePictures go, the least
+    // recently bound first, down to three quarters of the share, and the textures waiting for room are made at the next
+    // draws. Every 120 pictures, past half the share: those not bound in the last kHdIdlePictures (areas left behind).
+    // Never one the current recording binds, and none while a draw collects its images (an upload may submit the
+    // recording: the images it collected so far no longer carry its stamp). One drawn again is read from its file again,
+    // on the loader's threads (the game's own texture for a moment).
+    void HdHousekeeping(u64 frame) {
+        if (!hd_.active() || binding_textures_) {
+            return;
+        }
+        if (hd_room_wanted_) {
+            hd_room_wanted_ = false;
+            ReleaseHd(HdBudgetBytes() / 4 * 3, kHdRoomIdlePictures, "to make room for new ones");
+        }
+        if (frame % 120 == 0 && hd_.image_bytes() > HdBudgetBytes() / 2) {
+            ReleaseHd(HdBudgetBytes() / 2, kHdIdlePictures, "not drawn for a while");
+        }
+    }
+
+    // The HD images not bound in the last `idle` pictures (nor in the current recording) go, the least recently bound
+    // first, until the pack's images hold at most `down_to` bytes.
+    void ReleaseHd(u64 down_to, u64 idle, const char* why) {
+        const u64 frame = TextureFrame();
+        if (hd_.image_bytes() <= down_to || frame <= idle) {
+            return;
+        }
+        std::vector<std::pair<u64, std::map<TexImageKey, TexImage>::iterator>> old;
+        for (auto it = texture_images_.begin(); it != texture_images_.end(); ++it) {
+            if (it->second.hd >= 0 && it->second.stamp != recording_serial_ && it->second.used_frame < frame - idle) {
+                old.emplace_back(it->second.used_frame, it);
+            }
+        }
+        std::sort(old.begin(), old.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+        const u64 before = hd_.image_bytes();
+        u64 gone = 0;
+        for (auto& [used, it] : old) {
+            if (hd_.image_bytes() <= down_to) {
+                break;
+            }
+            texture_bytes_ -= it->second.bytes;
+            hd_.Gone(it->second.bytes);
+            backend_->Retire(it->second.image, last_submit_);
+            texture_images_.erase(it);
+            ++textures_released_;
+            ++gone;
+        }
+        hd_idle_released_ += gone;
+        if (gone > 0 && hd_idle_told_ < 20) {
+            ++hd_idle_told_;
+            MH4N_LOG(Info, "Memory", "[mem] HD textures: {} images {} let go ({} -> {} MB of the pack's images, {} MB of them "
+                                     "allowed; {} let go so far, {} draws waited for room)",
+                     gone, why, before >> 20, hd_.image_bytes() >> 20, HdBudgetBytes() >> 20, hd_idle_released_, hd_room_waits_);
         }
     }
 
@@ -4615,11 +4719,15 @@ private:
                  "[mem] the renderer: resident {} MB ({:+}; own {}, files {}); GPU allocator {} MB in {} blocks ({} MB in {} "
                  "allocations); textures: {} images {} MB (up to {}; {} let go so far), {} cache entries with {} MB decoded ({} "
                  "gone unused, {} decoded again for an image, {} caught by the spot check, {} of them by the rolling one, {} "
-                 "failed); targets {} MB",
+                 "failed); targets {} MB{}",
                  m.resident_kb / 1024, (m.resident_kb - first_resident_kb_) / 1024, m.anon_kb / 1024, m.file_kb / 1024,
                  use.block_bytes >> 20, use.blocks, use.allocation_bytes >> 20, use.allocations, texture_images_.size(),
                  texture_bytes_ >> 20, TextureBudgetBytes() >> 20, textures_released_, texture_cache_->size(),
-                 texture_cache_->pixel_bytes() >> 20, c.swept, c.repixels, c.spotted, c.rolled, c.failures, targets >> 20);
+                 texture_cache_->pixel_bytes() >> 20, c.swept, c.repixels, c.spotted, c.rolled, c.failures, targets >> 20,
+                 hd_.active() ? fmt::format("; HD packs: {} images {} MB (up to {} MB; {} let go, {} draws waited for room so far){}",
+                                            hd_.images(), hd_.image_bytes() >> 20, HdBudgetBytes() >> 20, hd_idle_released_,
+                                            hd_room_waits_, hd_.LoaderStats())
+                              : std::string());
     }
 
     // Uploads one decoded face into `image` (submitting the recording once when the staging ring is full). False on failure.
@@ -4779,6 +4887,41 @@ private:
                 hd = hd_.Find(decoded[0]->content_hash, memory, bytes, k.width, k.height, k.format);
             }
         }
+        // A new HD image is made only from pixels the pack's loader has read and decoded on its threads, and no more than
+        // HdTextures::kUploadBytesPerPicture of them a screen picture: until then the texture is the game's own (never a
+        // frame waiting for a file, 4u-native #56). An image that holds the file's pixels already keeps them.
+        std::vector<u8> hd_pixels;
+        bool hd_pixels_ready = false;
+        if (hd != nullptr) {
+            const auto held = texture_images_.find(key);
+            const bool holds_it = held != texture_images_.end() && held->second.hd == static_cast<int>(hd->file) &&
+                                  held->second.hd_ready;
+            const u64 hd_bytes = u64{hd->width} * hd->height * 4;
+            if (!holds_it && !hd_.sync() && hd_.image_bytes() + hd_bytes > HdBudgetBytes()) {
+                // (past the pack's share of the budget: the game's own texture, its file not even read, until
+                // HdHousekeeping makes room; HdBudgetBytes)
+                hd_room_wanted_ = true;
+                ++hd_room_waits_;
+                hd = nullptr;
+            } else if (!holds_it) {
+                // (the synchronous way, MH4N_HD_SYNC=1 or --deterministic, uploads each one when first drawn, as 1.0)
+                const bool room = hd_.sync() || hd_upload_bytes_ == 0 ||
+                                  hd_upload_bytes_ + hd_bytes <= HdTextures::kUploadBytesPerPicture;
+                switch (hd_.TakePixels(*hd, hd_pixels, room)) {
+                case HdTextures::Take::Ready:
+                    hd_pixels_ready = true;
+                    hd_upload_bytes_ += hd_bytes;
+                    break;
+                case HdTextures::Take::Pending:
+                    hd = nullptr;  // (the game's own texture this time)
+                    break;
+                case HdTextures::Take::Failed:
+                    hd_.Refuse(*hd);
+                    hd = nullptr;
+                    break;
+                }
+            }
+        }
         const int hd_file = hd != nullptr ? static_cast<int>(hd->file) : -1;
         const u32 image_w = hd != nullptr ? hd->width : first.width, image_h = hd != nullptr ? hd->height : first.height;
         auto it = texture_images_.find(key);
@@ -4832,8 +4975,9 @@ private:
                 hd_.Made(entry.bytes);
                 if (hd_.images() % 50 == 1) {
                     MH4N_LOG(Info, "Memory", "[mem] HD textures: {} images, {} MB of GPU memory (all textures {} MB, up to {} MB "
-                                             "before the least used go)",
-                             hd_.images(), hd_.image_bytes() >> 20, texture_bytes_ >> 20, TextureBudgetBytes() >> 20);
+                                             "before the least used go){}",
+                             hd_.images(), hd_.image_bytes() >> 20, texture_bytes_ >> 20, TextureBudgetBytes() >> 20,
+                             hd_.LoaderStats());
                 }
             }
             it = texture_images_.emplace(key, std::move(entry)).first;
@@ -4848,7 +4992,11 @@ private:
             if (entry.generation[i] == decoded[i]->generation) {
                 continue;
             }
-            if (decoded[i]->rgba8.empty()) {
+            if (entry.hd >= 0 && entry.hd_ready) {
+                entry.generation[i] = decoded[i]->generation;  // (the same content: the same file's pixels, held already)
+                continue;
+            }
+            if (entry.hd < 0 && decoded[i]->rgba8.empty()) {
                 // its pixels went once an image held them (TextureCache::ReleasePixels): this image is new or was let go
                 const u64 pixels_start = NowUs();
                 decoded[i] = texture_cache_->Pixels(key.faces[i]);
@@ -4859,11 +5007,14 @@ private:
             }
             const u64 upload_start = NowUs();
             bool uploaded;
-            if (entry.hd >= 0) {  // (an HD pack's texture: its file's pixels, read now and let go once uploaded)
-                std::vector<u8> pixels;
-                uploaded = hd_.Pixels(*hd, pixels) && UploadHd(*entry.image, entry.width, entry.height, pixels,
-                                                               unread_here && entry.stamp == recording_serial_);
-                if (!uploaded) {
+            if (entry.hd >= 0) {  // (an HD pack's texture: its file's pixels from the loader, let go once uploaded)
+                uploaded = hd_pixels_ready && UploadHd(*entry.image, entry.width, entry.height, hd_pixels,
+                                                       unread_here && entry.stamp == recording_serial_);
+                if (uploaded) {
+                    entry.hd_ready = true;
+                    hd_pixels_ready = false;
+                    std::vector<u8>().swap(hd_pixels);
+                } else {
                     hd_.Refuse(*hd);  // (the next lookup makes the game's own image instead of trying it again each draw)
                 }
             } else {
@@ -5326,7 +5477,11 @@ private:
     // TEV's roundings and clamps, the LOD of a unit with levels); pretake, a measurement aid: the hidden touch screen's
     // snapshot of a published picture that owes not taken at the hand-over (PretakeSnapshot) but from the image the app's
     // side holds, as before 4u-native #31; owing, a hand-over that owes nothing (the box copied, as on a GPU OwingAllowed
-    // says no to).
+    // says no to); decoded, the CPU path's interpreter word by word instead of decoded (cpuvertex::InterpreterEngine,
+    // MH4N_PICA_DECODED); decvec, its arithmetic one lane at a time; openlate, the recording opened before the hidden
+    // touch screen's draws are left out (DrawImpl, MH4N_OPEN_LATE); vtable, the CPU path's vertex cache searched in
+    // order; gsreuse, a new geometry backend each draw; pmru, the pipeline provider without its list of ready ones;
+    // opt101, all of these at once (opt101).
     static u32 AbFrames() {
         static const u32 frames = [] {
             const char* v = std::getenv("MH4N_AB");
@@ -5779,8 +5934,15 @@ private:
         }
         self_sampled_ = false;
         pingpong_ = PingPong{};
-        SubmitAtPassBreak(state);
-        EnsureRoom(0);
+        // The recording is opened (or submitted at its draw limit) only for a draw that is not left out for the hidden
+        // touch screen, below: the hidden touch screen's GX list, all of whose draws are left out, opened one that its
+        // end submitted with nothing in it, a vkQueueSubmit a frame for nothing (about 0.2 ms of this thread and a job of
+        // the driver's on a Mali). MH4N_OPEN_LATE=0 (MH4N_AB_FEATURE name "openlate"): opened first, as before.
+        const bool open_late = OpenLateOn();
+        if (!open_late) {
+            SubmitAtPassBreak(state);
+            EnsureRoom(0);
+        }
 
         // The surfaces the draw names (their registers), and the viewport, scissor and the scissor uniform from them.
         const u32 color_address = pica::BitsOf(regs[kRegColorAddress], 0, 28) * 8;
@@ -5838,6 +6000,10 @@ private:
             }
             ++frame_.touch_skipped;
             return rhi::Error{"the touch screen is hidden"};
+        }
+        if (open_late) {
+            SubmitAtPassBreak(state);
+            EnsureRoom(0);
         }
         if (touch_pending_) {
             // (the draws left out had changed these: the state is the processor's own, which clears them after this draw)
@@ -7509,6 +7675,11 @@ private:
     u64 texture_bytes_ = 0;
     u64 textures_released_ = 0;           // images let go (the budget, the memory short)
     HdTextures hd_;                       // HD texture packs (hd_textures.h)
+    u64 hd_upload_bytes_ = 0;             // the HD images' pixels uploaded for this screen picture (each display transfer: 0)
+    u64 hd_idle_released_ = 0;            // HD images let go for not being drawn lately (ReleaseHd)
+    u64 hd_idle_told_ = 0;                // (its log lines so far)
+    bool hd_room_wanted_ = false;         // a new HD image did not fit in the pack's share: HdHousekeeping makes room
+    u64 hd_room_waits_ = 0;               // the times a texture stayed the game's own for that
     u64 register_triggers_ = 0;           // fills and transfers started by a register write (WriteReg)
     bool texture_memory_short_ = false;   // an image could not be made: TrimTextures at the next recording
     u32 texture_create_failures_ = 0;

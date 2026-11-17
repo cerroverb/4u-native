@@ -10,6 +10,9 @@ namespace mh4n::fs {
 MH4N_OPTION("runner", "--io-latency", "azahar|none",
             "when file replies arrive: no earlier than Azahar's modelled delay, on the game clock "
             "(azahar, the default), or as soon as the data is read (none)");
+MH4N_OPTION("runner", "--dlc-folder", "DIR",
+            "also look for add-on content (DLC) titles in DIR, an Azahar user folder or its sdmc/ folder, read in "
+            "place (repeatable); the save folder, the user folder's sdmc/ and nand/ are always looked at");
 MH4N_OPTION("ipc-replay", "--io-latency", "azahar|none",
             "when file replies arrive: no earlier than Azahar's modelled delay (azahar, the default), or "
             "as soon as the data is read (none)");

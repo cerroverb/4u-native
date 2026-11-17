@@ -241,6 +241,7 @@ private:
     bool started_ = false;
 
     std::atomic<u64> busy_ns_{0};
+    u64 trace_busy_ns_ = 0;  // the renderer thread's busy time, read only by it (the pacing trace's r_frame)
     std::atomic<u64> wait_ns_{0};
     std::atomic<u64> frame_waits_{0};
 

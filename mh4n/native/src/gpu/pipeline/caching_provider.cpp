@@ -2,6 +2,7 @@
 #include "gpu/pipeline/caching_provider.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
@@ -15,9 +16,10 @@
 
 #include <fmt/format.h>
 
-#include "common/utf8.h"
+#include "../../common/utf8.h"
 #include "gpu/pipeline/files.h"
 #include "gpu/pipeline/key_codec.h"
+#include "mh4n/ab_switches.h"
 #include "mh4n/log.h"
 #include "mh4n/registry.h"
 
@@ -258,6 +260,15 @@ private:
     std::unordered_map<PipelineKey, Entry, native::PipelineKeyHash> table_;
     PipelineKey last_ready_{};      // Prepare: the last key it found ready (under mutex_)
     bool last_ready_valid_ = false;
+    // (opt101) The ready entries the renderer asked Lookup and Prepare for last, by their table node (the table never
+    // lets one go, and a pipeline once ready stays ready), the most recent first: a key found among them takes no hash
+    // and no bucket search, with the same answer and the same use count. A frame's draws go back and forth between a
+    // few keys, which the last key alone (last_ready_, the composer's last handle) did not catch. MH4N_PIPELINE_MRU=0:
+    // none (under mutex_).
+    using Node = std::pair<const PipelineKey, Entry>;
+    std::array<Node*, 8> ready_mru_{};
+    Node* FindReadyMru(const PipelineKey& key);
+    void NoteReadyMru(Node* node);
     std::deque<PipelineKey> urgent_, background_;
     u32 building_ = 0;
     u32 background_building_ = 0;  // builds taken from the background queue (one worker is kept for the urgent one)
@@ -522,6 +533,43 @@ CachingProvider::Built CachingProvider::GetNow(std::unique_lock<std::mutex>& loc
 
 // ---- the provider interface (the renderer thread) ----
 
+namespace {
+bool PipelineMruOn() {
+    static const bool on = [] {
+        const char* v = std::getenv("MH4N_PIPELINE_MRU");
+        return v == nullptr || *v != '0';
+    }();
+    return on && !ab::g_pipeline_mru_off.load(std::memory_order_relaxed);
+}
+}  // namespace
+
+CachingProvider::Node* CachingProvider::FindReadyMru(const PipelineKey& key) {
+    if (!PipelineMruOn()) return nullptr;
+    for (size_t i = 0; i < ready_mru_.size(); ++i) {
+        Node* const n = ready_mru_[i];
+        if (n == nullptr) break;
+        if (n->second.state == State::Ready && n->first == key) {
+            for (size_t j = i; j > 0; --j) ready_mru_[j] = ready_mru_[j - 1];  // (to the front)
+            ready_mru_[0] = n;
+            return n;
+        }
+    }
+    return nullptr;
+}
+
+void CachingProvider::NoteReadyMru(Node* node) {
+    if (!PipelineMruOn()) return;
+    size_t at = ready_mru_.size() - 1;  // (the last one goes, unless the node is in the list already)
+    for (size_t i = 0; i < ready_mru_.size(); ++i) {
+        if (ready_mru_[i] == node || ready_mru_[i] == nullptr) {
+            at = i;
+            break;
+        }
+    }
+    for (size_t j = at; j > 0; --j) ready_mru_[j] = ready_mru_[j - 1];
+    ready_mru_[0] = node;
+}
+
 rhi::Result<native::PipelineHandle> CachingProvider::Lookup(const PipelineKey& key) {
     std::unique_lock lock(mutex_);
     ++total_.lookups;
@@ -537,11 +585,18 @@ rhi::Result<native::PipelineHandle> CachingProvider::Lookup(const PipelineKey& k
         handle.fallback = !key.IsFallback();
         return handle;
     }
+    if (Node* n = FindReadyMru(key)) {
+        ++n->second.uses;
+        ++total_.hits;
+        handle.pipeline = n->second.pipeline;
+        return handle;
+    }
     const auto it = table_.find(key);
     if (it != table_.end() && it->second.state == State::Ready) {
         ++it->second.uses;
         ++total_.hits;
         handle.pipeline = it->second.pipeline;
+        NoteReadyMru(&*it);
         return handle;
     }
     const PipelineKey fallback = key.AsFallback();
@@ -609,11 +664,17 @@ native::PipelineReadiness CachingProvider::Prepare(const PipelineKey& key, const
     if (last_ready_valid_ && last_ready_ == key) {
         return native::PipelineReadiness::Ready;
     }
+    if (FindReadyMru(key) != nullptr) {
+        last_ready_ = key;
+        last_ready_valid_ = true;
+        return native::PipelineReadiness::Ready;
+    }
     const auto it = table_.find(key);
     if (it != table_.end()) {
         if (it->second.state == State::Ready) {
             last_ready_ = key;
             last_ready_valid_ = true;
+            NoteReadyMru(&*it);
             return native::PipelineReadiness::Ready;
         }
         if (it->second.state == State::Failed) {

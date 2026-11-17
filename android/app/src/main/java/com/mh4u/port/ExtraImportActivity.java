@@ -41,6 +41,11 @@ import java.util.regex.Pattern;
  * As an imported save, nothing is written while the game runs (it may read or write its extra data at any moment): the
  * files are checked and copied into save_import_extra/<title>/, then the app restarts, and GameActivity applies them
  * before the game starts (applyPending): the quest files they replace go to save_backups/<date>-dlc first.
+ *
+ * DLC titles (1.0.1, DlcImport): the add-on content the player installed in Azahar (its user or sdmc folder, or the
+ * title folder itself) or a decrypted .cia of their own, in the same folder chosen. They are checked as the runtime
+ * reads them and copied into the game's own folder (user/sdmc/.../title/0004008c/<low>/) before the restart: the
+ * runtime looks titles up when the game starts and reads them only when the game asks, never writes them.
  */
 public class ExtraImportActivity extends Activity {
     private static final String TAG = "MH4U";
@@ -55,11 +60,12 @@ public class ExtraImportActivity extends Activity {
     static File home(Context c) { return AppHome.home(c); }
     private static File stagedDir(Context c) { return new File(home(c), "save_import_extra"); }
 
-    /** The quest files of a folder chosen, and which game they are for. */
+    /** The quest files and DLC titles of a folder chosen, and which game they are for. */
     private static final class Found {
         List<File> quests = new ArrayList<>();
         String title;  // 00126300 the USA game, 00126100 Europe's; null: the path doesn't say
         File from;
+        List<DlcImport.Title> dlc = new ArrayList<>();
     }
 
     // ---- applying an import before the game starts (GameActivity.onCreate)
@@ -132,8 +138,8 @@ public class ExtraImportActivity extends Activity {
         TextView title = Look.text(this, es ? "IMPORTAR DLC Y MISIONES DE EVENTO" : "IMPORT DLC AND EVENT QUESTS", 20, Look.GOLD, true);
         title.setGravity(Gravity.CENTER);
         page.addView(title);
-        TextView intro = Look.text(this, es ? "Trae las misiones de evento que ya tienes, de un emulador o de una copia de tu consola."
-                                            : "Bring the event quests you already have, from an emulator or a backup of your console.", 14, Look.CREAM, false);
+        TextView intro = Look.text(this, es ? "Trae las misiones de evento y el DLC que ya tienes, de un emulador o de una copia de tu consola."
+                                            : "Bring the event quests and the DLC you already have, from an emulator or a backup of your console.", 14, Look.CREAM, false);
         intro.setGravity(Gravity.CENTER);
         intro.setPadding(0, Look.dp(this, 2), 0, Look.dp(this, 8));
         page.addView(intro);
@@ -142,20 +148,24 @@ public class ExtraImportActivity extends Activity {
         columns.setOrientation(LinearLayout.HORIZONTAL);
         columns.addView(column(es ? "QUÉ CARPETA ELEGIR" : "WHICH FOLDER TO CHOOSE", es
                 ? "Las misiones de evento son los archivos quest1 a quest5 de los datos extra del juego.\n"
-                  + "• Azahar o Citra: la carpeta del emulador, la que tiene sdmc.\n"
+                  + "• Azahar o Citra: la carpeta del emulador, la que tiene sdmc. Trae las misiones y el DLC instalado.\n"
                   + "• Checkpoint o JKSM: la copia de los datos extra (extdata).\n"
-                  + "• Cualquier carpeta con esos archivos. Si vienen en un .zip, descomprímelo antes."
+                  + "• DLC: la carpeta con su .cia descifrado, o la del título (title/0004008c/...).\n"
+                  + "• Si vienen en un .zip, descomprímelo antes."
                 : "The event quests are the files quest1 to quest5 of the game's extra data.\n"
-                  + "• Azahar or Citra: the emulator's folder, the one with sdmc.\n"
+                  + "• Azahar or Citra: the emulator's folder, the one with sdmc. It brings the quests and the installed DLC.\n"
                   + "• Checkpoint or JKSM: the backup of the extra data (extdata).\n"
-                  + "• Any folder with those files. If they come in a .zip, unzip it first.", true),
+                  + "• DLC: the folder with its decrypted .cia, or the title's folder (title/0004008c/...).\n"
+                  + "• If they come in a .zip, unzip it first.", true),
                 new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
         columns.addView(column(es ? "QUÉ VA A PASAR" : "WHAT WILL HAPPEN", es
                 ? "• Solo se copian los archivos de misiones: tus cazadores, tarjetas de gremio y Felyne quedan como están.\n"
                   + "• Los archivos de misiones que se reemplazan quedan en una copia, en save_backups.\n"
+                  + "• El DLC se copia a la carpeta del juego y reemplaza el que estaba. Tiene que estar descifrado.\n"
                   + "• El juego se reinicia: guarda antes lo que no quieras perder."
                 : "• Only the quest files are copied: your hunters, guild cards and Palico stay as they are.\n"
                   + "• The quest files they replace are kept in a copy, in save_backups.\n"
+                  + "• The DLC is copied into the game's folder and replaces the one there. It has to be decrypted.\n"
                   + "• The game restarts: save first if you have progress to keep.", false),
                 new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
         page.addView(columns);
@@ -215,11 +225,11 @@ public class ExtraImportActivity extends Activity {
                    : "The game has no permission to read your folders: choose the game folder again in Settings to give it.", true);
             return;
         }
-        FolderBrowser.open(this, null, es ? "ELIGE LA CARPETA DE TUS MISIONES" : "CHOOSE YOUR QUESTS' FOLDER",
-                dir -> !questsIn(dir).isEmpty(),
-                (dir, holds) -> holds ? (es ? "✓ Aquí hay misiones de evento." : "✓ There are event quests here.")
-                                      : (es ? "Entra a la carpeta con quest1, quest2... o elige la de tu emulador (la que tiene sdmc)."
-                                            : "Go into the folder with quest1, quest2... or choose your emulator's (the one with sdmc)."),
+        FolderBrowser.open(this, null, es ? "ELIGE LA CARPETA DE TUS MISIONES O TU DLC" : "CHOOSE YOUR QUESTS' OR DLC'S FOLDER",
+                dir -> !questsIn(dir).isEmpty() || DlcImport.holds(dir),
+                (dir, holds) -> holds ? (es ? "✓ Aquí hay misiones de evento o DLC." : "✓ There are event quests or DLC here.")
+                                      : (es ? "Entra a la carpeta con quest1, quest2... o con el .cia del DLC, o elige la de tu emulador (la que tiene sdmc)."
+                                            : "Go into the folder with quest1, quest2... or with the DLC's .cia, or choose your emulator's (the one with sdmc)."),
                 this::check, null, false);
     }
 
@@ -301,7 +311,14 @@ public class ExtraImportActivity extends Activity {
         leave.setEnabled(false);
         say(es ? "Revisando la carpeta..." : "Checking the folder...", false);
         new Thread(() -> {
-            Found f = find(dir, 0);
+            Found q = find(dir, 0);
+            List<DlcImport.Title> dlc = DlcImport.find(dir);
+            if (q == null && !dlc.isEmpty()) {
+                q = new Found();
+                q.from = dir;
+            }
+            if (q != null) q.dlc = dlc;
+            final Found f = q;
             String wrong = problem(f);
             runOnUiThread(() -> {
                 main.setEnabled(true);
@@ -312,14 +329,24 @@ public class ExtraImportActivity extends Activity {
                     return;
                 }
                 found = f;
-                say(es ? f.quests.size() + (f.quests.size() == 1 ? " archivo de misiones encontrado" : " archivos de misiones encontrados")
-                         + " (" + names(f) + "). Al continuar se copian y el juego se reinicia."
-                       : f.quests.size() + (f.quests.size() == 1 ? " quest file found" : " quest files found")
-                         + " (" + names(f) + "). Going on copies them and restarts the game.", false);
+                String quests = f.quests.isEmpty() ? "" : es
+                        ? f.quests.size() + (f.quests.size() == 1 ? " archivo de misiones encontrado" : " archivos de misiones encontrados") + " (" + names(f) + "). "
+                        : f.quests.size() + (f.quests.size() == 1 ? " quest file found" : " quest files found") + " (" + names(f) + "). ";
+                say(quests + dlcLine(f) + (es ? "Al continuar se copian y el juego se reinicia." : "Going on copies them and restarts the game."), false);
                 main.setText(es ? "Importar y reiniciar" : "Import and restart");
                 main.requestFocus();
             });
         }).start();
+    }
+
+    /** "DLC: 0004008C00126300 (135 contents, 12 MB). " or "". */
+    private String dlcLine(Found f) {
+        StringBuilder b = new StringBuilder();
+        for (DlcImport.Title t : f.dlc) {
+            b.append(b.length() > 0 ? ", " : "DLC: ").append(t.id()).append(" (")
+             .append(t.readable).append(es ? " contenidos, " : " contents, ").append(Math.max(1, t.bytes >> 20)).append(" MB)");
+        }
+        return b.length() > 0 ? b.append(". ").toString() : "";
     }
 
     private static String names(Found f) {
@@ -331,9 +358,22 @@ public class ExtraImportActivity extends Activity {
     /** What is wrong with what the folder holds, or null. */
     private String problem(Found f) {
         if (f == null)
-            return es ? "En esa carpeta no hay misiones de evento de MH4U. Elige la que tiene quest1, quest2... o la de tu emulador (la que tiene sdmc)."
-                      : "There are no MH4U event quests in that folder. Choose the one with quest1, quest2... or your emulator's (the one with sdmc).";
+            return es ? "En esa carpeta no hay misiones de evento ni DLC de MH4U. Elige la que tiene quest1, quest2... o el .cia del DLC, o la de tu emulador (la que tiene sdmc)."
+                      : "There are no MH4U event quests or DLC in that folder. Choose the one with quest1, quest2... or the DLC's .cia, or your emulator's (the one with sdmc).";
         String mine = playerTitle();
+        DlcImport check = new DlcImport(es);
+        for (DlcImport.Title t : f.dlc) {
+            check.check(t, mine);
+            if (t.problem != null) return t.problem + (es ? " No se copió nada." : " Nothing was copied.");
+            if (t.folder != null && t.folder.getAbsoluteFile().equals(DlcImport.target(SaveFolder.local(this), t).getAbsoluteFile()))
+                return es ? "Ese es el DLC que el juego ya usa." : "That is the DLC the game already uses.";
+        }
+        long need = 0;
+        for (DlcImport.Title t : f.dlc) need += t.bytes;
+        if (need > 0 && SaveFolder.local(this).getUsableSpace() < need + (need >> 4) + (64 << 20))
+            return es ? "No hay espacio para el DLC (" + (need >> 20) + " MB). Libera espacio y vuelve a intentarlo."
+                      : "There is no room for the DLC (" + (need >> 20) + " MB). Free some space and try again.";
+        if (f.quests.isEmpty()) return null;
         if (f.title != null && !f.title.equals(mine))
             return es ? "Esas misiones son de la versión " + (f.title.equals("00126100") ? "europea" : "de EE. UU.") + " y tu juego es de la otra: solo sirven las de la misma región."
                       : "Those quests are for the " + (f.title.equals("00126100") ? "European" : "USA") + " game and yours is the other one: only the same region's work.";
@@ -353,6 +393,39 @@ public class ExtraImportActivity extends Activity {
     }
 
     private void confirm() {
+        if (!found.dlc.isEmpty()) {
+            main.setEnabled(false);
+            leave.setEnabled(false);
+            say(es ? "Copiando el DLC..." : "Copying the DLC...", false);
+            final Found f = found;
+            new Thread(() -> {
+                try {
+                    for (DlcImport.Title t : f.dlc) {
+                        DlcImport.install(t, SaveFolder.local(this), (done, total) -> {
+                            int pct = total > 0 ? (int) (done * 100 / total) : 100;
+                            if (pct % 5 == 0) runOnUiThread(() -> say((es ? "Copiando el DLC... " : "Copying the DLC... ") + pct + " %", false));
+                        });
+                    }
+                    runOnUiThread(this::stageQuestsAndRestart);
+                } catch (java.io.IOException e) {
+                    Log.e(TAG, "dlc import: " + e.getMessage());
+                    runOnUiThread(() -> {
+                        main.setEnabled(true);
+                        leave.setEnabled(true);
+                        found = null;
+                        main.setText(es ? "Elegir carpeta" : "Choose a folder");
+                        say(es ? "No se pudo copiar el DLC (" + e.getMessage() + "). No se cambió nada."
+                               : "The DLC could not be copied (" + e.getMessage() + "). Nothing was changed.", true);
+                    });
+                }
+            }).start();
+            return;
+        }
+        stageQuestsAndRestart();
+    }
+
+    /** The quest files (if any) staged for GameActivity, then the restart. */
+    private void stageQuestsAndRestart() {
         File staged = stagedDir(this);
         SaveActivity.deleteTree(staged);
         File to = new File(staged, playerTitle());
@@ -361,14 +434,21 @@ public class ExtraImportActivity extends Activity {
         } catch (IOException e) {
             SaveActivity.deleteTree(staged);
             Log.e(TAG, "dlc import: " + e.getMessage());
-            say(es ? "No se pudieron copiar. Cópialos a la memoria del teléfono y vuelve a intentarlo. No se cambió nada."
-                   : "They could not be copied. Copy them to the phone's storage and try again. Nothing was changed.", true);
+            boolean dlcIn = !found.dlc.isEmpty();
+            say(es ? "No se pudieron copiar las misiones. Cópialas a la memoria del teléfono y vuelve a intentarlo. "
+                     + (dlcIn ? "El DLC sí se copió: se usa desde el próximo inicio del juego." : "No se cambió nada.")
+                   : "The quests could not be copied. Copy them to the phone's storage and try again. "
+                     + (dlcIn ? "The DLC was copied: the game uses it from its next start." : "Nothing was changed."), true);
             found = null;
+            main.setEnabled(true);
+            leave.setEnabled(true);
             main.setText(es ? "Elegir carpeta" : "Choose a folder");
             return;
         }
-        SaveActivity.writeBytes(new File(staged, "ready"), new byte[0]);
-        Log.i(TAG, "dlc import: " + found.quests.size() + " quest files from " + found.from + " staged");
+        if (!found.quests.isEmpty()) {
+            SaveActivity.writeBytes(new File(staged, "ready"), new byte[0]);
+            Log.i(TAG, "dlc import: " + found.quests.size() + " quest files from " + found.from + " staged");
+        }
         main.setEnabled(false);
         leave.setEnabled(false);
         say(es ? "Reiniciando..." : "Restarting...", false);

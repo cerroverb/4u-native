@@ -56,8 +56,9 @@ inline DebugTally& Tally() {
     return tally;
 }
 
-// A measurement aid (MH4N_FRAG_STATS): while `pool` (a VkQueryPool of pipeline statistics, as a 64-bit handle) is set,
-// every draw is inside a query at the index `next(user)` returns (UINT32_MAX: none). One recorder thread only.
+// A measurement aid (MH4N_FRAG_STATS): while `pool` (the backend's pipeline-statistics query pool, as a 64-bit
+// handle) is set, every draw is inside a query at the index `next(user)` returns (UINT32_MAX: none). One recorder
+// thread only.
 struct DrawQueryHook {
     u64 pool = 0;
     u32 (*next)(void* user) = nullptr;
@@ -891,9 +892,9 @@ private:
 };
 
 // DontCare (colour only): the pass's first draw writes every pixel of the render area, so the old colour is not
-// loaded there: the pass begins with a clear to zero instead (plume patch 20; on a tile-based GPU no read of it, and a
-// defined value where a DONT_CARE has drawn black tiles on an Adreno). A pass that stays open (the same attachments and
-// area) loads as before.
+// loaded there: the pass begins with a clear to zero instead (patch 20 of the vendored backend; on a tile-based GPU
+// no read of it, and a defined value where a DONT_CARE has drawn black tiles on an Adreno). A pass that stays open
+// (the same attachments and area) loads as before.
 enum class LoadOp : u8 { Load, Clear, DontCare };
 // A pass with up to one colour and one depth-stencil attachment; the attachments are stored.
 struct TargetPassDesc {
@@ -1106,7 +1107,8 @@ public:
     // the middle sample of its scale x scale block (a nearest downscale).
     Result<void> ReadbackToGuest(const Image& image, Rect rect, PicaFormat format, std::span<u8> dest, u32 scale = 1);
     // The compute pipeline of a colour readback made now (and kept for ReadbackToGuest) rather than at the first one: a
-    // check right after the device is made that the driver takes the renderer's SPIR-V (the error names its VkResult).
+    // check right after the device is made that the driver takes the renderer's SPIR-V (the error names the driver's
+    // result code).
     Result<void> PrepareReadback();
     // A region of any backend image in the image's own format, row by row without padding.
     Result<std::vector<u8>> ReadImage(const Image& image, u32 x, u32 y, u32 width, u32 height);

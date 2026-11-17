@@ -2,6 +2,189 @@
 
 [Español más abajo](#español)
 
+## 1.0.1
+
+Your code library stays valid: there's no need to build it again.
+
+1.0.1 fixes problems you reported after 1.0 and adds some of your suggestions. Its first fixes were also tried on our
+phones (Mali-G57, Mali-G52 and Adreno 830); the rest only on a PC so far: where a line says "should", please tell us how it
+goes on yours (the Discord or an issue, with the log).
+
+- **PowerVR GE8300, GE8320 and other PowerVR Rogue GPUs:** 1.0 closed at every start after the first one: it built the
+  shaders you had already seen in the background, and this GPU's driver crashes when shaders are built in two places at
+  once. These GPUs go back to how 0.1.9.2 built them: one at a time, when they first show up, with nothing in the
+  background. That should end the closes; the short stutter the first time an effect shows up is back to 0.1.9.2's.
+  PowerVR BXM GPUs keep 1.0's way (Discord).
+- **PowerVR BXM GPUs closing after about ten minutes** ([#31](https://github.com/khorne-hub/4u-native/issues/31),
+  Discord): on these GPUs the top screen reaches the display through an upright copy, and drawing it began with a clear
+  that never showed. The PowerVR B-Series driver ran its shader compiler for that clear on every frame and kept some
+  memory each time, until Android let the app map no more (the log's map entries, about 7,000 more a minute). The copy
+  no longer clears, and the picture is the same (checked on a PC, pixel by pixel). We have no PowerVR phone: please tell
+  us whether the closes are gone, with the log.
+- **The app closing during the phone build** (around 10 %, at "Translate the game's code"): the settings menu, open
+  behind the builder, crashed while the game was in the background, and took the build with it. The menus are no longer
+  drawn while the game's window is hidden, which should stop it (Discord).
+- **The phone build paused as "too hot" on a cool phone:** some phones report that they are hot whatever their real
+  temperature. The builder now also reads the battery's temperature (and the thermal headroom on Android 11 and newer):
+  with a cool battery it goes on, more slowly, instead of pausing, and a battery at 47 °C or more still pauses it. A phone
+  that is really hot pauses as before. **Share log** now includes the builder's last run (Discord).
+- **"Make the library again on the PC (step 3 of the guide)":** the error screen and the **Mods** page now point to gear,
+  **System**, **Game code**, **Build the game code** (the PC tool is still the other way), and the error screen has a
+  **Build the game code** button: once the library is made, **Play** starts the game (Discord).
+- **Whole HD texture packs** ([#56](https://github.com/khorne-hub/4u-native/issues/56)): 1.0 opened every file of the pack at the start (a long black screen) and
+  read each texture on the drawing thread the first time it showed (the game nearly stopped). Now only the pack's list
+  is read at the start, and two threads of their own read the textures while the game keeps running: a texture shows at
+  normal quality for a moment, then turns HD. Tried on a PC with a test pack of 380 textures; a real pack should behave the
+  same. HD textures still take the phone's memory.
+- **Coloured bars and blocks with the bloom on Adreno 6xx GPUs with the Vulkan 1.1 driver (1.1.128)**
+  ([#32](https://github.com/khorne-hub/4u-native/issues/32), Discord): the likely cause is the bloom's small passes, which started by clearing part of the picture;
+  these older drivers seem to get that part's edges wrong. On Adreno GPUs with a Vulkan 1.1 driver they now load the
+  picture instead (the same picture, a little more memory traffic). This should remove the bars. The bloom stays on as
+  you have it. We have no such phone: please tell us whether they're gone.
+- **The notch on Android 9 and 10** ([#60](https://github.com/khorne-hub/4u-native/issues/60)): the game now draws under a notch or punch hole there too, as it
+  already did from Android 11, so it should fill the screen.
+- **Bow with the lock-on** ([#58](https://github.com/khorne-hub/4u-native/issues/58)): with the lock-on on, a drawn bow turned the hunter to the monster on every
+  frame, so the hunter could only walk straight at it. Now the hunter turns to the monster when you press **X** and when
+  you shoot; while you walk with the bow drawn, the stick decides the direction. Bowguns work the same way. Not tried in
+  a hunt yet.
+- **The lock-on camera and flying monsters** ([#62](https://github.com/khorne-hub/4u-native/issues/62)): the camera followed a flying monster's height all the way
+  up; it now tilts up only so far (about 17°, eased), so your hunter and the ground stay in view. Not tried in a hunt yet.
+- **Public rooms:** when the default lobby gives no list, the note now says that players run it and it is down at times,
+  or that this network blocks it, instead of asking you to check an address you never typed. Rooms by address still work
+  (Discord).
+- **The game behind the settings menu turned black** a few seconds after opening the menu (since 1.0, on every page and in
+  the layout editor): the app let go of the game's last picture while the game waited behind the menu. It's kept now, so
+  the game stays visible there. On the **Colour** page the game around the panel isn't dimmed and the panel is
+  translucent, so you see each change as you make it. Tried on a Mali-G52 phone.
+- **Single-screen mode on wide screens, and its plates** ([#57](https://github.com/khorne-hub/4u-native/issues/57), Discord):
+  on a screen wider than 16:9, the menus our single-screen mode draws on the top screen could show a list parked at the
+  side (the quest counter's). Whenever the picture is wider than the console's screen, they're now cut to its width, as
+  the console cut them; on a 4:3 screen nothing changes. The touch screen's plates and the yes / no questions now go where they cover nothing: in the item and
+  equipment boxes, **Confirm** and **Back** sit left of the grid, and a question (like "Sell for 500z?") goes to the bottom
+  left with Yes / No above it; at the quest counter, "Select this Quest?" goes under the list with Yes / No side by side
+  inside its box, clear of the quest's card; in the Guild Store, the purchase question goes to the bottom left. The canteen's page
+  counter no longer covers the description, and the open-air kitchen's Cost panel is drawn in front of its paper. The
+  World Map, the town map and the hunt's map stay on the touch screen, as before: they work by touch. In a full menu,
+  some of its parts (the quest's card at the counter, for one) could be drawn unmoved, at the game's own size, under
+  the plates: our mode had run out of room for its moves. It now asks the game for more room. Tried on a PC in English
+  and Spanish at 4:3, 16:9 and 20:9, and on phones at 4:3, 20:9 and 20.5:9 (the quest counter, the item and equipment
+  boxes, the canteen); the rest should look the same on a phone.
+- **The area map on an expedition** ([#65](https://github.com/khorne-hub/4u-native/issues/65)): moved in the layout
+  editor, the map left your arrow, the monsters' icons and some areas' ivy behind. They now move together. Tried on a
+  PC.
+- **The renderer uses less CPU:** the part of the drawing that runs on the processor does the same work in less time
+  (the vertex programs the code library doesn't carry, the vertex cache, the pipeline lookups, and no empty submission
+  for a hidden touch screen). On a Mali-G52 phone in the field the renderer's thread used about 3 % less CPU, and once
+  the phone was warm and had slowed its processor, it held 59.8 FPS where it had dropped to 55.5. The picture is the
+  same (145 PC screenshots, not one pixel different).
+- **Charge Blade from a sprint** (Discord): with the touch controls, X + A while sprinting (a tap on the middle of the
+  attack pill) did nothing with a sheathed Charge Blade since 0.1.9: the controls let go of the sprint's R, and the game
+  draws the Charge Blade straight into its axe only with R + X + A. A sprint that has gone on for a moment now keeps R
+  through X + A, as a controller's R held does, for every weapon (the Great Sword guards from its sheath, as with a
+  controller); a sprint that has only just started still lets R go, so the Great Sword doesn't guard by accident. Tried on
+  a PC; not yet in a hunt on a phone.
+- **Insect Glaive: R, then sliding onto A or X, only did R** (Discord): in the emulator-style layout the sliding thumb
+  wasn't followed, and in the port's own layout R was let go when the thumb reached the attacks. Sliding between buttons
+  now keeps both pressed (below).
+- **More in the log:** when the GPU stops answering ("device lost"), the log now says so in plain words
+  ([#61](https://github.com/khorne-hub/4u-native/issues/61)).
+
+**New in 1.0.1, from your suggestions**
+
+- **Your picture is the whole control** (Discord): with your PNG on a control, only your PNG is drawn, without the port's
+  disc, ring, letter or glow; pressed, the picture gets a little smaller and darker. Every control the editor places takes
+  a picture now: the stick (base and knob apart: **For: base / knob**), both D-pads, the sprint lock, the item bar's
+  arrows, the attack pill, the corner band, the menu pad, the settings, touch screen, town, lock-on and camera buttons,
+  the combined buttons and every emulator-style button. Without a picture nothing changes. Before, pictures past 48
+  didn't show; now up to 64 are kept, and the ones not on the screen are let go.
+- **Hide the controls with a long press** (Discord): hold one finger still on an empty spot (no button there) for about
+  three quarters of a second and every touch control hides, the gear too, for cutscenes or clean screenshots; do it again
+  anywhere to bring them back. A camera drag, a hold on a button or a second finger never hides them, and a drag still
+  turns the camera while they're hidden. On by default: gear, **Controls**, **Touch controls**, **Long-press hides the
+  controls**.
+- **Slide between buttons** (Discord): a thumb that slides from one button onto another keeps both pressed, as two fingers
+  would: R onto A is R + A, R onto X is R + X, R onto B is R + B, and back onto R is R alone. On by default (gear,
+  **Controls**, **Buttons on the screen**, **Slide between buttons: both pressed**); off, slides work as in 1.0.
+- **The item bar's touch area** (Discord): in the editor, tap the item bar and use - / + (or pinch) to make the area where
+  a tap uses the item and a swipe turns the bar bigger or smaller. The bar itself is the game's and keeps its size.
+- **Camera smoothing** (gear, **Controls**, off by default): a drag's turn of the camera is eased in, a little behind your
+  finger; the whole turn still comes.
+- **Frame rate limit down to 15** (Discord): 15, 20 and 25 join the list. 15 and 20 are paced as evenly as 30 on a 60 Hz
+  screen; 25 is less even. The game keeps its speed; it only draws fewer frames. The log's line each minute says the
+  limit and how the frames were paced.
+- **Start over in the phone builder** (Discord): after a build was cut, cancelled or failed, **Start over** deletes what
+  it left (its work files and the record it goes on from), so the next **Build** starts from the beginning. It asks
+  first, and keeps the downloaded tools unless you choose to delete them too. **Delete the tools** now leaves the screen
+  clean, and the builder's log notes the phone's heat when a build starts and at each stage. Not tried on a phone yet.
+- **Colour** (Discord): gear, **Graphics & Audio**, **Colour**, a filter of our own: hue, temperature, tint, brightness,
+  contrast, saturation and gamma, all at 0 (no change) by default, and **Reset colour**. Each change shows at once while
+  the menu is open; **Save** keeps it. It changes the game's picture on both screens, its HUD and menus too, never the
+  touch controls or this menu. At 0 the picture is drawn exactly as before, and the filter adds no pass of its own (on a
+  Mali-G57 phone the top screen's draw went from 0.255 to 0.267 ms).
+- **Your own DLC** (Discord): **Import DLC and event quests** also brings the DLC you installed in Azahar or Citra, or
+  your own decrypted DLC `.cia`. The app decrypts nothing. The game used installed DLC only in a save that had received
+  it online, from a service that no longer exists: now the app gives every save that mark (**DLC in every save**, on by
+  default, on the DLC and event quests page; a copy of your save goes to `save_backups` first). Tried with test files
+  only: tell us how it goes with yours. The steps are in the README, **Import DLC and event quests**.
+- **Gather everything in one press**, off by default (gear, **Gameplay**, **Gathering**): one gather at a gathering
+  point (herbs, mushrooms, honey, bugs, bones, ore...) or one carve gives everything it had left at once, with the
+  game's own rules: gathering and carving skills, pickaxes and bug nets that can break. It stops if the pouch fills up
+  (the game's swap window shows and the rest stays in the point) or if you can't carry more of an item.
+- **Two hunting aids**, included and off by default (gear, **Graphics & Audio**, **Screen and HUD**): **Monsters always
+  on the map** shows the large monsters on both maps from the start of a quest, as if painted (in quests you hunt
+  alone), and **Damage numbers** shows each hit's damage as a number that rises over the monster, small, medium or large
+  and in the colour you pick. Both work from the game's memory: no new game code to build.
+- **Monster health bar**, off by default (gear, **Graphics & Audio**, **Screen and HUD**): in a quest, a thin bar in the
+  look of the app's HUD at the top right of the top screen shows each large monster's name and health with its numbers
+  (fainter while it is in another area). Move and resize it in **Customize controls and HUD** (drag it; its corner
+  handle, a pinch or - / +; Reset puts it back). It only reads the game, so it works in rooms too.
+- **Send all to the box, the Palico's items too** (Discord, Dark_Light's idea): with **Send all to the box** on (gear,
+  **Gameplay**), **Send to Item Box** at the end of a quest also sends your Palico's items and your Palicoes' at once;
+  what doesn't fit stays in the list, as always. Tried on a PC.
+- **HD texture packs use less memory** ([#56](https://github.com/khorne-hub/4u-native/issues/56)): the pack gets a share of the memory the app gives
+  textures, by your phone's RAM; textures of areas you've left are let go after a while; and a texture that doesn't fit is
+  no longer decoded over and over (on a PC with a 4 GB phone's budget, a whole test pack went from 3,903 decodes to 497).
+  On a 4 GB phone with a whole 4x pack, some textures may stay the game's own rather than stutter. New: gear, **Mods &
+  Cheats**, **Texture packs**, **Pack texture size: Half** (off by default) draws the pack's big textures at half their
+  width and height, a quarter of the memory; it applies at the next start. Measured on a PC.
+- **Frame generation** ([#59](https://github.com/khorne-hub/4u-native/issues/59); optional, off by default): gear,
+  **Graphics & Audio**, **Advanced**, **Frame generation**. With the FPS limit at half your screen's refresh rate or less
+  (30 on a 60 Hz screen), the app makes a picture between each two of the game's top-screen pictures, so you see 60. It's
+  our own, for any GPU; the HUD is never warped, and it stays off in the game's menus, on the title, in this menu and in
+  the layout editor. It adds a little input delay (about one refresh of the screen), fast camera turns can leave smears
+  at the edges of the hunter and of what moves, and it costs GPU time: if the game falls behind its limit with it on, it
+  pauses itself (after the third time, it stays off until the next start). Tried on a Mali-G57 handheld (the game at 30,
+  60 shown, about 4 ms of GPU per made picture at 1200x720); not measured yet on Mali-G52-class phones, where it may well
+  pause itself. The FPS counter shows "30 FPS (60 shown)" when it works. With it on, the app asks the screen for twice
+  the FPS limit where the screen has such a rate, so on a 120 Hz screen it also works at a 60 FPS limit; the log says
+  why no pictures are made and when the screen changes its refresh rate.
+- **Richer logs and Share log**, for the problems we can't reproduce: the log now says much more about the phone (Android
+  version, processor, memory, storage), the GPU and its driver, your options and each change, where you are in the game,
+  the app going to the background, heat and memory warnings, and each minute's frame times. The log of the session
+  before, which came out empty until now, is kept, two sessions back. **Share log** (gear, **System**, **Your game**,
+  **Share log**) sends the last three sessions, your options (names, keys and passwords hidden), your mods, the app
+  folder's file names and sizes, the builder's log and Android's warnings about the app, zipped when it's big. It never
+  includes your accounts, your Wi-Fi's name, your location or your save.
+- **The same save on your PC and your phone:** the README now explains near its top how to carry your save with Google
+  Drive: between phones by itself, and to an emulator on a PC by hand.
+- **The credits card at the start closes when you touch the screen** (Discord): it still shows at every start, but one
+  tap fades it out.
+
+- **Hubs: online with no ports to open** (asked for since MHGU got them): gear, **Multiplayer**, **Create a hub** and
+  **Join a hub**. A hub server lists the hubs and carries their players, so nobody types an address or forwards a port on
+  a router. The default server is the community one MHGU's players run (not this project): the same program serves both
+  games and keeps
+  each game's and region's hubs apart (USA with USA, Europe with Europe; Monster Hunter 4G has none). **Hub server**
+  picks another, **Check hub server** says whether it answers, and the README says how to run your own. A hub works as a
+  room: its hunters, its chat (the **Room** chat), a password if you like, and the game's **Local Play** in the
+  Gathering Hall. **Play online with** chooses this app's hubs, Azahar and Citra rooms (as in 1.0) or both (as it comes;
+  with both, a hub you create also takes Azahar and Citra players at your phone's address). Tried on our two phones and
+  a PC on one Wi-Fi with a test server (two hunters in one Gathering Hall: phone with phone, and phone with PC both
+  ways), and on a PC with the real server program; not yet with players far apart over the internet: tell us how it
+  goes (the log has a line a minute about each hub link).
+
+Thanks to everyone who sent logs, screenshots, videos and ideas. The phone builder is Klark231's idea.
+
 ## 1.0
 
 Your code library stays valid: there's no need to build it again.
@@ -315,6 +498,204 @@ MH4U for Android is free. Only the links khorne-hub gives are official: if you g
 came with ads, it isn't the official one. Check the APK's SHA-256 against the release's `.sha256` file.
 
 ## Español
+
+## 1.0.1
+
+Tu librería de código sigue sirviendo: no hace falta crearla de nuevo.
+
+La 1.0.1 arregla problemas que nos contaste después de la 1.0 y suma algunas de tus sugerencias. Sus primeros arreglos
+también se probaron en nuestros teléfonos (Mali-G57, Mali-G52 y Adreno 830); lo demás, por ahora solo en una PC: donde una
+línea dice "debería", cuéntanos cómo te va en el tuyo (en el Discord o en un issue, con el registro).
+
+- **PowerVR GE8300, GE8320 y otras GPU PowerVR Rogue:** la 1.0 se cerraba en cada inicio después del primero: armaba en
+  segundo plano los shaders que ya habías visto, y el driver de estas GPU se cae cuando se arman shaders en dos lugares a
+  la vez. Estas GPU vuelven a la forma de la 0.1.9.2: de a uno, cuando aparecen por primera vez, sin nada en segundo
+  plano. Eso debería terminar con los cierres; el tirón corto la primera vez que aparece un efecto vuelve a ser como en la
+  0.1.9.2. Las PowerVR BXM siguen como en la 1.0 (Discord).
+- **GPU PowerVR BXM que se cerraban a los diez minutos** ([#31](https://github.com/khorne-hub/4u-native/issues/31),
+  Discord): en estas GPU la pantalla superior llega a la pantalla del teléfono por una copia enderezada, y dibujarla
+  empezaba con un borrado que nunca se veía. El driver de las PowerVR B-Series armaba un shader para ese borrado en cada
+  cuadro y se quedaba con algo de memoria cada vez, hasta que Android no le dejaba a la app mapear más (las entradas de
+  mapa del registro, unas 7.000 más por minuto). La copia ya no borra, y la imagen es la misma (comprobado en una PC,
+  píxel por píxel). No tenemos un teléfono PowerVR: cuéntanos si los cierres se fueron, con el registro.
+- **La app se cerraba durante el armado en el teléfono** (cerca del 10 %, en "Traducir el código del juego"): el menú de
+  opciones, abierto detrás del armado, se caía mientras el juego estaba en segundo plano y se llevaba el armado con él.
+  Los menús ya no se dibujan mientras la ventana del juego está oculta, lo que debería arreglarlo (Discord).
+- **El armado se pausaba por "muy caliente" con el teléfono fresco:** algunos teléfonos avisan que están calientes sea
+  cual sea su temperatura real. Ahora el armado también mira la temperatura de la batería (y el margen térmico desde
+  Android 11): con la batería fresca sigue, más despacio, en vez de pausarse, y una batería a 47 °C o más lo sigue
+  pausando. Un teléfono que de verdad está caliente se pausa como antes. **Compartir registro** ahora incluye el último
+  armado (Discord).
+- **"Vuelve a hacer la librería en la PC (paso 3 de la guía)":** la pantalla de error y la página **Mods** ahora llevan a
+  engranaje, **Sistema**, **Código del juego**, **Crear el código del juego** (la herramienta de la PC sigue siendo la otra
+  forma), y la pantalla de error tiene un botón **Crear el código del juego**: cuando la librería está hecha, **Jugar**
+  arranca el juego (Discord).
+- **Packs HD de texturas enteros** ([#56](https://github.com/khorne-hub/4u-native/issues/56)): la 1.0 abría cada archivo del pack al empezar (una pantalla negra
+  larga) y leía cada textura en el hilo de dibujo la primera vez que aparecía (el juego casi se detenía). Ahora al empezar
+  solo se lee la lista del pack, y dos hilos propios leen las texturas mientras el juego sigue: una textura se ve a calidad
+  normal un momento y después pasa a HD. Probado en una PC con un pack de prueba de 380 texturas; un pack real debería
+  comportarse igual. Las texturas HD siguen ocupando memoria del teléfono.
+- **Barras y bloques de colores con el bloom en GPU Adreno 6xx con el driver Vulkan 1.1 (1.1.128)**
+  ([#32](https://github.com/khorne-hub/4u-native/issues/32), Discord): la causa probable son las pasadas chicas del bloom, que empezaban limpiando una parte de la
+  imagen; estos drivers más viejos parecen dibujar mal los bordes de esa parte. En las GPU Adreno con un driver Vulkan 1.1
+  ahora cargan la imagen en su lugar (la misma imagen, un poco más de tráfico de memoria). Esto debería quitar las barras.
+  El bloom queda activado como lo tengas. No tenemos un teléfono así: cuéntanos si desaparecieron.
+- **El notch en Android 9 y 10** ([#60](https://github.com/khorne-hub/4u-native/issues/60)): ahora el juego también se dibuja debajo de un notch o un agujero de
+  cámara en esas versiones, como ya lo hacía desde Android 11, así que debería llenar la pantalla.
+- **Arco con fijar objetivo** ([#58](https://github.com/khorne-hub/4u-native/issues/58)): con el objetivo fijado, un arco tensado giraba al cazador hacia el monstruo
+  en cada cuadro, así que solo podía caminar derecho hacia él. Ahora el cazador gira hacia el monstruo cuando aprietas
+  **X** y cuando disparas; mientras caminas con el arco tensado, la palanca decide la dirección. Las ballestas funcionan
+  igual. Todavía sin probar en una cacería.
+- **La cámara de fijar objetivo y los monstruos voladores** ([#62](https://github.com/khorne-hub/4u-native/issues/62)): la cámara seguía la altura de un monstruo en
+  el aire hasta arriba; ahora solo se inclina hacia arriba hasta cierto punto (unos 17°, de a poco), así que tu cazador y
+  el suelo siguen a la vista. Todavía sin probar en una cacería.
+- **Salas públicas:** cuando el lobby por defecto no da una lista, el aviso ahora dice que lo mantienen jugadores y a
+  veces se cae, o que esta red lo bloquea, en vez de pedirte revisar una dirección que nunca escribiste. Las salas por
+  dirección siguen funcionando (Discord).
+- **El juego detrás del menú de opciones se ponía negro** a los pocos segundos de abrir el menú (desde la 1.0, en todas
+  las páginas y en el editor de controles): la app soltaba la última imagen del juego mientras el juego esperaba detrás
+  del menú. Ahora la conserva, así que el juego sigue a la vista ahí. En la página **Color** el juego alrededor del panel
+  no se oscurece y el panel es translúcido, así ves cada cambio mientras lo haces. Probado en un teléfono con Mali-G52.
+- **El modo de pantalla única en pantallas anchas, y sus placas** ([#57](https://github.com/khorne-hub/4u-native/issues/57),
+  Discord): en una pantalla más ancha que 16:9, los menús que nuestro modo de pantalla única dibuja arriba podían mostrar
+  una lista estacionada al costado (la del mostrador de misiones). Ahora, siempre que la imagen es más ancha que la
+  pantalla de la consola, se recortan a su ancho, como los recortaba la consola; en una pantalla 4:3 no cambia nada.
+  Las placas de la pantalla táctil y las preguntas de sí o no ahora van donde no tapan nada: en la caja de objetos y en la de equipo, las placas de confirmar y volver quedan a la
+  izquierda de la grilla, y una pregunta (como "¿Vender por 500z?") va abajo a la izquierda con Sí / No encima; en el
+  mostrador de misiones, "¿Elegir esta misión?" va debajo de la lista con Sí / No uno al lado del otro dentro de su
+  recuadro, sin tapar la ficha de la misión; en la Tienda del gremio, la pregunta de compra va abajo a la izquierda. El contador de páginas de la
+  cantina ya no tapa la descripción, y el panel de Costo de la cocina al aire libre se dibuja delante de su papel. El
+  mapa del mundo, el del pueblo y el de la cacería siguen en la pantalla táctil, como antes: se usan tocando. En un menú
+  lleno, algunas de sus partes (la ficha de la misión en el mostrador, por ejemplo) podían dibujarse sin mover, al
+  tamaño del juego, debajo de las placas: a nuestro modo se le acababa el lugar para moverlas. Ahora le pide más lugar
+  al juego. Probado en una PC en inglés y en español en 4:3, 16:9 y 20:9, y en teléfonos 4:3, 20:9 y 20,5:9 (el
+  mostrador de misiones, la caja de objetos y la de equipo, la cantina); lo demás debería verse igual en un teléfono.
+- **El mapa de la zona en una expedición** ([#65](https://github.com/khorne-hub/4u-native/issues/65)): movido en el
+  editor, el mapa dejaba atrás tu flecha, los íconos de los monstruos y la hiedra de algunas zonas. Ahora se mueven
+  juntos. Probado en una PC.
+- **El dibujo usa menos CPU:** la parte del dibujo que corre en el procesador hace el mismo trabajo en menos tiempo (los
+  programas de vértices que la librería de código no trae, el caché de vértices, la búsqueda de pipelines, y ya no se
+  envía trabajo vacío por una pantalla táctil oculta). En un teléfono con Mali-G52, en el campo, el hilo del dibujo usó
+  cerca de un 3 % menos de CPU, y con el teléfono ya caliente y su procesador más lento, se mantuvo en 59,8 FPS donde
+  antes bajaba a 55,5. La imagen es la misma (145 capturas en una PC, ni un píxel distinto).
+- **Hacha cargada corriendo** (Discord): con los controles táctiles, X + A corriendo (un toque en el medio de la píldora de
+  ataques) no hacía nada con el hacha cargada enfundada desde la 0.1.9: los controles soltaban la R de la carrera, y el
+  juego desenfunda el hacha cargada directo en modo hacha solo con R + X + A. Ahora una carrera que ya lleva un momento
+  mantiene la R durante X + A, como una R apretada en un mando, con todas las armas (la gran espada se cubre desde la
+  funda, como con un mando); una carrera que recién empieza sigue soltando la R, para que la gran espada no se cubra sin
+  querer. Probado en una PC; todavía no en una cacería en un teléfono.
+- **Glaive insecto: R y deslizar hacia A o X solo hacía R** (Discord): en el diseño de emulador no se seguía el pulgar que
+  se deslizaba, y en el diseño propio del port la R se soltaba al llegar a los ataques. Ahora deslizar entre botones deja
+  los dos apretados (abajo).
+- **Más detalle en el registro:** cuando la GPU deja de responder ("device lost"), el registro ahora lo dice con palabras
+  claras ([#61](https://github.com/khorne-hub/4u-native/issues/61)).
+
+**Lo nuevo de la 1.0.1, por tus sugerencias**
+
+- **Tu imagen es todo el control** (Discord): con tu PNG en un control, solo se dibuja tu PNG, sin el disco, el aro, la
+  letra ni el brillo del port; apretado, la imagen se achica y se oscurece un poco. Ahora todo control que ubica el editor
+  acepta imagen: la palanca (base y centro aparte: **Para: base / centro**), las dos crucetas, el candado de carrera, las
+  flechas de la barra de objetos, la píldora de ataques, la banda de la esquina, el pad de menú, los botones de opciones,
+  pantalla táctil, pueblo, fijar objetivo y cámara, los botones combinados y todos los del diseño de emulador. Sin imagen
+  nada cambia. Antes, pasadas las 48 imágenes las demás no se veían; ahora se guardan hasta 64, y se sueltan las que no
+  están en la pantalla.
+- **Ocultar los controles con una pulsación larga** (Discord): mantén un dedo quieto en un lugar vacío (sin botón) unos tres
+  cuartos de segundo y se ocultan todos los controles táctiles, el engranaje también, para las escenas o capturas limpias;
+  hazlo otra vez en cualquier lugar para que vuelvan. Arrastrar la cámara, mantener un botón o un segundo dedo nunca los
+  ocultan, y con ellos ocultos arrastrar sigue girando la cámara. Activado por defecto: engranaje, **Controles**,
+  **Controles táctiles**, **Pulsación larga oculta los controles**.
+- **Deslizar entre botones** (Discord): un pulgar que se desliza de un botón a otro deja los dos apretados, como dos dedos:
+  R a A es R + A, R a X es R + X, R a B es R + B, y al volver a R, R sola. Activado por defecto (engranaje, **Controles**,
+  **Botones en la pantalla**, **Deslizar entre botones: los dos apretados**); apagado, deslizar funciona como en la 1.0.
+- **El área táctil de la barra de objetos** (Discord): en el editor, toca la barra de objetos y usa - / + (o pellizca)
+  para agrandar o achicar la zona donde un toque usa el objeto y un deslizamiento gira la barra. La barra en sí es la del
+  juego y no cambia de tamaño.
+- **Suavizado de la cámara** (engranaje, **Controles**, apagado por defecto): el giro de la cámara al arrastrar entra de a
+  poco, un poco detrás de tu dedo; el giro llega entero.
+- **Límite de FPS desde 15** (Discord): se suman 15, 20 y 25. 15 y 20 van tan parejos como 30 en una pantalla de 60 Hz;
+  25 es menos parejo. El juego mantiene su velocidad; solo dibuja menos cuadros. La línea de cada minuto del registro dice
+  el límite y cómo se repartieron los cuadros.
+- **Empezar de cero en el armado en el teléfono** (Discord): después de una creación cortada, cancelada o fallida,
+  **Empezar de cero** borra lo que dejó (sus archivos de trabajo y el registro desde donde sigue), así la próxima vez
+  **Crear** empieza desde el principio. Pregunta antes, y deja las herramientas descargadas salvo que elijas borrarlas
+  también. **Borrar las herramientas** ahora deja la pantalla limpia, y el registro del armado anota el calor del teléfono
+  al empezar y en cada etapa. Todavía sin probar en un teléfono.
+- **Color** (Discord): engranaje, **Gráficos y audio**, **Color**, un filtro propio: tono, temperatura, tinte, brillo,
+  contraste, saturación y gamma, todo en 0 (sin cambio) por defecto, y **Restablecer el color**. Cada cambio se ve en el
+  momento mientras el menú está abierto; **Guardar** lo conserva. Cambia la imagen del juego en las dos pantallas, también
+  su HUD y sus menús, nunca los controles táctiles ni este menú. En 0 la imagen se dibuja exactamente como antes, y el
+  filtro no agrega una pasada propia (en un teléfono con Mali-G57, el dibujo de la pantalla de arriba pasó de 0,255 a
+  0,267 ms).
+- **Tu propio DLC** (Discord): **Importar DLC y misiones de evento** también trae el DLC que instalaste en Azahar o
+  Citra, o tu propio `.cia` descifrado del DLC. La app no descifra nada. El juego usaba el DLC instalado solo en una
+  partida que lo había recibido en línea, de un servicio que ya no existe: ahora la app le pone esa marca a todas las
+  partidas (**DLC en todas las partidas**, activado por defecto, en la página de DLC y misiones de evento; antes guarda
+  una copia de tu partida en `save_backups`). Probado solo con archivos de prueba: cuéntanos cómo te va con el tuyo. Los
+  pasos están en el README, **Importar DLC y misiones de evento**.
+- **Recolectar todo de un toque**, desactivado por defecto (engranaje, **Juego**, **Recolección**): una recolección en
+  un punto (hierbas, hongos, miel, insectos, huesos, minerales...) o un tallado da de una vez todo lo que le quedaba,
+  con las reglas del juego: habilidades de recolección y de tallado, piquetas y redes que se pueden romper. Se detiene
+  si la bolsa se llena (sale la ventana del juego para cambiar o tirar, y lo demás queda en el punto) o si no puedes
+  llevar más de un objeto.
+- **Dos ayudas de caza**, incluidas y desactivadas por defecto (engranaje, **Gráficos y audio**, **Pantalla y HUD**):
+  **Monstruos siempre en el mapa** muestra los monstruos grandes en los dos mapas desde el principio de la misión, como
+  si estuvieran pintados (en las misiones que cazas solo), y **Números de daño** muestra el daño de cada golpe como un
+  número que sube sobre el monstruo, chico, mediano o grande y del color que elijas. Las dos funcionan desde la memoria
+  del juego: no hace falta volver a armar el código del juego.
+- **Barra de vida de los monstruos**, desactivada por defecto (engranaje, **Gráficos y audio**, **Pantalla y HUD**): en
+  una misión, una barra fina con el aspecto del HUD de la app, arriba a la derecha de la pantalla de arriba, muestra el
+  nombre y la vida de cada monstruo grande con sus números (más tenue mientras está en otra zona). Se mueve y se cambia
+  de tamaño en **Personalizar controles y HUD** (arrastrándola; con el asa de su esquina, un pellizco o - / +;
+  Restablecer la devuelve a su lugar). Solo lee el juego, así que también anda en las salas.
+- **Enviar todo a la caja, también lo del Felyne** (Discord, idea de Dark_Light): con **Enviar todo a la caja** activado
+  (engranaje, **Juego**), **Enviar a la caja de objetos** al final de una misión también manda de una vez los objetos de tu
+  Felyne y los de tus Felynes; lo que no entra queda en la lista, como siempre. Probado en una PC.
+- **Los packs de texturas HD usan menos memoria** ([#56](https://github.com/khorne-hub/4u-native/issues/56)): el pack recibe una parte de la memoria que la
+  app da a las texturas, según la RAM de tu teléfono; las texturas de las zonas que dejaste se sueltan después de un rato;
+  y una textura que no entra ya no se decodifica una y otra vez (en una PC con el presupuesto de un teléfono de 4 GB, un
+  pack de prueba entero pasó de 3903 decodificaciones a 497). En un teléfono de 4 GB con un pack 4x entero, algunas
+  texturas pueden quedar como las del juego en vez de dar tirones. Nuevo: engranaje, **Mods y trucos**, **Packs de
+  texturas**, **Tamaño de las texturas del pack: Mitad** (apagado por defecto) dibuja las texturas grandes del pack a la
+  mitad de su ancho y su alto, un cuarto de la memoria; se aplica en el próximo inicio. Medido en una PC.
+- **Generación de cuadros** ([#59](https://github.com/khorne-hub/4u-native/issues/59); opcional, apagada por defecto):
+  engranaje, **Gráficos y audio**, **Avanzado**, **Generación de cuadros**. Con el límite de FPS en la mitad de la
+  frecuencia de tu pantalla o menos (30 en una pantalla de 60 Hz), la app hace una imagen entre cada dos imágenes de la
+  pantalla de arriba del juego, así ves 60. Es propia, para cualquier GPU; el HUD nunca se deforma, y queda apagada en los
+  menús del juego, en el título, en este menú y en el editor de controles. Agrega un poco de retraso al control (más o
+  menos un refresco de la pantalla), los giros rápidos de cámara pueden dejar manchas en los bordes del cazador y de lo
+  que se mueve, y usa tiempo de GPU: si el juego no llega a su límite con ella prendida, se pausa sola (a la tercera,
+  queda apagada hasta el próximo inicio). Probada en una consola portátil con Mali-G57 (el juego a 30, 60 mostrados, unos
+  4 ms de GPU por imagen hecha a 1200x720); todavía sin medir en teléfonos tipo Mali-G52, donde es probable que se pause
+  sola. El contador de FPS muestra "30 FPS (60 mostrados)" cuando anda. Con ella prendida, la app le pide a la pantalla
+  el doble del límite de FPS si lo tiene, así que en una pantalla de 120 Hz también anda con el límite en 60; el
+  registro dice por qué no se hacen imágenes y cuándo la pantalla cambia su frecuencia.
+- **Registros más completos y Compartir registro**, para los problemas que no podemos reproducir: el registro ahora dice
+  mucho más del teléfono (versión de Android, procesador, memoria, almacenamiento), de la GPU y su driver, de tus opciones
+  y cada cambio, de dónde estás en el juego, de cuando la app pasa a segundo plano, de los avisos de calor y de memoria, y
+  los tiempos de los cuadros de cada minuto. El registro de la sesión anterior, que hasta ahora salía vacío, se guarda,
+  dos sesiones hacia atrás. **Compartir registro** (engranaje, **Sistema**, **Tu partida**, **Compartir registro**) manda
+  las últimas tres sesiones, tus opciones (nombres, claves y contraseñas ocultos), tus mods, los nombres y tamaños de los
+  archivos de la carpeta de la app, el registro del armado y los avisos de Android sobre la app, comprimido cuando es
+  grande. Nunca incluye tus cuentas, el nombre de tu Wi-Fi, tu ubicación ni tu partida.
+- **La misma partida en tu PC y en tu teléfono:** el README ahora explica, cerca del principio, cómo llevar tu partida con
+  Google Drive: entre teléfonos sola, y a un emulador en la PC a mano.
+- **El cartel de créditos del arranque se cierra al tocar la pantalla** (Discord): sigue apareciendo en cada inicio,
+  pero un toque lo desvanece.
+
+- **Hubs: en línea sin abrir puertos** (pedidos desde que los tiene el MHGU): engranaje, **Multijugador**, **Crear un
+  hub** y **Entrar a un hub**. Un servidor de hubs lista los hubs y lleva a sus jugadores, así que nadie escribe una
+  dirección ni abre un puerto en el router. El servidor predeterminado es el de la comunidad que mantienen jugadores del
+  MHGU (no este proyecto): el mismo programa sirve a los dos juegos y mantiene aparte los hubs de cada juego y región (EE. UU. con EE. UU.,
+  Europa con Europa; Monster Hunter 4G no tiene). **Servidor de hubs** elige otro, **Comprobar el servidor de hubs** dice
+  si responde, y el README explica cómo correr el tuyo. Un hub funciona como una sala: sus cazadores, su chat (el chat
+  **Sala**), una contraseña si quieres, y el **Local Play** (juego local) del juego en el Gathering Hall. **Jugar en línea
+  con** elige los hubs de esta app, las salas de Azahar y Citra (como en la 1.0) o los dos (como viene; con los dos, un
+  hub que crees también recibe a jugadores de Azahar y Citra en la dirección de tu teléfono). Probado en nuestros dos
+  teléfonos y una PC en una misma Wi-Fi con un servidor de prueba (dos cazadores en un mismo Gathering Hall: teléfono con
+  teléfono, y teléfono con PC en los dos sentidos), y en una PC con el programa del servidor real; todavía no con
+  jugadores lejos por internet: cuéntennos cómo les va (el registro tiene una línea por minuto de cada enlace del hub).
+
+Gracias a todos los que mandaron registros, capturas, videos e ideas. El armado en el teléfono es idea de Klark231.
 
 ## 1.0
 

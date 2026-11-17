@@ -32,9 +32,12 @@ final class BuilderText {
 
     /** One line for the notification and the screen: what is going on now. */
     static String status(BuilderService.Job j, boolean es) {
-        if (j.status.equals("paused-hot"))
-            return es ? "En pausa: el teléfono está muy caliente. Sigue solo cuando se enfríe."
-                      : "Paused: the phone is too hot. It goes on by itself when it cools down.";
+        if (j.status.equals("paused-hot")) {  // (with the battery's temperature, where the phone gives it: what was read)
+            String battery = Float.isNaN(j.batteryC) ? ""
+                    : String.format(Locale.ROOT, es ? " (batería a %.0f °C)" : " (battery at %.0f °C)", j.batteryC);
+            return es ? "En pausa: el teléfono está muy caliente" + battery + ". Sigue solo cuando se enfríe."
+                      : "Paused: the phone is too hot" + battery + ". It goes on by itself when it cools down.";
+        }
         if (j.status.equals("warm"))
             return (es ? "Más despacio: el teléfono está caliente. " : "Slower: the phone is warm. ") + now(j, es);
         if (j.status.equals("paused-battery"))
