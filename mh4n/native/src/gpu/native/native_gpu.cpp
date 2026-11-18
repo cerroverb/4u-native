@@ -34,6 +34,7 @@
 #include <bit>
 #include <cstdio>
 #include <map>
+#include <set>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -87,6 +88,8 @@ namespace {
 constexpr const char* kLog = "NativeGpu";
 
 std::atomic<bool> g_shadows{true};  // SetShadows
+std::atomic<int> g_ps1_textures{0};  // SetPs1Textures (0 to 4)
+std::atomic<bool> g_ps1_geometry{false};  // SetPs1Geometry
 
 constexpr u32 kVaddrLcd = 0x1ED02000;
 constexpr u32 kLcdRegs = 0x400;
@@ -802,6 +805,46 @@ struct TexImage {
     u64 used_frame = 0;  // the frame (the texture cache's count of screen pictures) that last bound it
 };
 
+// PS1 style's pixelated textures (SetPs1Textures 2 to 6): a game texture at 1/2 to 1/32 of its size, as a smaller mipmap
+// level holds it, made from the texture cache's decoded pixels (Ps1Downscale) and sampled nearest in place of the texture's
+// own image. Kept apart from texture_images_: nothing of the game's own images changes.
+inline constexpr int kPs1MaxLevel = 6;
+struct Ps1Image {
+    std::shared_ptr<rhi::Image> image;
+    u32 shift = 0;              // the halvings of the texture's size: 1 to 5
+    u32 width = 0, height = 0;  // the image's size
+    u32 generation = 0;         // of the cache's decoded texture it was made from
+    u64 stamp = 0;              // the recording that last bound it
+    u64 used_frame = 0;         // the screen picture that last bound it (TextureFrame)
+};
+
+// The size of a texture side at 1/2^shift: at least one texel
+inline u32 Ps1Side(u32 side, u32 shift) { return std::max<u32>(1, side >> shift); }
+
+// The decoder's RGBA8 texels of a width x height texture at 1/2^shift of its size (Ps1Side of each side): each output texel the
+// average of the input block it covers, rounded. Same row order as the input.
+void Ps1Downscale(const std::vector<u8>& rgba, u32 width, u32 height, u32 shift, std::vector<u8>& out) {
+    const u32 w = Ps1Side(width, shift), h = Ps1Side(height, shift);
+    out.assign(static_cast<size_t>(w) * h * 4, 0);
+    for (u32 y = 0; y < h; ++y) {
+        const u32 y0 = y * height / h, y1 = (y + 1) * height / h;
+        for (u32 x = 0; x < w; ++x) {
+            const u32 x0 = x * width / w, x1 = (x + 1) * width / w, n = (x1 - x0) * (y1 - y0);
+            u32 sum[4] = {};
+            for (u32 j = y0; j < y1; ++j) {
+                const u8* p = rgba.data() + (static_cast<size_t>(j) * width + x0) * 4;
+                for (u32 i = 0; i < (x1 - x0) * 4; ++i) {
+                    sum[i & 3] += p[i];
+                }
+            }
+            u8* o = out.data() + (static_cast<size_t>(y) * w + x) * 4;
+            for (u32 c = 0; c < 4; ++c) {
+                o[c] = static_cast<u8>((sum[c] + n / 2) / n);
+            }
+        }
+    }
+}
+
 // ---- the GPU --------------------------------------------------------------------------------------------------------
 
 class Impl final : public NativeGpu, public pica::Backend, public ScaledScreens {
@@ -1229,6 +1272,7 @@ public:
         regs.output_size = w[4];
         regs.flags = w[5];
         const bool touch = regs.OutputWidth() == 240 && regs.OutputHeight() == 320;
+        if (!touch) ++top_transfers_;  // (MH4N_TOUCH_DUTY's frames)
         transfer_alternations_ = touch != last_transfer_touch_ ? std::min<u32>(transfer_alternations_ + 1, 1000) : 0;
         last_transfer_touch_ = touch;
         if (touch) {
@@ -1241,8 +1285,8 @@ public:
                 }
             }
         }
-        const bool hidden = touch_forced_hidden_ || (touch_skip_enabled_.load(std::memory_order_relaxed) &&
-                                                     !touch_shown_.load(std::memory_order_relaxed));
+        const bool hidden = touch_forced_hidden_ || TouchDutyHidden() ||
+                            (touch_skip_enabled_.load(std::memory_order_relaxed) && !touch_shown_.load(std::memory_order_relaxed));
         touch_phase_ = hidden && !touch && transfer_alternations_ >= 4 && touch_source_ != 0;
         if (touch_phase_ && !touch_phase_told_) {
             touch_phase_told_ = true;
@@ -1450,6 +1494,10 @@ public:
         add("texture_unavailable", frame_.texture_unavailable);
         add("sampler_creates", frame_.sampler_creates);
         add("texture_levels_missing", frame_.texture_levels_missing);
+        add("ps1_binds", frame_.ps1_binds);
+        add("ps1_made", frame_.ps1_made);
+        add("ps1_us", frame_.ps1_us);
+        add("ps1_geometry_draws", frame_.ps1_geometry_draws);
         add("cpu_gs", frame_.cpu_gs);
         add("cpu_immediate", frame_.cpu_immediate);
         add("cpu_refused", frame_.cpu_refused);
@@ -1628,6 +1676,9 @@ private:
         u64 pingpong_lazy_px = 0;  // ... the pixels their twins were not given (other targets' tiles, gpu4)
         u64 first_draw_clears = 0;  // passes begun with a clear by a draw that writes all of them (FirstDrawClears)
         u64 texture_binds = 0, texture_uploads = 0, texture_unavailable = 0, sampler_creates = 0, texture_levels_missing = 0;
+        u64 ps1_binds = 0;  // ... of them, sampled nearest for PS1 style's pixelated textures (SetPs1Textures)
+        u64 ps1_made = 0, ps1_us = 0;  // PS1 style's smaller copies made (Ps1Small) and the time it took (decode, average, upload)
+        u64 ps1_geometry_draws = 0;    // draws with PS1 style's geometry (SetPs1Geometry: affine, snapped)
         u64 uploads_ahead = 0;  // ... of them, uploaded in the recording's prelude (UploadFace: no pass broken, gpu4)
         u64 submits_deferred = 0;  // draws past kMaxDrawsPerRecording that went on in the open pass (SubmitAtPassBreak)
         // where the time goes (MH4N_GPU_COUNTERS): the CPU vertex path, submits, write-backs (a wait on the GPU) and loads
@@ -4199,8 +4250,8 @@ private:
         // The hidden touch screen's picture is not drawn: nobody shows it (DisplayMemGpu does not build that screen while
         // hidden) and its draws were left out (touch_phase_). Its snapshot is still taken, for its framebuffer's memory.
         // (A 960x720 picture a frame on the Anbernic at 3x: 0.8-0.9 ms of its GPU.)
-        const bool hidden = touch_forced_hidden_ || (touch_skip_enabled_.load(std::memory_order_relaxed) &&
-                                                     !touch_shown_.load(std::memory_order_relaxed));
+        const bool hidden = touch_forced_hidden_ || TouchDutyHidden() ||
+                            (touch_skip_enabled_.load(std::memory_order_relaxed) && !touch_shown_.load(std::memory_order_relaxed));
         const bool picture = !(hidden && width == 240 && height == 320 && transfer_alternations_ >= 4);
         // A screen target's image may owe pixels (gpu3: handed over at the top screen's transfer, or a VBlank, before
         // this one): the hidden touch screen's snapshot, its only read then, is of the published picture (all of it),
@@ -4601,6 +4652,7 @@ private:
         if (frame % 600 == 0) {
             texture_cache_->Sweep(36000, 600);
         }
+        Ps1Housekeeping(frame);
         HdHousekeeping(frame);
 #if !defined(_WIN32)
         if (frame % 120 == 0 && LowMemoryKb() > 0) {
@@ -5705,6 +5757,157 @@ private:
         MH4N_LOG(Info, kLog, "{}", s);
     }
 
+    // PS1 STYLE'S PIXELATED TEXTURES (SetPs1Textures) go on the 3D world's textures only: a texture with mipmap levels (only the
+    // 3D's have them: the HUD's, the menus' and the text's are drawn at their size) or a draw with a depth test (the scene, its
+    // models and effects: the HUD, the menus and the text are drawn without one), never the touch screen's turn (MH4U draws
+    // both screens into one target in turns, NoteScreenTransfer) nor a render target sampled as a texture (the game's own
+    // picture in its screen filters). MH4N_PS1_LOG=<n> (a measurement aid): the first n kinds of texture and draw met while it
+    // is on, with what was chosen.
+    // A draw of the 3D world for PS1 style's geometry: a depth test (not Always), and not the touch screen's turn
+    bool Ps1Draw3d(const pica::PicaState& state) const {
+        const auto& regs = state.regs;
+        const u32 color_address = pica::BitsOf(regs[kRegColorAddress], 0, 28) * 8;
+        const bool touch_turn = transfer_alternations_ >= 4 && !last_transfer_touch_ && touch_source_ != 0 &&
+                                color_address == touch_source_;
+        return !touch_turn && pica::BitsOf(regs[0x107], 0, 1) != 0 && pica::BitsOf(regs[0x107], 4, 3) != 1;
+    }
+
+    bool Ps1World(const pica::PicaState& state, u32 unit, const texture::TextureRef& face) {
+        const auto& regs = state.regs;
+        const u32 color_address = pica::BitsOf(regs[kRegColorAddress], 0, 28) * 8;
+        const bool touch_turn = transfer_alternations_ >= 4 && !last_transfer_touch_ && touch_source_ != 0 &&
+                                color_address == touch_source_;
+        const u32 config[3] = {texture::kTexture0, texture::kTexture1, texture::kTexture2};
+        const bool mips = pica::BitsOf(regs[config[unit] + 3], 16, 4) > 0;  // (the lod word's max_level)
+        const u32 depth_color = regs[0x107];  // (output merger: bit 0 the depth test, bits 4-6 its function, 1 Always)
+        const bool depth_test = pica::BitsOf(depth_color, 0, 1) != 0 && pica::BitsOf(depth_color, 4, 3) != 1;
+        const bool world = !touch_turn && (mips || depth_test);
+        static const u32 log_limit = [] {
+            const char* v = std::getenv("MH4N_PS1_LOG");
+            return v != nullptr && std::atoi(v) > 0 ? static_cast<u32>(std::atoi(v)) : 0u;
+        }();
+        if (log_limit != 0 && ps1_logged_.size() < log_limit) {
+            const u64 kind = (u64{face.width} << 48) | (u64{face.height} << 36) | (u64{static_cast<u32>(face.format)} << 32) |
+                             (u64{mips} << 3) | (u64{depth_test} << 2) | (u64{touch_turn} << 1) | u64{color_address == 0};
+            if (ps1_logged_.insert(kind).second) {
+                MH4N_LOG(Info, kLog, "PS1 style: texture {:08x} {}x{} format {} unit {}, mips {}, depth test {}, target {:08x}{}: {}",
+                         face.paddr, face.width, face.height, static_cast<u32>(face.format), unit, mips ? "yes" : "no",
+                         depth_test ? "yes" : "no", color_address, touch_turn ? " (the touch screen's turn)" : "",
+                         world ? "pixelated" : "left as it is");
+            }
+        }
+        return world;
+    }
+
+    // A 2D game texture at 1/2^shift of its size (Ps1Image), made again when its pixels or the level changed; null when it can't
+    // be had (the caller samples the texture's own image). TextureImage has just bound the texture's own image this draw.
+    rhi::Image* Ps1Small(const texture::TextureRef& face, u32 shift) {
+        TexImageKey key;
+        key.faces[0] = texture::CacheKey{face.paddr, face.format, face.width, face.height};
+        const auto own = texture_images_.find(key);
+        if (own == texture_images_.end()) {
+            return nullptr;
+        }
+        auto it = ps1_images_.find(key);
+        if (it == ps1_images_.end()) {
+            it = ps1_images_.emplace(key, Ps1Image{}).first;
+        }
+        Ps1Image& v = it->second;
+        if (v.image == nullptr || v.shift != shift || v.generation != own->second.generation[0]) {
+            const u64 start = NowUs();
+            const texture::CachedTexture* decoded = texture_cache_->Pixels(key.faces[0]);
+            if (decoded == nullptr || decoded->rgba8.size() < static_cast<size_t>(face.width) * face.height * 4) {
+                return nullptr;
+            }
+            const u32 generation = decoded->generation;
+            Ps1Downscale(decoded->rgba8, face.width, face.height, shift, ps1_scratch_);
+            if (generation == own->second.generation[0]) {
+                texture_cache_->ReleasePixels(key.faces[0]);  // (the texture's own image holds them: as TextureImage does)
+            }
+            const u32 w = Ps1Side(face.width, shift), h = Ps1Side(face.height, shift);
+            if (v.image != nullptr && (v.width != w || v.height != h)) {
+                ps1_bytes_ -= u64{v.width} * v.height * 4;
+                ps1_old_.emplace_back(std::move(v.image), v.stamp);  // (let go once no recording still open binds it)
+                v.image = nullptr;
+            }
+            if (v.image == nullptr && ps1_bytes_ + u64{w} * h * 4 > TextureBudgetBytes() / 4) {
+                // (never more than a quarter of the texture budget: past it the texture's own image, sampled nearest; an
+                // eighth or a quarter of the size is 1/64 or 1/16 of the images' memory, a few MB, so this is a guard)
+                if (!ps1_full_told_) {
+                    ps1_full_told_ = true;
+                    MH4N_LOG(Warning, "Memory", "[mem] PS1 style: the smaller textures reached {} MB, a quarter of the texture "
+                                                "budget: the others are drawn from their own images", ps1_bytes_ >> 20);
+                }
+                ps1_images_.erase(it);
+                return nullptr;
+            }
+            if (v.image == nullptr) {
+                rhi::ImageDesc desc;
+                desc.format = rhi::Format::Rgba8Unorm;
+                desc.width = w;
+                desc.height = h;
+                desc.name = "ps1 texture";
+                rhi::Result<std::shared_ptr<rhi::Image>> made = backend_->CreateImage(desc);
+                if (!made.ok()) {
+                    if (ps1_failures_++ < 5) {
+                        MH4N_LOG(Error, kLog, "PS1 style: a {}x{} texture: {}", w, h, made.error());
+                    }
+                    ps1_images_.erase(it);
+                    return nullptr;
+                }
+                v.image = *made;
+                v.width = w, v.height = h;
+                v.stamp = 0;
+                ps1_bytes_ += u64{w} * h * 4;
+            }
+            if (!UploadFace(*v.image, 0, w, h, ps1_scratch_, /*ahead=*/v.stamp != recording_serial_)) {
+                v.generation = 0;  // (made again next time)
+                return nullptr;
+            }
+            v.shift = shift;
+            v.generation = generation;
+            ++frame_.ps1_made;
+            frame_.ps1_us += NowUs() - start;
+        }
+        v.stamp = recording_serial_;  // (after the upload: it may have submitted the recording)
+        v.used_frame = TextureFrame();
+        return v.image.get();
+    }
+
+    // At each screen picture (MemoryHousekeeping): the smaller copies replaced at another size go once no open recording binds
+    // them; every 120 pictures those not bound in the last 600 go, and all of them once the level is below 2 (off, or texels
+    // at their own size).
+    void Ps1Housekeeping(u64 frame) {
+        for (auto it = ps1_old_.begin(); it != ps1_old_.end();) {
+            if (it->second != recording_serial_) {
+                backend_->Retire(std::move(it->first), last_submit_);
+                it = ps1_old_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        if (ps1_images_.empty() || frame % 120 != 0) {
+            return;
+        }
+        if (frame % 3600 == 0) {  // (the copies' memory, about every 30 s while there are any)
+            MH4N_LOG(Info, "Memory", "[mem] PS1 style: {} smaller textures, {:.1f} MB (the textures' images {} MB)",
+                     ps1_images_.size(), static_cast<double>(ps1_bytes_) / (1 << 20), texture_bytes_ >> 20);
+        }
+        const bool unused_all = g_ps1_textures.load(std::memory_order_relaxed) < 2;
+        for (auto it = ps1_images_.begin(); it != ps1_images_.end();) {
+            Ps1Image& v = it->second;
+            if (v.stamp != recording_serial_ && (unused_all || v.used_frame + 600 < frame)) {
+                if (v.image != nullptr) {
+                    ps1_bytes_ -= u64{v.width} * v.height * 4;
+                    backend_->Retire(std::move(v.image), last_submit_);
+                }
+                it = ps1_images_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+
     // The binding of one unit (design 4.8: a texture and a sampler per unit; vk_rasterizer.cpp's SyncTextureUnits).
     TextureBinding BindUnit(const pica::PicaState& state, u32 unit, const std::vector<texture::TextureRef>& refs) {
         using texture::Type;
@@ -5761,6 +5964,7 @@ private:
         // its picture through such textures); any other texture is decoded from guest memory, at 1x.
         rhi::Image* image = options_.target_textures && faces.size() == 1 ? TargetAsTexture(state, *faces[0], unit, type == Type::Texture2D)
                                                                           : nullptr;
+        const bool game_texture = image == nullptr;  // (decoded from guest memory: the only kind PS1 style pixelates)
         if (image == nullptr) {
             if (ScaleLogLimit() != 0 && scale_ > 1) {
                 for (const texture::TextureRef* f : faces) ScaleLogTexture(*f);
@@ -5776,7 +5980,19 @@ private:
             ++frame_.texture_unavailable;
             return null_texture(false);
         }
-        rhi::Result<std::shared_ptr<rhi::Sampler>> sampler = samplers_->Get(fragment::sampling::SamplerParamsOf(state, unit));
+        fragment::sampling::SamplerParams sampler_params = fragment::sampling::SamplerParamsOf(state, unit);
+        if (ps1_level_ > 0 && game_texture && !cube && Ps1World(state, unit, *faces[0])) {
+            // PS1 style's pixelated textures: the texels drawn as squares (nearest, no smoothing between them), and from level 2
+            // on bigger ones, the texture at a half, a quarter or an eighth of its size (Ps1Small; its own image if that fails)
+            sampler_params.mag_filter = sampler_params.min_filter = sampler_params.mip_filter = 0;
+            if (ps1_level_ >= 2) {
+                if (rhi::Image* small = Ps1Small(*faces[0], static_cast<u32>(ps1_level_ - 1))) {
+                    image = small;
+                }
+            }
+            ++frame_.ps1_binds;
+        }
+        rhi::Result<std::shared_ptr<rhi::Sampler>> sampler = samplers_->Get(sampler_params);
         if (!sampler.ok()) {
             MH4N_LOG(Error, kLog, "sampler: {}", sampler.error());
             ++frame_.texture_unavailable;
@@ -5865,6 +6081,16 @@ private:
         EnsureRecording();
         binding_textures_ = true;
         levels_missing_in_draw_ = false;
+        ps1_level_ = std::clamp(g_ps1_textures.load(std::memory_order_relaxed), 0, kPs1MaxLevel);
+        if (ps1_level_ != ps1_told_) {  // (each change logged once)
+            ps1_told_ = ps1_level_;
+            if (ps1_level_ == 0) {
+                MH4N_LOG(Info, kLog, "PS1 style textures: off");
+            } else {
+                MH4N_LOG(Info, kLog, "PS1 style textures: level {} (the 3D's texels sharp, at 1/{} of their size)", ps1_level_,
+                         1u << (ps1_level_ - 1));
+            }
+        }
         texture::TexturesOfDraw(state.regs.data(), draw_refs_);  // (into a vector kept from draw to draw)
         for (u32 unit = 0; unit < 3; ++unit) {
             if (used[unit]) {
@@ -6071,6 +6297,15 @@ private:
         if (width == 0 || height == 0 || (color_address == 0 && (shadow_write || !(depth_address != 0 && wants_depth)))) {
             return drop("no surface");
         }
+        // PS1 style's geometry (SetPs1Geometry): the 3D world's draws only, a draw with a depth test that is not the touch
+        // screen's turn (Ps1World's rule without the textures), never a shadow map's
+        const bool ps1_geometry = g_ps1_geometry.load(std::memory_order_relaxed) && !shadow_write && !into_shadow_map &&
+                                  Ps1Draw3d(state);
+        if (ps1_geometry && !ps1_geometry_told_) {
+            ps1_geometry_told_ = true;
+            MH4N_LOG(Info, kLog, "PS1 style geometry: the 3D world's vertices on a 240-cell grid, its textures affine");
+        }
+        frame_.ps1_geometry_draws += ps1_geometry ? 1 : 0;
 
         // ---- the textures the draw reads (before any vertex data is committed: binding one can submit the recording) ----
         DrawDesc desc;
@@ -6127,6 +6362,7 @@ private:
                                                                 backend_->Caps().geometry_shader,
                                                                 FixupGeneratorRegistry::Global().Has()) == FixupDecision::Applied;
             vs_config = shader::MakeVertexShaderConfig(state, &loaded, options);
+            vs_config.ps1 = ps1_geometry && !vs_config.geometry_stage;  // (its own program id only when set)
             vs_hash = vs_config.Hash();
             // The program is translated with its pipeline (PipelineBuilder::Build; under N2-16's provider on a worker). Azahar
             // falls back to the software path when AccelerateDrawBatch fails (a program that does not translate): Failed. A
@@ -6192,6 +6428,9 @@ private:
             }
             if (batch_.Empty()) {
                 return drop("the CPU path made no triangle");
+            }
+            if (ps1_geometry) {
+                batch_.Ps1Snap();  // (the translated stage's PS1 epilogue, on the CPU's positions)
             }
             EnsureRoom(batch_.VertexCount() * cpuvertex::kHardwareVertexStride);
             // held back (its triangles uploaded when it is drawn) unless it reads what it draws or is the stand-in of an
@@ -7675,6 +7914,17 @@ private:
     u64 texture_bytes_ = 0;
     u64 textures_released_ = 0;           // images let go (the budget, the memory short)
     HdTextures hd_;                       // HD texture packs (hd_textures.h)
+    // PS1 style's pixelated textures (SetPs1Textures, Ps1World, Ps1Small): the level of the draw being bound, the last one
+    // logged, the smaller copies, those replaced and waiting to go, their bytes, a scratch buffer, the kinds logged
+    int ps1_level_ = 0, ps1_told_ = 0;
+    bool ps1_geometry_told_ = false;
+    std::map<TexImageKey, Ps1Image> ps1_images_;
+    std::vector<std::pair<std::shared_ptr<rhi::Image>, u64>> ps1_old_;
+    u64 ps1_bytes_ = 0;
+    u32 ps1_failures_ = 0;
+    bool ps1_full_told_ = false;
+    std::vector<u8> ps1_scratch_;
+    std::set<u64> ps1_logged_;
     u64 hd_upload_bytes_ = 0;             // the HD images' pixels uploaded for this screen picture (each display transfer: 0)
     u64 hd_idle_released_ = 0;            // HD images let go for not being drawn lately (ReleaseHd)
     u64 hd_idle_told_ = 0;                // (its log lines so far)
@@ -7763,6 +8013,19 @@ private:
         const char* v = std::getenv("MH4N_TOUCH_HIDDEN");
         return v != nullptr && *v == '1';
     }();
+    // MH4N_TOUCH_DUTY=N:W (a measurement aid, 1.0.1.1): the touch screen drawn W frames in N and left out in the others,
+    // as the app's quick items' piece has it drawn (android_main.cpp's WindowSink), to measure that on a PC
+    const std::pair<u32, u32> touch_duty_ = [] {
+        const char* v = std::getenv("MH4N_TOUCH_DUTY");
+        if (v == nullptr) return std::pair<u32, u32>{0, 0};
+        const u32 n = static_cast<u32>(std::max(0, std::atoi(v)));
+        const char* colon = std::strchr(v, ':');
+        return std::pair<u32, u32>{n, colon != nullptr ? static_cast<u32>(std::max(0, std::atoi(colon + 1))) : 1u};
+    }();
+    u32 top_transfers_ = 0;
+    bool TouchDutyHidden() const {
+        return touch_duty_.first > 0 && top_transfers_ % touch_duty_.first >= touch_duty_.second;
+    }
     std::atomic<bool> touch_skip_enabled_{false};
     bool last_transfer_touch_ = false;  // the last display transfer went to the touch screen
     u32 transfer_alternations_ = 0;     // the transfers in a row that went to the other screen than the one before
@@ -7935,6 +8198,22 @@ void SetShadows(bool on) {
     g_shadows.store(on, std::memory_order_relaxed);
 }
 
+void SetPs1Textures(int level) {
+    g_ps1_textures.store(std::clamp(level, 0, kPs1MaxLevel), std::memory_order_relaxed);
+}
+
+int Ps1Textures() {
+    return g_ps1_textures.load(std::memory_order_relaxed);
+}
+
+void SetPs1Geometry(bool on) {
+    g_ps1_geometry.store(on, std::memory_order_relaxed);
+}
+
+bool Ps1Geometry() {
+    return g_ps1_geometry.load(std::memory_order_relaxed);
+}
+
 bool Shadows() {
     return g_shadows.load(std::memory_order_relaxed);
 }
@@ -7976,10 +8255,31 @@ MH4N_OPTION("runner", "--shadows", "on|off",
             "--gpu native: the shadow maps drawn (on, the default), or not (off: no shadow-write draws and no clear of them; each map "
             "cleared once to nothing in the way, so nothing is in shadow). An app changes it while the game runs (SetShadows)");
 
+MH4N_OPTION("runner", "--ps1-geometry", "on|off",
+            "--gpu native: PS1 style's geometry, the 3D world's vertices snapped to a 240-cell grid and its textures affine "
+            "(off, the default: as the game draws them). An app changes it while the game runs (SetPs1Geometry)");
+MH4N_OPTION("runner", "--ps1-textures", "0-6",
+            "--gpu native: PS1 style's pixelated textures, the 3D world's textures drawn with sharp texels (1) and at 1/2, 1/4, "
+            "1/8, 1/16 or 1/32 of their size (2 to 6); 0 (the default) as the game draws them. An app changes it while the game "
+            "runs (SetPs1Textures)");
+
 MH4N_REGISTER(GpuFactory, "native", [](Host& host, const Options& options) -> std::unique_ptr<Gpu> {
     if (options.Has("--shadows")) {  // (process-wide: SetShadows)
         const std::string shadows = options.GetString("--shadows", "on");
         SetShadows(!(shadows == "off" || shadows == "0" || shadows == "false" || shadows == "no"));
+    }
+    if (options.Has("--ps1-geometry")) {  // (process-wide: SetPs1Geometry)
+        const std::string geometry = options.GetString("--ps1-geometry", "off");
+        SetPs1Geometry(geometry == "on" || geometry == "1" || geometry == "true" || geometry == "yes");
+    }
+    if (options.Has("--ps1-textures")) {  // (process-wide: SetPs1Textures)
+        const std::string level = options.GetString("--ps1-textures", "0");
+        const int value = std::atoi(level.c_str());
+        if (level.size() != 1 || level[0] < '0' || level[0] > '0' + kPs1MaxLevel) {
+            MH4N_LOG(Error, kLog, "--ps1-textures {}: 0 to {}; 0 is used", level, kPs1MaxLevel);
+        } else {
+            SetPs1Textures(value);
+        }
     }
     NativeOptions native;
     // on by default where the screens are shown (native-display), off for the capture player's --gpu native

@@ -83,6 +83,7 @@
 #include "imgui_internal.h"  // (ImGui::RegisterUserTexture: the players' pictures on the buttons)
 #include "perfstats.h"       // (perfstats_rect: the FPS counter's plate, which the editor moves)
 #include "hunt_bars.h"       // (hunt_bars_rect: the monsters' health bars, which the editor moves and sizes; 1.0.1)
+#include "quick_items.h"     // (the quick items' piece: placed and sized in the editor like the bars; 1.0.1.1)
 #include "mh4n/host.h"
 #include "mh4n/present.h"
 #include "mh4n/registry.h"
@@ -551,6 +552,9 @@ struct Layout {
     float bars_x, bars_y, bars_k;     // the monsters' health bars (hunt_bars.cpp, 1.0.1): their block's top right corner
                                       // in the top screen's width and height from its left and top; < 0 their own place,
                                       // the top right corner; and their size, 1 as they came (monster_bars in the file)
+    float items_x, items_y, items_k;  // the quick items' piece (quick_items.cpp, 1.0.1.1): its centre in the window's
+                                      // width and height; < 0 its own place, the bottom edge's middle; its size
+                                      // (quick_items in the file)
     char image[C_COUNT][IMAGE_NAME];  // the player's own picture on a control: a file in the profiles' images folder
                                       // (image <key> <file>); "" none. The stick's: its base
     char knob[IMAGE_NAME];            // the stick's knob's (image_knob <file>, as the MHGU port's; 1.0.1)
@@ -576,15 +580,18 @@ Layout defaults(int kind = KIND_OURS) {
     for (int i = 0; i < C_COUNT; i++) def_place(kind, i, &l.x[i], &l.y[i]), l.scale[i] = 1.0f;  // (the menu layout's: unused)
     l.kind = kind, l.profile = 1, l.fps_x = l.fps_y = -1.0f, l.item_zone = 1.0f;
     l.bars_x = l.bars_y = -1.0f, l.bars_k = 1.0f;
+    l.items_x = l.items_y = -1.0f, l.items_k = 1.0f;
     return l;
 }
 // The kind and what it hides, for in_mode; the FPS counter's place, for perfstats (touch_fps_place)
 float g_fps_x = -1.0f, g_fps_y = -1.0f;
 float g_item_zone = 1.0f;  // (Layout.item_zone, for item_zone)
 float g_bars_x = -1.0f, g_bars_y = -1.0f, g_bars_k = 1.0f;  // (the monsters' health bars' place: touch_bars_place)
+float g_items_x = -1.0f, g_items_y = -1.0f, g_items_k = 1.0f;  // (the quick items' piece's: touch_items_place)
 void publish(const Layout &l) {
     g_kind = l.kind, g_off = l.off, g_style = l.style, g_fps_x = l.fps_x, g_fps_y = l.fps_y, g_item_zone = l.item_zone;
     g_bars_x = l.bars_x, g_bars_y = l.bars_y, g_bars_k = l.bars_k;
+    g_items_x = l.items_x, g_items_y = l.items_y, g_items_k = l.items_k;
 }
 std::string g_layout_path = "touch_layout.txt";  // (the app's folder: touch_init)
 std::string g_data_dir = ".";                    // (the app's folder: the profiles', where no save folder is chosen)
@@ -658,6 +665,12 @@ void parse_layout(const std::string &text, Layout *l, bool settings) {
             l->fps_x = ok ? x : -1.0f, l->fps_y = ok ? y : -1.0f;
             continue;
         }
+        if (n >= 3 && !strcmp(key, "quick_items")) {  // (1.0.1.1; an older version skips the line)
+            bool ok = x >= 0 && x <= 1 && y >= 0 && y <= 1;
+            l->items_x = ok ? x : -1.0f, l->items_y = ok ? y : -1.0f;
+            l->items_k = n >= 4 ? std::clamp(s, .5f, 2.0f) : 1.0f;
+            continue;
+        }
         if (n >= 3 && !strcmp(key, "monster_bars")) {  // (1.0.1; an older version skips the line)
             bool ok = x >= 0 && x <= 1 && y >= 0 && y <= 1;
             l->bars_x = ok ? x : -1.0f, l->bars_y = ok ? y : -1.0f;
@@ -718,6 +731,8 @@ void write_layout_lines(FILE *f, const Layout &l, const float (*hud)[2]) {
     fprintf(f, "layout_kind %d\nprofile %d\nfps_counter %.4f %.4f\n", l.kind, l.profile, l.fps_x, l.fps_y);
     fprintf(f, "# the monsters' health bars: their top right corner (in the top screen's width and height from its left and "
                "top; -1 -1 their own place) and size\nmonster_bars %.4f %.4f %.2f\n", l.bars_x, l.bars_y, l.bars_k);
+    fprintf(f, "# the quick items' piece: its middle (in the window's width and height; -1 -1 its own place) and size\n"
+               "quick_items %.4f %.4f %.2f\n", l.items_x, l.items_y, l.items_k);
     fprintf(f, "# controls hidden (emulator-style), held by a tap (hold), with the player's own picture (image <key> <file>;\n"
                "# the stick's knob: image_knob <file>), drawn alone in the control's place\n");
     for (int i = 0; i < C_LAID; i++) {
@@ -1723,8 +1738,10 @@ const int SEL_PANEL = -2;  // (s.sel / a finger's ctl: the editor's panel, picke
 const int SEL_FPS = -3;    // (...the FPS counter's plate)
 const int SEL_BARS = -4;   // (...the monsters' health bars: hunt_bars.cpp, 1.0.1)
 const int SEL_BARS_GRIP = -5;  // (a finger's ctl only: the bars' corner handle, their size; s.sel stays SEL_BARS)
+const int SEL_ITEMS = -6;       // (...the quick items' piece: quick_items.cpp, 1.0.1.1)
+const int SEL_ITEMS_GRIP = -7;  // (a finger's ctl only: its corner handle; s.sel stays SEL_ITEMS)
 const uint64_t PANEL_REPEAT = 700 * MS;  // (taps on its - or + this close together: one button's, State::rep_btn)
-bool grabbed(int ctl) { return ctl >= 0 || ctl == SEL_PANEL || ctl == SEL_BARS; }  // (a finger's ctl: something it moves)
+bool grabbed(int ctl) { return ctl >= 0 || ctl == SEL_PANEL || ctl == SEL_BARS || ctl == SEL_ITEMS; }  // (a finger's ctl: something it moves)
 void panel_dims(float w, float h, float k, float *pw, float *ph) {
     // (between the left edge's column and the right thumb's controls, where it hides none of them, on a wide screen)
     *pw = std::clamp(w - 1.04f * h, std::min(w * .9f, 1.1f * h), std::min(w * .9f, 1.8f * h)) * k, *ph = .28f * h * k;
@@ -1839,6 +1856,29 @@ Rect bars_grip(const Rect &bars, float h) {
 struct BarsGrip {
     float k0 = 1, block[4] = {}, x0 = 0, y0 = 0;
 } g_bars_grip;
+// The quick items' piece as last drawn (quick_items.cpp), its move and size, as the bars'; its corner handle on its
+// frame's bottom right corner (its middle stays: quick_items_grip)
+bool items_frame(Rect *r) {
+    float v[4];
+    if (!quick_items_rect(v)) return false;
+    *r = {v[0], v[1], v[2], v[3], true};
+    return true;
+}
+void items_move(State &s, float dx, float dy) {
+    float v[4];
+    if (!quick_items_rect(v)) return;
+    quick_items_drag(s.w, s.h, v, dx, dy, &s.layout.items_x, &s.layout.items_y);
+    publish(s.layout);
+}
+void items_size(State &s, float k) {
+    s.layout.items_k = quick_items_size(k);
+    publish(s.layout);
+}
+Rect items_grip(const Rect &items, float h) {
+    float g = .05f * h, cx = items.x1 + .008f * h, cy = items.y1 + .008f * h;
+    return {cx - g * .5f, cy - g * .5f, cx + g * .5f, cy + g * .5f, true};
+}
+BarsGrip g_items_grip;
 // The buttons a tap held down, let go (why: for the log): the controls hidden or edited, a profile changed; one alone where
 // it is no longer on the screen (frame_input)
 void unlatch(State &s, uint64_t which, const char *why) {
@@ -2243,6 +2283,7 @@ void edit_button(State &s, int i, const Rect *btn, uint64_t now, int again) {
         if (c >= 0) s.layout.scale[c] += by, clamp_place(s, c);
         else if (part == HP_ITEMS) item_zone_set(s, s.layout.item_zone + by);  // (the item bar: its touch area)
         else if (s.sel == SEL_BARS) bars_size(s, s.layout.bars_k + by);
+        else if (s.sel == SEL_ITEMS) items_size(s, s.layout.items_k + by);
         else if (s.sel == SEL_PANEL) {  // (about the button pressed: it stays under the finger)
             panel_resize(s, g_epanel.k + by, (btn[i].x0 + btn[i].x1) * .5f, (btn[i].y0 + btn[i].y1) * .5f);
             s.rep_btn = i, s.rep_ns = now, s.rep_at = again < 0 ? btn[i] : s.rep_at;
@@ -2261,6 +2302,7 @@ void edit_button(State &s, int i, const Rect *btn, uint64_t now, int again) {
         else if (s.sel == SEL_PANEL) panel_resize(s, 1.0f, s.w * .5f, s.h * .5f), g_epanel = EditPanel{};
         else if (s.sel == SEL_FPS) s.layout.fps_x = s.layout.fps_y = -1.0f, publish(s.layout);
         else if (s.sel == SEL_BARS) s.layout.bars_x = s.layout.bars_y = -1.0f, s.layout.bars_k = 1.0f, publish(s.layout);
+        else if (s.sel == SEL_ITEMS) s.layout.items_x = s.layout.items_y = -1.0f, s.layout.items_k = 1.0f, publish(s.layout);
         break;
     case E_HOLD:  // (a tap holds it down, the next lets it go: S13)
         if (holdable(c)) {
@@ -2331,6 +2373,7 @@ void edit_event(State &s, const SDL_Event &e, float x, float y) {
         if (drag) {  // a second finger: pinch the control being dragged, or the panel
             s.pinch = true, s.pinch_d0 = std::max(1.0f, hypotf(x - drag->x, y - drag->y));
             s.pinch_s0 = drag->ctl == SEL_PANEL ? g_epanel.k : drag->ctl == SEL_BARS ? s.layout.bars_k
+                         : drag->ctl == SEL_ITEMS ? s.layout.items_k
                          : drag->ctl >= ZONE_SEL ? s.layout.item_zone : s.layout.scale[drag->ctl];
             f->kind = F_EDIT;
             return;
@@ -2341,6 +2384,13 @@ void edit_event(State &s, const SDL_Event &e, float x, float y) {
         if (strip(0.0f)) {
             f->kind = F_EDIT, f->ctl = SEL_PANEL;
             s.sel = SEL_PANEL;
+            return;
+        }
+        // the quick items' corner handle (its size; as the bars' below)
+        if (Rect blk; !panel.in(x, y) && items_frame(&blk) && items_grip(blk, s.h).in(x, y)) {
+            g_items_grip.k0 = s.layout.items_k, g_items_grip.x0 = x, g_items_grip.y0 = y;
+            g_items_grip.block[0] = blk.x0, g_items_grip.block[1] = blk.y0, g_items_grip.block[2] = blk.x1, g_items_grip.block[3] = blk.y1;
+            f->kind = F_EDIT, f->ctl = SEL_ITEMS_GRIP, s.sel = SEL_ITEMS;
             return;
         }
         // the monsters' health bars' corner handle (their size, over the controls, not the panel: a small square aimed at)
@@ -2358,6 +2408,12 @@ void edit_event(State &s, const SDL_Event &e, float x, float y) {
         Rect fps, bars;  // (the FPS counter, while it shows: over the HUD's parts)
         if (c < 0 && fps_frame(&fps) && fps.in(x, y)) {
             f->kind = F_EDIT, f->ctl = SEL_FPS, s.sel = SEL_FPS;
+            return;
+        }
+        Rect items;  // (the quick items' piece, or its stand-in: over the HUD's parts too, a little larger)
+        if (c < 0 && items_frame(&items) && x >= items.x0 - .012f * s.h && x <= items.x1 + .012f * s.h &&
+            y >= items.y0 - .012f * s.h && y <= items.y1 + .012f * s.h) {
+            f->kind = F_EDIT, f->ctl = SEL_ITEMS, s.sel = SEL_ITEMS;
             return;
         }
         // (the monsters' health bars, or their stand-in: over the HUD's parts too, a little larger)
@@ -2399,6 +2455,7 @@ void edit_event(State &s, const SDL_Event &e, float x, float y) {
             if (a && b && c >= 0 && c < C_COUNT) s.layout.scale[c] = s.pinch_s0 * by, clamp_place(s, c);
             if (a && b && c == ZONE_SEL + HP_ITEMS) item_zone_set(s, s.pinch_s0 * by);
             if (a && b && c == SEL_BARS) bars_size(s, s.pinch_s0 * by);
+            if (a && b && c == SEL_ITEMS) items_size(s, s.pinch_s0 * by);
             if (a && b && c == SEL_PANEL) {  // (about its middle)
                 Rect p, bt[E_COUNT];
                 editor_panel(g_epanel, s.w, s.h, &p, bt);
@@ -2412,6 +2469,10 @@ void edit_event(State &s, const SDL_Event &e, float x, float y) {
             bars_move(s, dx, dy);
         } else if (f->ctl == SEL_BARS_GRIP) {
             bars_size(s, hunt_bars_grip(g_bars_grip.k0, g_bars_grip.block, g_bars_grip.x0, g_bars_grip.y0, x, y));
+        } else if (f->ctl == SEL_ITEMS) {
+            items_move(s, dx, dy);
+        } else if (f->ctl == SEL_ITEMS_GRIP) {
+            items_size(s, quick_items_grip(g_items_grip.k0, g_items_grip.block, g_items_grip.x0, g_items_grip.y0, x, y));
         } else if (f->ctl >= ZONE_SEL) {
             hud_drag(s, f->ctl - ZONE_SEL, dx, dy);
         } else if (f->ctl >= 0) {
@@ -2495,6 +2556,7 @@ bool finger_event(const SDL_Event &e) {
     }
     if (e.type == SDL_EVENT_FINGER_DOWN) {
         if (g_bottom.in(x, y)) return false;  // (the touch screen's corner: the game's stylus, android_main.cpp)
+        if (quick_items_hit(x, y)) return false;  // (the quick items' piece: the same, its part of the touch screen)
         Finger *f = nullptr;
         for (Finger &g : s.f)
             if (g.kind == F_NONE) { f = &g; break; }
@@ -2699,9 +2761,12 @@ bool finger_event(const SDL_Event &e) {
     // 0569 until it is let go, then 056C or 0573, 0565 and back to 0501, a tap as a hold): a tap, let go within AIM_TAP
     // and not slid, holds it for the game until the next tap on the aim (the MHGU port's tap opens the scope, or a bow's
     // aiming mode, which stay open by themselves), or a dodge, a sheathe, the weapon put away, a menu (frame_input); held
-    // or slid it aims while the thumb is, its slide turning the aim as a drag of the view does, and letting go ends it
+    // or slid it aims while the thumb is, its slide turning the aim as a drag of the view does, and letting go ends it.
+    // (1.0.1.1: that R on the RG406V was the draw: its save's Bow Controls had R draw and shoot, as the PC test save's.
+    // With them so (bow_type 1, read from the game now) the aim is X, which raises and lowers the aiming mode by itself:
+    // a tap is a tap)
     if (f->kind == F_BUTTON && f->ctl == C_RAIM && !f->done && !cancel && f->btn && f->out0 && g_game.weapon_drawn == 1 && !s.menu &&
-        !f->moved && now - f->t0 < AIM_TAP && e.type == SDL_EVENT_FINGER_UP)
+        !f->moved && now - f->t0 < AIM_TAP && e.type == SDL_EVENT_FINGER_UP && !(g_ranged == 1 && g_game.bow_type != 0))
         s.aim_latch = f->btn;
     if (f->kind == F_STICK) {
         s.stick_on = false;
@@ -4283,6 +4348,24 @@ void draw_editor(ImDrawList *dl, ImFont *font, ImFont *title, const State &s, fl
                           IM_COL32(28, 20, 15, 190), fs * .3f);
         text_center(dl, font, fs, c, sel ? GLOW : INK, T("FPS counter"), w);
     }
+    Rect items;  // (the quick items' piece or its stand-in: framed, named, picked like a part; its size when picked)
+    if (items_frame(&items)) {
+        bool sel = s.sel == SEL_ITEMS;
+        Rect f = {items.x0 - .008f * h, items.y0 - .008f * h, items.x1 + .008f * h, items.y1 + .008f * h, true};
+        dashed_rect(dl, f, sel ? fade(GLOW, .65f + .35f * sinf(SDL_GetTicksNS() / 1e9f * 6)) : IM_COL32(222, 186, 96, 210),
+                    (sel ? .005f : .0035f) * h);
+        char label[64];
+        if (sel) snprintf(label, sizeof label, "%s  %d%%", T("Quick items"), (int)lroundf(s.layout.items_k * 100));
+        else snprintf(label, sizeof label, "%s", T("Quick items"));
+        Rect hg = items_grip(items, h);  // (its corner handle: its size)
+        size_grip(dl, hg, sel ? GLOW : GOLD);
+        float fs = .022f * h, ny = f.y0 - fs * .8f < 0 ? f.y1 + fs * .8f : f.y0 - fs * .8f;  // (above it: it sits low)
+        ImVec2 ts = font->CalcTextSizeA(fs, FLT_MAX, 0, label);
+        ImVec2 c(std::clamp((f.x0 + f.x1) * .5f, ts.x * .5f + fs * .4f, w - ts.x * .5f - fs * .4f), ny);
+        dl->AddRectFilled(ImVec2(c.x - ts.x * .5f - fs * .35f, c.y - fs * .62f), ImVec2(c.x + ts.x * .5f + fs * .35f, c.y + fs * .62f),
+                          IM_COL32(28, 20, 15, 190), fs * .3f);
+        text_center(dl, font, fs, c, sel ? GLOW : INK, label, w);
+    }
     Rect bars;  // (the monsters' health bars or their stand-in: framed, named, picked like a part; their size when picked)
     if (bars_frame(&bars)) {
         bool sel = s.sel == SEL_BARS;
@@ -4324,6 +4407,7 @@ void draw_editor(ImDrawList *dl, ImFont *font, ImFont *title, const State &s, fl
     const char *say = T(picked              ? "The panel: drag its title to move it  -  pinch or use - / + for its size"
                         : s.sel == SEL_FPS  ? "The FPS counter: drag it to move it  -  Reset puts it back at the top"
                         : s.sel == SEL_BARS ? "The monsters' health bar: drag to move, its corner handle, a pinch or - / + for its size  -  Reset puts it back"
+                        : s.sel == SEL_ITEMS ? "Quick items: drag to move, its corner handle, a pinch or - / + for its size  -  Reset puts it back"
                         : ctl >= 0 && hideable(ctl) && (s.layout.off >> ctl & 1) ? "Hidden: Show brings it back"
                         : s.sel == ZONE_SEL + HP_ITEMS ? "Drag it where you want it  -  pinch or use - / + for the area a tap uses it in"
                         : s.sel >= ZONE_SEL ? "Drag it where you want it in your hunts"
@@ -4343,7 +4427,7 @@ void draw_editor(ImDrawList *dl, ImFont *font, ImFont *title, const State &s, fl
                                         "Defaults", "Cancel", "Save"};
     for (int i = 0; i < E_COUNT; i++) {
         if (!btn[i].ok) continue;
-        bool bars_sel = s.sel == SEL_BARS;  // (the monsters' health bars: sized and reset like a control)
+        bool bars_sel = s.sel == SEL_BARS || s.sel == SEL_ITEMS;  // (the bars, the quick items: sized and reset like a control)
         bool off = ((i == E_SMALLER || i == E_BIGGER) && ((s.sel < 0 && !picked && !bars_sel) || s.sel == SEL_FPS || (part >= 0 && part != HP_ITEMS))) ||
                    (i == E_RESET && s.sel < 0 && !picked && s.sel != SEL_FPS && !bars_sel) || (i == E_HIDE && !hideable(ctl)) ||
                    (i == E_HOLD && !holdable(ctl)) || (i == E_IMAGE && !image_ok(ctl)) || (i == E_STYLE && ranged_layout());
@@ -4754,6 +4838,12 @@ bool touch_profile_clear(int n) {
     return ok;
 }
 
+bool touch_items_place(float *x, float *y, float *k) {
+    *k = std::clamp(g_items_k, .5f, 2.0f);
+    if (g_items_x < 0 || g_items_y < 0) return false;
+    *x = g_items_x, *y = g_items_y;
+    return true;
+}
 bool touch_bars_place(float *x, float *y, float *k) {
     *k = std::clamp(g_bars_k, .5f, 2.0f);
     if (g_bars_x < 0 || g_bars_y < 0) return false;

@@ -3,6 +3,9 @@
 #if MH4N_HAVE_SCHEDULE
 
 #include <fstream>
+#include <algorithm>
+#include <cstdlib>
+#include <cstring>
 #include <utility>
 
 #include "../common/utf8.h"
@@ -44,6 +47,27 @@ ShotSink::ShotSink(const Schedule::ShotSchedule& schedule, std::filesystem::path
     state_->dir = std::move(dir);
 }
 
+namespace {
+std::pair<u32, u32> TouchDuty() {
+    static const std::pair<u32, u32> duty = [] {
+        const char* v = std::getenv("MH4N_SHOTS_TOUCH_DUTY");
+        if (v == nullptr) return std::pair<u32, u32>{0, 0};
+        const char* colon = std::strchr(v, ':');
+        return std::pair<u32, u32>{static_cast<u32>(std::max(0, std::atoi(v))),
+                                   colon != nullptr ? static_cast<u32>(std::max(0, std::atoi(colon + 1))) : 1u};
+    }();
+    return duty;
+}
+}  // namespace
+
+bool ShotSink::ScreenHidden(u32 screen) const {
+    const auto [n, w] = TouchDuty();
+    if (screen != 1 || n == 0) return false;
+    const bool draw = duty_frames_++ % n < w;
+    duty_streak_ = draw ? duty_streak_ + 1 : 0;
+    return !draw;
+}
+
 void ShotSink::Publish(const present::DisplayFrame& frame) {
     gas_since_last_shot_ = gas_since_last_shot_ || frame.gas;
     // The reference's EmulatedMs is its ticks over the ARM11 clock; the game clock counts the same ticks.
@@ -59,7 +83,9 @@ void ShotSink::Publish(const present::DisplayFrame& frame) {
     }
     gas_since_last_shot_ = false;
     Request(stem + "_top.ppm", frame.top);
-    Request(stem + "_bottom.ppm", frame.bottom);
+    if (TouchDuty().first != 0 && !frame.bottom) return;  // (the duty's hidden frames: no touch screen)
+    Request(stem + (TouchDuty().first != 0 ? "_bottom_r" + std::to_string(duty_streak_) : std::string("_bottom")) + ".ppm",
+            frame.bottom);
 }
 
 void ShotSink::Request(const std::string& name, const std::optional<present::ScreenImage>& screen) {

@@ -39,10 +39,14 @@
 // gets that gather back, and the counts with it: nothing lost, nothing spent); and after an item the hunter holds up.
 // Endless points are left as the game has them. Only the local hunter's gathers: the points and the pouch are each
 // player's own, and what the game sends for a gather it sends here as it would for each press. Fishing is another step.
+// It calls those functions only when each is one of the code library's, at its address in the library's version
+// (Check, at Install): another version's library made by older tools gets them from the port's copy of its map
+// (game_addr.h); without them the option does nothing.
 #include "gather.h"
 
 #include "game_addr.h"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
@@ -113,7 +117,12 @@ constexpr int MAX_EXTRA = 40;           // (a point has a handful: anything past
 constexpr std::pair<u16, u32> ACTIONS[] = {{0x4d, 0}, {0x4e, 1}, {0x51, 2}, {0x52, 3},
                                            {0x53, 4}, {0x54, 5}, {0x94, 6}, {0x95, 7}};
 
+// The game's functions the rest of a point calls (FN_CARVE_POINT is the tests' only)
+const GameAddr* const FUNCTIONS[] = {&FN_POINT_COUNT, &FN_POINT_ROLL, &FN_IS_LOCAL,  &FN_COUNT_GATHER, &FN_COUNT_RARE,
+                                     &FN_QUEST_100,   &FN_QUEST_101,  &FN_QUEST_102, &FN_QUEST_NOTE,   &FN_GIVE};
+
 bool gather_all = false;   // the option
+bool usable = true;        // the code library has the game's functions it calls (Check); off, nothing is done
 bool trace = false;        // gather_trace: a line for every gather the game counts and every item the rest gives
 std::vector<std::string> tests;  // gather_test: what the next frame does (tests only)
 u32 held_monster = 0;            // gather_test monster=@<hp>: the monster kept in front of the hunter,
@@ -448,9 +457,33 @@ bool On() {
 
 void Reset() {
     gather_all = trace = false;
+    usable = true;
     tests.clear();
     held_monster = 0, held_frames = 0;
     before = Snapshot{};
+}
+
+std::string Check(const RCodeInfo& info) {
+    // Each function must have this version's address (game_addr.h) and be one of the library's functions: a call to
+    // anything else runs whatever code is there. (1.0.1 on EUR v1.1.0 libraries made by 1.0's tools, which have no
+    // address for these: USA v1.3.0's 0x005b95b0 is, in EUR's code, the `blx r1` that ends the function before its
+    // 0x005b95d8, and the game stopped at the first gather with the option on, issue #71.)
+    usable = true;
+    for (const GameAddr* f : FUNCTIONS) {
+        const u32 address = *f;
+        const RFuncEntry* first = info.table;
+        const RFuncEntry* last = info.table ? info.table + info.count : nullptr;
+        const RFuncEntry* it = std::lower_bound(first, last, address,
+                                                [](const RFuncEntry& e, u32 a) { return e.addr < a; });
+        if (!f->Known() || it == last || it->addr != address || it->mode != 0) {
+            usable = false;
+            return fmt::format("gather everything in one press: off with this code library: {} (USA v1.3.0's {:08X})",
+                               f->Known() ? fmt::format("it has no function at {:08X}", address)
+                                          : std::string("no address of this version for a game function"),
+                               f->Usa());
+        }
+    }
+    return {};
 }
 
 void SetLog(void (*log)(const std::string& line)) {
@@ -460,7 +493,7 @@ void SetLog(void (*log)(const std::string& line)) {
 void Before(RCtx* ctx) {
     before.valid = false;
     if (!tests.empty() || held_monster) RunTests(ctx);
-    if (!gather_all && !trace) return;
+    if ((!gather_all && !trace) || !usable) return;
     const u32 hunter = LocalHunter(ctx);
     const u32 state = hunter ? rd32(ctx, hunter + HUNTER_STATE) : 0;
     const int type = state ? GatherType(ctx, state) : -1;

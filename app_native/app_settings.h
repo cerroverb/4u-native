@@ -70,7 +70,9 @@ bool app_adreno_fix();
 // game's screen filters and anti-aliasing and the shadows off. Toaster: the battery and the heat before everything: a
 // steady kToasterFps, the 3DS's resolution, and the reverb off too. (An even 30: the performance hints' target at 70 % of
 // the period, perf_hint.c, and the buffers' times on the vsync grid, present_pacing.) Each option can be changed again afterwards.
-enum { LOW_END_OFF, LOW_END_ON, LOW_END_TOASTER };
+// Brick (1.0.1.1): Toaster's, and while LowEnd says brick, the renderer's 3D textures at a sixteenth of their size sampled
+// nearest and the top screen's pixels sharp (app_live_ps1, shared_screens_set_ps1).
+enum { LOW_END_OFF, LOW_END_ON, LOW_END_TOASTER, LOW_END_BRICK };
 inline constexpr int kLowEndScale = 33, kToasterScale = 0;  // (33 %: 1x on a 720-line screen)
 inline constexpr int kLowEndFpsFast = 60, kLowEndFpsSlow = 30, kToasterFps = 30;
 // Low-end mode's frame rate on this phone: 60 where it has a fast core (Cortex-A75 class or newer: the game and the
@@ -79,7 +81,7 @@ inline constexpr int kLowEndFpsFast = 60, kLowEndFpsSlow = 30, kToasterFps = 30;
 int low_end_fps();
 
 inline constexpr const char* kLowEndFilters[] = {"bloom", "motion_blur", "depth_of_field", "radial_blur", "haze"};
-// LowEnd's text (off|on|toaster, and the switch's 0/1/true/false of older files) as LOW_END_*
+// LowEnd's text (off|on|toaster|brick, and the switch's 0/1/true/false of older files) as LOW_END_*
 int app_low_end_level(const std::string& text);
 
 // [Colour] Hue (-180..180), Temperature, Tint, Brightness, Contrast, Saturation, Gamma (-100..100): the colour filter

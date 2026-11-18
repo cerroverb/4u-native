@@ -56,6 +56,16 @@ public class BuilderActivity extends Activity {
     private ProgressBar bar;
     private Button go, close, free, again;
     private final Runnable refresh = this::show;
+    /** While a build runs, the screen is shown again every second: its time goes on even when the build says nothing
+     *  for a while (before, the whole screen stood still until the next line, which looked like a build stuck at 10 %). */
+    private final android.os.Handler ticker = new android.os.Handler(android.os.Looper.getMainLooper());
+    private final Runnable tick = new Runnable() {
+        @Override
+        public void run() {
+            if (BuilderService.job.active()) show();
+            ticker.postDelayed(this, 1000);
+        }
+    };
 
     @Override
     protected void onCreate(Bundle state) {
@@ -79,12 +89,14 @@ public class BuilderActivity extends Activity {
         super.onResume();
         BuilderService.listen(refresh);
         show();
+        ticker.postDelayed(tick, 1000);
     }
 
     @Override
     protected void onPause() {
         super.onPause();
         BuilderService.unlisten(refresh);
+        ticker.removeCallbacks(tick);
     }
 
     /** The folder's game, update and code mods. */

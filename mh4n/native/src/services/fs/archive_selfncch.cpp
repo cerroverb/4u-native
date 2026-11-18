@@ -23,6 +23,9 @@
 //    The icon is read from the file when the game reads it, not kept in memory from the start.
 //  - The data is registered once for the game's program id (from exheader.bin); a client that did not
 //    initialise its session has program id 0 and finds no RomFS, as in Azahar (`ncch_data[program_id]`).
+//
+// The host reads the same images (game_romfs.h: OpenGameRomFsFile, 1.0.1.1, the health bars' monster names): the
+// update's RomFS, then the game's, with the same mods laid over them (the same LayeredFS images, built once).
 #include <algorithm>
 #include <cstring>
 
@@ -35,6 +38,7 @@
 #include "../../mods/mod_list.h"
 #include "file_backends.h"
 #include "fs_state.h"
+#include "game_romfs.h"
 #include "mh4n/log.h"
 #include "mh4n/registry.h"
 
@@ -60,6 +64,60 @@ std::shared_ptr<FileBackend> OpenRomFsSection(const std::shared_ptr<PositionedFi
     }
     return std::make_shared<SliceFile>(image, kRomFsHeaderSize, image->Size() - kRomFsHeaderSize);
 }
+
+// What the game reads for `image` (SelfNCCH's OpenImage, and the host's OpenGameRomFsFile): LayeredFS (Azahar's
+// NCCHContainer::ReadRomFS), the mods' romfs/ and romfs_ext/ over the image, for the base RomFS and the update's alike
+// (both use the base title's mods, GetModId), when a mod that is on has either; else the image's RomFS section. Azahar
+// has one mods folder; here every mod that is on is a layer, in load order (mods/mod_list.h). Built once per image and
+// kept: the game opens its RomFS more than once. Null when there is no RomFS.
+std::shared_ptr<FileBackend> ImageWithMods(const std::shared_ptr<PositionedFile>& image, const char* what,
+                                           const std::vector<layeredfs::Layer>& layers, const std::string& mods_dir) {
+    if (image != nullptr && image->Size() >= kRomFsHeaderSize && !layers.empty()) {
+        std::error_code ec;
+        const bool any = std::any_of(layers.begin(), layers.end(), [&ec](const layeredfs::Layer& l) {
+            return std::filesystem::is_directory(utf8::PathFromUtf8(l.romfs_dir), ec) ||
+                   std::filesystem::is_directory(utf8::PathFromUtf8(l.romfs_ext_dir), ec);
+        });
+        if (any) {
+            static std::mutex mutex;
+            static std::map<const PositionedFile*, std::shared_ptr<FileBackend>> layered;
+            std::lock_guard lock(mutex);
+            auto& entry = layered[image.get()];
+            if (entry == nullptr) {
+                std::string error;
+                entry = layeredfs::Build(image, kRomFsHeaderSize, image->Size() - kRomFsHeaderSize, layers, &error);
+                if (entry == nullptr) {
+                    MH4N_LOG(Error, kLog, "SelfNCCH: the mods of {} could not be laid over the {}: {}", mods_dir, what,
+                             error);
+                } else {
+                    MH4N_LOG(Info, kLog, "SelfNCCH: the {} with {} mod(s) of {}", what, layers.size(), mods_dir);
+                }
+            }
+            if (entry != nullptr) {
+                return entry;
+            }
+        }
+    }
+    return OpenRomFsSection(image);
+}
+
+// The romfs/ of each mod of the game that is on, in load order, and their folder (<user>/load/mods/; none without
+// --user). An update's mods are the base game's (Azahar's GetModId, in mods::List).
+std::vector<layeredfs::Layer> GameLayers(const std::string& user_folder, u64 program_id, std::string* mods) {
+    std::vector<layeredfs::Layer> layers;
+    mods->clear();
+    if (!user_folder.empty()) {
+        *mods = user_folder + "load/mods/";
+        for (const mods::Layer& layer : mods::RomFsLayers(mods::Enabled(*mods, program_id))) {
+            layers.push_back({layer.romfs, layer.romfs_ext});
+        }
+    }
+    return layers;
+}
+
+// The game's FsState while its SelfNCCH factory lives (OpenGameRomFsFile)
+std::mutex g_game_mutex;
+FsState* g_game_state = nullptr;
 
 // A read-only ExeFS section (Azahar's ExeFSSectionFile): it can be read once, whole, from its start. It is
 // served from the file on the host, which is as big as the section.
@@ -169,38 +227,7 @@ private:
     static Result OpenImage(const std::shared_ptr<PositionedFile>& image, const char* what,
                             std::shared_ptr<FileBackend>* file, const std::vector<layeredfs::Layer>& layers,
                             const std::string& mods_dir) {
-        // LayeredFS (Azahar's NCCHContainer::ReadRomFS): the mods' romfs/ and romfs_ext/ over the image, for
-        // the base RomFS and the update's alike (both use the base title's mods, GetModId). Azahar has one mods
-        // folder; here every mod that is on is a layer, in load order (mods/mod_list.h). Built once per image
-        // and kept: the game opens its RomFS more than once.
-        if (image != nullptr && image->Size() >= kRomFsHeaderSize && !layers.empty()) {
-            std::error_code ec;
-            const bool any = std::any_of(layers.begin(), layers.end(), [&ec](const layeredfs::Layer& l) {
-                return std::filesystem::is_directory(utf8::PathFromUtf8(l.romfs_dir), ec) ||
-                       std::filesystem::is_directory(utf8::PathFromUtf8(l.romfs_ext_dir), ec);
-            });
-            if (any) {
-                static std::mutex mutex;
-                static std::map<const PositionedFile*, std::shared_ptr<FileBackend>> layered;
-                std::lock_guard lock(mutex);
-                auto& entry = layered[image.get()];
-                if (entry == nullptr) {
-                    std::string error;
-                    entry = layeredfs::Build(image, kRomFsHeaderSize, image->Size() - kRomFsHeaderSize, layers, &error);
-                    if (entry == nullptr) {
-                        MH4N_LOG(Error, kLog, "SelfNCCH: the mods of {} could not be laid over the {}: {}", mods_dir,
-                                 what, error);
-                    } else {
-                        MH4N_LOG(Info, kLog, "SelfNCCH: the {} with {} mod(s) of {}", what, layers.size(), mods_dir);
-                    }
-                }
-                if (entry != nullptr) {
-                    *file = entry;
-                    return kResultSuccess;
-                }
-            }
-        }
-        *file = OpenRomFsSection(image);
+        *file = ImageWithMods(image, what, layers, mods_dir);
         if (*file == nullptr) {
             MH4N_LOG(Info, kLog, "SelfNCCH: unable to read the {}", what);
             return kResultRomfsNotFound;
@@ -215,7 +242,14 @@ private:
 
 class SelfNcchFactory final : public ArchiveFactory {
 public:
-    explicit SelfNcchFactory(FsState& state) : state_(state) {}
+    explicit SelfNcchFactory(FsState& state) : state_(state) {
+        std::lock_guard lock(g_game_mutex);
+        g_game_state = &state_;
+    }
+    ~SelfNcchFactory() override {
+        std::lock_guard lock(g_game_mutex);
+        if (g_game_state == &state_) g_game_state = nullptr;
+    }
     std::string GetName() const override { return "SelfNCCH"; }
 
     // The archive path is not looked at (Azahar's ArchiveFactory_SelfNCCH::Open).
@@ -223,14 +257,7 @@ public:
         (void)path;
         if (program_id == state_.ClientProgramId()) {
             std::string mods;
-            std::vector<layeredfs::Layer> layers;
-            if (!state_.user_folder.empty()) {
-                // an update's mods are the base game's (Azahar's GetModId, in mods::List)
-                mods = state_.user_folder + "load/mods/";
-                for (const mods::Layer& layer : mods::RomFsLayers(mods::Enabled(mods, program_id))) {
-                    layers.push_back({layer.romfs, layer.romfs_ext});
-                }
-            }
+            std::vector<layeredfs::Layer> layers = GameLayers(state_.user_folder, program_id, &mods);
             *archive = std::make_unique<SelfNcchArchive>(state_.game.romfs, state_.game.update_romfs,
                                                               state_.game.icon, std::move(layers), std::move(mods));
         } else {
@@ -243,11 +270,107 @@ private:
     FsState& state_;
 };
 
+// A file of a RomFS (level 3, from its header) by its path: where its data is and how long
+bool FindInRomFs(FileBackend& image, const std::string& path, u64* offset, u64* size) {
+    auto read = [&image](u64 at, void* out, std::size_t length) {
+        std::size_t done = 0;
+        while (done < length) {
+            std::size_t n = 0;
+            if (IsError(image.Read(at + done, length - done, static_cast<u8*>(out) + done, &n)) || n == 0) return false;
+            done += n;
+        }
+        return true;
+    };
+    auto le32 = [](const u8* p) { return u32(p[0]) | u32(p[1]) << 8 | u32(p[2]) << 16 | u32(p[3]) << 24; };
+    u8 header[0x28];
+    if (!read(0, header, sizeof header) || le32(header) != 0x28) return false;
+    const u32 dir_meta = le32(header + 12), dir_size = le32(header + 16), file_meta = le32(header + 28),
+              file_size = le32(header + 32), data = le32(header + 36);
+    if (dir_size > (16u << 20) || file_size > (64u << 20)) return false;
+    std::vector<u8> dirs(dir_size), files(file_size);
+    if (!read(dir_meta, dirs.data(), dir_size) || !read(file_meta, files.data(), file_size)) return false;
+    auto named = [](const u8* name, u32 bytes, const std::string& want) {  // (the RomFS's UTF-16 against ASCII)
+        if (bytes != 2 * want.size()) return false;
+        for (std::size_t i = 0; i < want.size(); ++i)
+            if (name[2 * i] != static_cast<u8>(want[i]) || name[2 * i + 1] != 0) return false;
+        return true;
+    };
+    u32 dir = 0;  // (the root)
+    std::size_t from = 0;
+    for (int depth = 0; depth < 64; ++depth) {
+        const std::size_t slash = path.find('/', from);
+        const std::string part = path.substr(from, slash == std::string::npos ? std::string::npos : slash - from);
+        if (dir + 24 > dir_size) return false;
+        if (slash == std::string::npos) {  // (the file, in this directory's list)
+            for (u32 e = le32(dirs.data() + dir + 12), n = 0; e != 0xffffffffu && n < 1000000; ++n) {
+                if (e + 32 > file_size || e + 32 + le32(files.data() + e + 28) > file_size) return false;
+                if (named(files.data() + e + 32, le32(files.data() + e + 28), part)) {
+                    *offset = data + (le32(files.data() + e + 8) | u64(le32(files.data() + e + 12)) << 32);
+                    *size = le32(files.data() + e + 16) | u64(le32(files.data() + e + 20)) << 32;
+                    return true;
+                }
+                e = le32(files.data() + e + 4);
+            }
+            return false;
+        }
+        bool found = false;  // (a directory, among this one's children)
+        for (u32 c = le32(dirs.data() + dir + 8), n = 0; c != 0xffffffffu && n < 1000000; ++n) {
+            if (c + 24 > dir_size || c + 24 + le32(dirs.data() + c + 20) > dir_size) return false;
+            if (named(dirs.data() + c + 24, le32(dirs.data() + c + 20), part)) {
+                dir = c, found = true;
+                break;
+            }
+            c = le32(dirs.data() + c + 4);
+        }
+        if (!found) return false;
+        from = slash + 1;
+    }
+    return false;
+}
+
 MH4N_REGISTER(ArchiveProvider, "03.selfncch", ArchiveProvider{archive_id::kSelfNCCH, [](FsState& state) {
                                                                   return std::make_unique<SelfNcchFactory>(
                                                                       state);
                                                               }});
 
 }  // namespace
+
+std::size_t GameRomFsFile::Read(u64 at, void* buffer, std::size_t length) const {
+    if (image == nullptr || at >= size) return 0;
+    std::size_t done = 0, n = 0;
+    length = static_cast<std::size_t>(std::min<u64>(length, size - at));
+    while (done < length && !IsError(image->Read(offset + at + done, length - done, static_cast<u8*>(buffer) + done, &n)) &&
+           n > 0) {
+        done += n;
+    }
+    return done;
+}
+
+bool OpenGameRomFsFile(const std::string& path, GameRomFsFile* file, std::string* why) {
+    std::shared_ptr<PositionedFile> romfs, update_romfs;
+    std::string user_folder;
+    u64 program_id = 0;
+    {
+        std::lock_guard lock(g_game_mutex);
+        if (g_game_state == nullptr) return *why = "no game runs", false;
+        romfs = g_game_state->game.romfs, update_romfs = g_game_state->game.update_romfs;
+        user_folder = g_game_state->user_folder, program_id = g_game_state->ClientProgramId();
+    }
+    std::string mods;
+    const std::vector<layeredfs::Layer> layers = GameLayers(user_folder, program_id, &mods);
+    bool any = false;
+    for (const bool update : {true, false}) {  // (the update's first, as the game reads its files)
+        std::shared_ptr<FileBackend> image =
+            ImageWithMods(update ? update_romfs : romfs, update ? "update RomFS" : "RomFS", layers, mods);
+        if (image == nullptr) continue;
+        any = true;
+        u64 offset = 0, size = 0;
+        if (FindInRomFs(*image, path, &offset, &size) && offset + size <= image->GetSize()) {
+            *file = GameRomFsFile{std::move(image), offset, size, update};
+            return true;
+        }
+    }
+    return *why = any ? "no " + path + " in the update's RomFS or the game's" : "the game has no RomFS", false;
+}
 
 }  // namespace mh4n::fs

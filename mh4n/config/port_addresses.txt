@@ -4,7 +4,9 @@
 # tools/build_game.py puts each one's address in the version a library is made for into the library (rc_port_addr_*,
 # tools/game_version.py), and the port translates its constants through it (port/src/game_addr.h); a version whose
 # map (config/shifts) has no address for one of these can't be built. tests/test_port_addresses.py checks that every
-# address of those files is here. Not one of build_game.py's ID_FILES: a library's id doesn't change with this list.
+# address of those files is here. Not one of build_game.py's ID_FILES: a library's id doesn't change with this list, so
+# another version's library made before an address was added lacks it; the port then takes it from its own copy of the
+# maps (port/src/game_shifts.h, tools/game_version.py port-shifts).
 0x01057194 SMAIN_INSTANCE                       # hooks.cpp
 0x0110d004 VBLANK_TOP                           # hooks.cpp
 0x0110d008 VBLANK_BOTTOM                        # hooks.cpp

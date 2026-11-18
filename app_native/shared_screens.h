@@ -34,6 +34,8 @@ struct SharedScreenView {
     int buffer_width = 0, buffer_height = 0;
     // a picture from the renderer's buffers has been shown in this view (its buffer imported and sampled by GL)
     bool shown_shared = false;
+    // the top screen's view (the game's picture, or frame generation's made one): PS1 style goes on it alone
+    bool top = false;
     // the pictures newer than the one shown that the renderer's GPU has not finished, oldest first, each with its sync
     // file (the main loop's wait ends when one is readable) and its region. The GPU finishes them in order: the newest
     // one finished is shown and the older ones dropped. A newer picture no longer replaces an unfinished one (it did, and
@@ -62,10 +64,18 @@ bool shared_screens_show(SharedScreenView& view, const std::shared_ptr<const mh4
 // target's picture turned upright, flipped and shifted as the display transfer and the display would, in a GL pass of
 // its own in SDL's order (SDL's queue goes to GL first). Nothing when it has nothing. `alpha`: the texture's alpha mod.
 void shared_screens_draw(SharedScreenView& view, const SDL_FRect& dst, int win_w, int win_h, Uint8 alpha = 255);
+// The same for a part of the screen (`part`: x, y, w, h, fractions of the screen): the quick items' piece (quick_items.h).
+void shared_screens_draw_part(SharedScreenView& view, const SDL_FRect& part, const SDL_FRect& dst, int win_w, int win_h,
+                              Uint8 alpha = 255);
 // The colour filter the screens are drawn with from now on ([Colour], colour_filter.h; the settings panel's draft while it
 // is open, the saved values otherwise: android_main.cpp). All 0: SDL's own draw and the render target's program as before.
 struct ColourAdjust;
 void shared_screens_set_colour(const ColourAdjust& colour);
+// PS1 style on the top screen (a view with `top`), the settings panel's draft while it is open: `filter` ([Graphics]
+// Ps1Filter) its pixels sharp, cut to 5 bits a channel after an ordered dither by 3DS pixel, with faint scanlines and the
+// PS1's shimmer, after the colour filter; `sharp` alone (Low-end mode's Brick) its pixels sharp. Both false: the screens are
+// drawn as before.
+void shared_screens_set_ps1(bool filter, bool sharp);
 // The screen upright at `w` x `h`, the whole of what is bound now (an SDL render target of that size: frame_gen.cpp keeps
 // the top screen's pictures so), drawn as shared_screens_draw draws it into the window but with nothing added to its
 // colours (the made picture is drawn with shared_screens_draw, which adds them once).

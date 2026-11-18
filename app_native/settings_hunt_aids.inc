@@ -54,9 +54,24 @@ void hunt_aids_rows(std::vector<Row>& r) {
         "juego) y la vida de cada monstruo grande, con sus números; uno que está en otra zona del mapa se ve más tenue. Solo lee el juego, así que también anda en "
         "una sala, y se esconde mientras hay un menú del juego abierto. Se mueve y se cambia de tamaño con Personalizar "
         "controles y HUD. Apagado: como lo hace el juego.");
+    // the touch screen's quick items on the main screen (1.0.1.1, mh4u.ini quick_items: mh4n's GameState items_slot,
+    // drawn by quick_items.cpp)
+    add_switch(r, "hunt.items", en_es("Show quick items", "Mostrar objetos rápidos"), &s.draft.quick_items,
+               "quick_items");
+    r.back().help = en_es(
+        "In a quest under way, the touch screen's quick items panel (the item shortcuts of your panel layout) also shows "
+        "on the main screen, small, and a tap on an item there uses it as on the touch screen. It hides while the whole "
+        "touch screen shows, with the quest menu or a large panel open, and when your layout has no quick items panel. "
+        "Move it and size it with Customize controls and HUD. Off: only on the touch screen, as the game does it.",
+        "En una misión en curso, el panel de objetos rápidos de la pantalla táctil (los atajos de objetos de tu "
+        "distribución de paneles) también se ve en la pantalla principal, en chico, y tocar un objeto ahí lo usa como en "
+        "la pantalla táctil. Se esconde mientras se ve toda la pantalla táctil, con el menú de la misión o un panel "
+        "grande abierto, y si tu distribución no tiene panel de objetos rápidos. Se mueve y se cambia de tamaño con "
+        "Personalizar controles y HUD. Apagado: solo en la pantalla táctil, como lo hace el juego.");
 }
 void reset_hunt_aids() {
     s.draft.monster_health_bar = defaults().monster_health_bar;
+    s.draft.quick_items = defaults().quick_items;
     s.draft.monsters_on_map = defaults().monsters_on_map;
     s.draft.damage_numbers = defaults().damage_numbers;
     s.draft.number_size = defaults().number_size;

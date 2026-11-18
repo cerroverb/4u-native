@@ -8,6 +8,7 @@
 #include <string>
 
 struct RCtx;
+struct RCodeInfo;
 
 namespace Port::Gather {
 
@@ -20,6 +21,10 @@ bool On();
 /// A new boot: the options back to off and nothing remembered of the last game (hooks.cpp's Install, before the
 /// options are read).
 void Reset();
+/// hooks.cpp's Install, after Reset and once the game's addresses are this version's (game_addr.h): whether the code
+/// library has every game function the module calls, at its address in the library's version. If not, the option
+/// does nothing until the next boot, and the line returned says why for the log; "" when it has them.
+std::string Check(const RCodeInfo& info);
 /// Where the module's log lines go (hooks.cpp's log).
 void SetLog(void (*log)(const std::string& line));
 

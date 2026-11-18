@@ -180,6 +180,8 @@ struct Draft {
     std::string effects;  // (effects: the game's particle effects, mh4n hooks.cpp EffectsApply)
     std::string monsters_on_map, damage_numbers;  // (1.0.1, the hunting aids: settings_hunt_aids.inc)
     std::string monster_health_bar;  // (1.0.1: the monsters' health bars, settings_hunt_aids.inc, hunt_bars.cpp)
+    std::string quick_items;         // (1.0.1.1: the touch screen's quick items on the main screen, quick_items.cpp)
+    std::string bow_aim;             // (1.0.1.1: a bow's shot to the monster as it is let go, mh4n hooks.cpp BowAimStep)
     std::string number_size = "medium", number_colour = "white";  // ([Graphics] DamageNumberSize / DamageNumberColour)
     // mh4u-app.ini (app_settings.h)
     int scale = kRenderScaleDefault, volume = 100;  // scale: the 3D resolution, % of the phone's (0: the 3DS's)
@@ -189,6 +191,7 @@ struct Draft {
     bool stats = false, shadows = true, reverb = true;
     bool hd_half = false;  // Texture packs > Pack texture size: half ([Graphics] HdPackSize = half; MH4N_HD_SCALE, 1.0.1)
     bool frame_gen = false;  // [Graphics] FrameGen: a made-up picture between each two of the game's (frame_gen.h)
+    bool ps1_filter = false;  // (1.0.1.1) [Graphics] Ps1Filter: the PS1 filter (settings_ps1.inc), off as the app comes
     bool adreno_fix = true;  // [Graphics] AdrenoFix: auto (first_run.h adreno_fix_applies; its row shows only there)
     bool screen_shown = true;
     int layout = 0, corner = 0, size = 42, opacity = 100;
@@ -263,6 +266,8 @@ Draft defaults() {
     d.effects = "on";
     d.monsters_on_map = d.damage_numbers = "off";  // (the owner's: in the app, off)
     d.monster_health_bar = "off";  // (the same)
+    d.quick_items = "off";         // (the owner's: optional, off)
+    d.bow_aim = "on";              // (the owner's 1.0 ask, S15: letting go of the shot aims at the monster by itself)
     for (int i = 0; i < TB; i++) d.show[i] = TOUCH_BUTTONS[i].on;
     d.binds = controls_default_binds();
     return d;
@@ -829,6 +834,8 @@ Draft load() {
     d.monsters_on_map = game_option_get("monsters_on_map", f.monsters_on_map);
     d.damage_numbers = game_option_get("damage_numbers", f.damage_numbers);
     d.monster_health_bar = game_option_get("monster_health_bar", f.monster_health_bar);
+    d.quick_items = game_option_get("quick_items", f.quick_items);
+    d.bow_aim = game_option_get("bow_aim", f.bow_aim);
     d.scale = std::clamp(app_setting_int("Graphics", "RenderScale", kRenderScaleDefault), 0, 100);
     d.adreno_fix = app_adreno_fix();
     d.dither = game_option_get("dither", render_scale_used(d.scale, d.adreno_fix) > 1 ? "off" : "on");  // (android_main.cpp)
@@ -839,6 +846,7 @@ Draft load() {
     d.number_size = app_setting("Graphics", "DamageNumberSize", "medium");
     d.number_colour = app_setting("Graphics", "DamageNumberColour", "white");
     d.frame_gen = app_setting_bool("Graphics", "FrameGen", false);
+    d.ps1_filter = app_setting_bool("Graphics", "Ps1Filter", false);
     d.volume = std::clamp(app_setting_int("Audio", "Volume", 100), 0, 100);
     d.reverb = app_setting_bool("Audio", "Reverb", true);
     {
@@ -1018,7 +1026,8 @@ bool save() {
         {"qol_sharpen_cancel", &Draft::qol_sharpen}, {"qol_rewards_no_limit", &Draft::qol_rewards},
         {"rewards_send_all", &Draft::rewards_send_all}, {"dlc_flags", &Draft::dlc_flags}, {"effects", &Draft::effects},
         {"monsters_on_map", &Draft::monsters_on_map}, {"damage_numbers", &Draft::damage_numbers},
-        {"monster_health_bar", &Draft::monster_health_bar}};
+        {"monster_health_bar", &Draft::monster_health_bar}, {"quick_items", &Draft::quick_items},
+        {"bow_aim", &Draft::bow_aim}};
     for (const auto& [key, field] : game)
         if (d.*field != o.*field) game_option_set(key, d.*field);
     // (S45) the touch screen's corner follows single-screen mode turned on or off: hidden with the menus on the top
@@ -1030,16 +1039,17 @@ bool save() {
         if (!code_mod) ui_set_one_screen(is_on(d.single_screen) && content_title() == kContentTitle);
     }
     // the app's
-    static const char* const LOW_END_KEYS[] = {"off", "on", "toaster"};
+    static const char* const LOW_END_KEYS[] = {"off", "on", "toaster", "brick"};
     app_setting_set_int("Graphics", "RenderScale", d.scale);
     if (d.adreno_fix != o.adreno_fix) app_setting_set("Graphics", "AdrenoFix", d.adreno_fix ? "auto" : "off");
-    app_setting_set("Graphics", "LowEnd", LOW_END_KEYS[std::clamp(d.low_end, 0, 2)]);
+    app_setting_set("Graphics", "LowEnd", LOW_END_KEYS[std::clamp(d.low_end, 0, 3)]);
     app_setting_set("Graphics", "FpsCounter", d.stats ? "on" : "off");
     app_setting_set("Graphics", "Shadows", d.shadows ? "on" : "off");
     if (d.hd_half != o.hd_half) app_setting_set("Graphics", "HdPackSize", d.hd_half ? "half" : "full");
     if (d.number_size != o.number_size) app_setting_set("Graphics", "DamageNumberSize", d.number_size);
     if (d.number_colour != o.number_colour) app_setting_set("Graphics", "DamageNumberColour", d.number_colour);
     if (d.frame_gen != o.frame_gen) app_setting_set("Graphics", "FrameGen", d.frame_gen ? "on" : "off");
+    if (d.ps1_filter != o.ps1_filter) app_setting_set("Graphics", "Ps1Filter", d.ps1_filter ? "on" : "off");
     app_setting_set_int("Audio", "Volume", d.volume);
     app_setting_set("Audio", "Reverb", d.reverb ? "on" : "off");
     {  // ([Colour]: written once one changed, so a file stays without them until then)
@@ -1131,6 +1141,8 @@ bool save() {
     if (d.volume != o.volume) app_live_volume(d.volume);
     if (d.reverb != o.reverb) app_live_reverb(d.reverb);
     if (d.shadows != o.shadows) app_live_shadows(d.shadows);
+    if (d.ps1_filter != o.ps1_filter || (d.low_end == LOW_END_BRICK) != (o.low_end == LOW_END_BRICK))
+        app_live_ps1(d.ps1_filter, d.low_end == LOW_END_BRICK);  // (the renderer's part: the textures and the geometry)
     if (d.frame_gen != o.frame_gen) frame_gen_set_enabled(d.frame_gen), frame_gen_to_activity(d.frame_gen);
     perfstats_set(d.stats, fps, spanish());
     if (d.screen_shown != ui_bottom_wanted()) ui_toggle_bottom();
@@ -1490,24 +1502,27 @@ void add_button(std::vector<Row>& rows, const char* id, const char* name, std::s
 // Low-end mode, as MHGU's (app_settings.h): the preset for a weak phone, Toaster for the weakest and the battery, and back;
 // each of its options still changeable afterwards. On: low_end_fps() (60 with a fast core, else 30) as the most, the 3D
 // resolution at most 33 % (1x on a 720-line screen), the screen filters, the game's anti-aliasing and the shadows off.
-// Toaster: 30 FPS, the 3DS's resolution, and the reverb off too (back to On, the frame rate and the reverb come back)
+// Toaster: 30 FPS, the 3DS's resolution, and the reverb off too (back to On, the frame rate and the reverb come back).
+// Brick (1.0.1.1): Toaster's, and while it is the level the renderer's textures at a sixteenth of their size, sampled
+// nearest, and the top screen's pixels sharp (app_live_ps1, shared_screens_set_ps1: no option of their own)
 void low_end(int level) {
     Draft& d = s.draft;
     const int was = d.low_end;
     d.low_end = level;
     std::string* filters[] = {&d.bloom, &d.motion_blur, &d.depth_of_field, &d.radial_blur, &d.haze};
+    const bool toaster = level >= LOW_END_TOASTER, was_toaster = was >= LOW_END_TOASTER;  // (Brick sets what Toaster does)
     if (level != LOW_END_OFF) {
-        const int scale = level == LOW_END_TOASTER ? kToasterScale : kLowEndScale;
-        if (was == LOW_END_TOASTER && d.scale == kToasterScale) d.scale = scale;  // (back to On)
+        const int scale = toaster ? kToasterScale : kLowEndScale;
+        if (was_toaster && d.scale == kToasterScale) d.scale = scale;  // (back to On)
         // (0 is the lowest of all: the 3DS's)
         if (scale == 0 || (d.scale != 0 && d.scale > scale)) d.scale = scale;
-        const int cap = level == LOW_END_TOASTER ? kToasterFps : low_end_fps();
-        if (fps_of(d.fps) > cap || (was == LOW_END_TOASTER && fps_of(d.fps) == kToasterFps)) d.fps = std::to_string(cap);
+        const int cap = toaster ? kToasterFps : low_end_fps();
+        if (fps_of(d.fps) > cap || (was_toaster && fps_of(d.fps) == kToasterFps)) d.fps = std::to_string(cap);
         for (std::string* f : filters) *f = onoff(*f, false);
         d.antialiasing = onoff(d.antialiasing, false);
         d.shadows = false;
-        if (level == LOW_END_TOASTER) d.reverb = false;
-        else if (was == LOW_END_TOASTER) d.reverb = true;
+        if (toaster) d.reverb = false;
+        else if (was_toaster) d.reverb = true;
     } else {
         if (d.scale == kToasterScale || d.scale <= kLowEndScale) d.scale = kRenderScaleDefault;
         if (fps_of(d.fps) == kToasterFps) d.fps = "60";
@@ -3155,8 +3170,23 @@ void reset_controls_50() {
 MENU_ENTRY("controls", 50, rows_controls_50, reset_controls_50);
 void rows_controls_60(std::vector<Row>& r) {
     add_bool(r, "lock_on", "Lock-on", &s.draft.lock_on, "LockOn");  // (the MHGU port's name)
+    // (1.0.1.1: a bow's shot goes to the monster as it is let go; mh4u.ini bow_aim, on unless off: mh4n hooks.cpp
+    // BowAimStep, taken at the game's next frame)
+    add_switch(r, "bow_aim", en_es("Bow aims at the monster", "El arco apunta al monstruo"), &s.draft.bow_aim, "bow_aim");
+    r.back().help = en_es(
+        "With a bow, letting go of the shot sends the arrow to the monster: the one you locked on to or chose with the "
+        "Target Cam, or else the nearest large monster in view. Your own aim still counts: drag on the shot (or turn "
+        "the camera) away from the monster and the arrow goes where you aim; the aiming mode is left alone. Off: the "
+        "arrow goes where the hunter faces, as the game does it.",
+        "Con un arco, al soltar el disparo la flecha va al monstruo: al que fijaste o elegiste con la cámara de "
+        "objetivo, o si no al monstruo grande más cercano que se ve. Tu puntería sigue contando: si arrastras sobre el "
+        "disparo (o giras la cámara) lejos del monstruo, la flecha va adonde apuntas; el modo de apuntar queda como "
+        "está. Apagado: la flecha va hacia donde mira el cazador, como lo hace el juego.");
 }
-void reset_controls_60() { s.draft.lock_on = defaults().lock_on; }
+void reset_controls_60() {
+    s.draft.lock_on = defaults().lock_on;
+    s.draft.bow_aim = defaults().bow_aim;
+}
 MENU_ENTRY("controls", 60, rows_controls_60, reset_controls_60);
 void rows_controls_70(std::vector<Row>& r) {  // (the MHGU port's the same: names, range, default)
     add_bool(r, "gyro.aim", "Aim with the gyro", &s.draft.gyro_aim, "GyroAim");
@@ -3270,10 +3300,13 @@ MENU_ENTRY("controls/keys", 40, rows_controls_keys_40, {}, []() { return !contro
 // ---- Graphics & Audio: the three that trade looks for speed together first, as in the MHGU port (Low-end mode, the
 // frame rate, the 3D resolution), the switches players reach for, the sound and the readout
 void rows_graphics_10(std::vector<Row>& r) {
-    add_choice(r, "lowend", "Low-end mode", std::clamp(s.draft.low_end, 0, 2), {tr("Off"), tr("On"), tr("Toaster")},
+    add_choice(r, "lowend", "Low-end mode", std::clamp(s.draft.low_end, 0, 3), {tr("Off"), tr("On"), tr("Toaster"), tr("Brick")},
                [](int v) { low_end(v); }, "LowEnd");
     // (the help of the mode it shows: what each one trades)
-    r.back().help = help_of(s.draft.low_end == LOW_END_TOASTER ? "LowEnd.toaster" : s.draft.low_end == LOW_END_ON ? "LowEnd.on" : "LowEnd.off");
+    r.back().help = help_of(s.draft.low_end == LOW_END_BRICK     ? "LowEnd.brick"
+                            : s.draft.low_end == LOW_END_TOASTER ? "LowEnd.toaster"
+                            : s.draft.low_end == LOW_END_ON      ? "LowEnd.on"
+                                                                 : "LowEnd.off");
 }
 void reset_graphics_10() { s.draft.low_end = defaults().low_end; }
 MENU_ENTRY("graphics", 10, rows_graphics_10, reset_graphics_10);
@@ -3417,6 +3450,7 @@ void reset_graphics_colour_10() {
     d.hue = d.temperature = d.tint = d.brightness = d.contrast = d.saturation = d.gamma = 0;
 }
 MENU_ENTRY("graphics/colour", 10, rows_graphics_colour_10, reset_graphics_colour_10);
+#include "settings_ps1.inc"  // (1.0.1.1: Graphics & Audio > PS1 filter)
 // Graphics & Audio > Screen and HUD (the Display tab of 0.1.9, the widescreen and the HUD at its edges)
 void rows_graphics_screen_40(std::vector<Row>& r) {
     Draft& c = s.draft;
@@ -4502,6 +4536,8 @@ const Help HELP[] = {
      "Sí: los cuadros antes que el aspecto, para un teléfono débil. 60 FPS (30 en un teléfono sin un núcleo rápido), la imagen 3D a un tercio de la resolución de tu pantalla (la de la 3DS en una de 720 líneas), y sin filtros de pantalla, antialiasing ni sombras. La imagen se ve más suave y simple; un Moto g06 da el doble de cuadros que a 30. Después puedes cambiar cada uno."},
     {"LowEnd.toaster", "Toaster: the battery and the phone's heat before everything. A steady 30 FPS, the 3DS's own rate (half the phone's work of 60), the 3DS's own resolution, no screen filters, anti-aliasing or shadows, and no reverb. The plainest picture, for long hunts on one charge. You can still change each of them afterwards.",
      "Tostadora: la batería y el calor del teléfono antes que todo. 30 FPS parejos, los de la propia 3DS (la mitad del trabajo del teléfono que a 60), la resolución de la 3DS, sin filtros de pantalla, antialiasing ni sombras, y sin reverberación. La imagen más simple, para cacerías largas con una sola carga. Después puedes cambiar cada uno."},
+    {"LowEnd.brick", "Brick: below Toaster, for the weakest phones. Everything Toaster does (a steady 30 FPS, the 3DS's own resolution, no screen filters, anti-aliasing, shadows or reverb), and the 3D world's textures at a sixteenth of their size, drawn as big sharp blocks, with the top screen's pixels sharp: less for the phone to read each frame. It looks blocky, a little like the PS1, but nothing is added for the look (that is the PS1 filter). You can still change each of Toaster's settings afterwards.",
+     "Ladrillo: debajo de Tostadora, para los teléfonos más débiles. Todo lo de Tostadora (30 FPS parejos, la resolución de la 3DS, sin filtros de pantalla, antialiasing, sombras ni reverberación), y las texturas del mundo 3D a la dieciseisava parte de su tamaño, dibujadas como bloques grandes y nítidos, con los píxeles de la pantalla de arriba nítidos: menos para leer en cada cuadro. Se ve pixelado, un poco como la PS1, pero no se agrega nada por el aspecto (eso es el Filtro PS1). Después puedes cambiar cada ajuste de Tostadora."},
     {"steady", "When the phone cannot hold the frame rate limit, the game runs at an even half of it (a third, ...) instead of swinging between the two: 60 steady rather than 70 to 110 on a 120 FPS limit. It tries the full rate again now and then, and keeps it when the phone holds it. Smoother to the eye, fewer frames.",
      "Cuando el teléfono no llega al límite de FPS, el juego va a la mitad justa (un tercio, ...) en vez de ir y venir entre los dos: 60 parejos en lugar de 70 a 110 con un límite de 120. Cada tanto vuelve a probar el ritmo completo y se queda en él si el teléfono lo sostiene. Más suave a la vista, menos cuadros."},
     {"fps", "The most frames a second, 15 to 240: left and right change it by one, a tap offers the usual ones. 60 is smoother; 30 is the 3DS's, heats the phone less and saves battery. Above 60 for fast phones with a screen that fast: the game keeps its speed, only more frames are drawn. 15, 20 and 25 for a phone that cannot hold 30, or for the longest battery: the game still keeps its speed, with fewer frames. 15 and 20 are shown as evenly as 30; 25 does not divide a 60 Hz screen, so its frames last two and three refreshes in turn (less even than 20 or 30).",
@@ -6257,6 +6293,10 @@ void settings_panel(bool* open) {
     if (!net_lines().empty()) s.seen_line = net_lines().back().serial;
     is_dirty = *open && (dirty() || confirmation());
     shared_screens_set_colour(colour_of(*open ? s.draft : s.saved));  // (Graphics & Audio > Colour: the screens follow the draft)
+    {  // (PS1 style on the top screen: the PS1 filter and Brick's sharp pixels, the same)
+        const Draft& now = *open ? s.draft : s.saved;
+        shared_screens_set_ps1(now.ps1_filter, now.low_end == LOW_END_BRICK);
+    }
     if (!*open) {
         s.editing = false;
         s.dropdown.open = false;

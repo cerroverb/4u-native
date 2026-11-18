@@ -15,6 +15,7 @@
 #include "imgui_impl_sdlrenderer3.h"
 #include "game_keyboard.h"
 #include "hunt_bars.h"
+#include "quick_items.h"
 #include "hunt_numbers.h"
 #include "settings_panel.h"
 #include "touch.h"
@@ -154,6 +155,7 @@ void ui_frame(int width, int height, const UiScreens& screens, bool controller) 
     const bool thanks = settings_panel_thanks_open();
     if (!g_settings_open && !thanks) hunt_numbers_draw(screens.top);  // (1.0.1: damage numbers, under the controls)
     if (!g_settings_open && !thanks) hunt_bars_draw(screens.top);     // (1.0.1: the monsters' health bars, the same)
+    if (!g_settings_open && !thanks) quick_items_draw_stand_in();     // (1.0.1.1: the quick items' stand-in, the editor's)
     if (!g_settings_open && !town_busy() && !thanks) touch_frame(width, height, screens, controller, in);
     if (!g_settings_open && !thanks) town_frame(width, height, controller);
     game_keyboard_frame(width, height, g_settings_open);

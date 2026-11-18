@@ -61,6 +61,7 @@
 #include "present_pacing.h"
 #include "perfstats.h"
 #include "settings_panel.h"
+#include "quick_items.h"
 #include "shared_screens.h"
 #include "town.h"
 #include "verify_files.h"
@@ -200,7 +201,15 @@ int g_publish_event = -1;
 // MH4U_PRESENT_CPU=1 (a measurement aid: the pixels read back and uploaded, as before).
 bool g_want_shared = false;
 // The touch screen's corner is hidden (the main loop's layout): the renderer may leave its draws out (ScreenHidden).
-std::atomic<bool> g_touch_hidden{false};
+// 0 shown, 1 hidden, 2 hidden but for the quick items' piece (1.0.1.1): the touch screen drawn kItemsWindow frames in
+// kItemsPeriod, its picture taken from the last of each run (the first ones may be of frames whose draws were left
+// out), and every frame for a moment after a finger on the piece or after it shows (a used item's count at once). Drawn
+// every frame for the piece, the touch screen cost a hunt 103 -> 86 FPS on the owner's Galaxy (an Adreno 830 at 3x:
+// its draws were 18 % of the GPU's frame).
+std::atomic<int> g_touch_mode{0};
+std::atomic<Uint64> g_items_hot_until{0};  // (SDL ticks, ms: every frame until then)
+std::atomic<bool> g_items_picture{false};  // (a picture of the touch screen taken since the piece showed: drawn then)
+constexpr int kItemsPeriod = 20, kItemsWindow = 3;
 
 class WindowSink final : public mh4n::present::ScreenSink {
 public:
@@ -208,7 +217,11 @@ public:
         {
             std::lock_guard lock(g_screens.mutex);
             Take(frame.top, g_screens.top);
-            Take(frame.bottom, g_screens.bottom);
+            // (the piece's: only a picture of a frame the touch screen was drawn in, the last of a run)
+            if (items_accept_) {
+                Take(frame.bottom, g_screens.bottom);
+                if (frame.bottom) g_items_picture.store(true, std::memory_order_relaxed);
+            }
             ++g_screens.sequence;
             g_screens.game_frame = frame.game_frame;
         }
@@ -218,9 +231,25 @@ public:
         }
     }
     bool WantsSharedPictures() const override { return g_want_shared; }
-    bool ScreenHidden(u32 screen) const override { return screen == 1 && g_touch_hidden.load(std::memory_order_relaxed); }
+    // (once a frame, before the frame is published: display_mem)
+    bool ScreenHidden(u32 screen) const override {
+        if (screen != 1) return false;
+        const int mode = g_touch_mode.load(std::memory_order_relaxed);
+        if (mode != 2) {
+            items_streak_ = 0, items_accept_ = true;
+            return mode == 1;
+        }
+        const bool hot = SDL_GetTicks() < g_items_hot_until.load(std::memory_order_relaxed);
+        const bool draw = hot || items_frames_++ % kItemsPeriod < kItemsWindow;
+        items_streak_ = draw ? items_streak_ + 1 : 0;
+        items_accept_ = items_streak_ >= kItemsWindow;  // (what Publish takes of this frame)
+        return !draw;
+    }
 
 private:
+    mutable unsigned items_frames_ = 0;  // (the piece's: frames counted, and the touch screen drawn these last ones)
+    mutable int items_streak_ = 0;
+    mutable bool items_accept_ = true;
     static void Take(const std::optional<mh4n::present::ScreenImage>& image, ScreenPicture& out) {
         if (!image) return;
         if (image->IsCpu()) {
@@ -690,6 +719,8 @@ int main(int argc, char* argv[]) {
         ColourAdjust colour;
         app_colour(&colour);
         shared_screens_set_colour(colour);
+        shared_screens_set_ps1(app_setting_bool("Graphics", "Ps1Filter", false),  // (PS1 style, 1.0.1.1: off as it comes)
+                               app_low_end_level(app_setting("Graphics", "LowEnd", "off")) == LOW_END_BRICK);
     }
 
     std::string problem;
@@ -865,6 +896,7 @@ int main(int argc, char* argv[]) {
     // 30 FPS, the touch screen between menus) is not taken again, and the touch screen only when it is shown
     SharedScreenView views[2];
     SharedScreenView& top_view = views[0];
+    top_view.top = true;  // (PS1 style's dithering: the top screen only)
     SharedScreenView& bottom_view = views[1];
     u64 shown_sequence = 0;
     u32 shown_game_frame = 0;
@@ -875,6 +907,7 @@ int main(int argc, char* argv[]) {
     bool paused_for_menu = false;       // (and while the settings are open, playing alone: [Interface] PauseInMenu)
     SDL_FingerID touch_finger = 0;
     bool touching = false;
+    bool touching_items = false;  // (the finger came down on the quick items' piece: its part of the touch screen)
     DisplayOptions display = ReadDisplayOptions(app_settings_path());
     Layout layout = ComputeLayout(win_w, win_h, 400, 240, 320, 240, bottom_shown, display);
     mh4n::InputState last_sent;
@@ -886,6 +919,12 @@ int main(int argc, char* argv[]) {
         if (!live) return;
         if (!down) {
             live->SetTouch(std::nullopt);
+            return;
+        }
+        int tx = 0, ty = 0;
+        if (touching_items) g_items_hot_until.store(SDL_GetTicks() + 1500, std::memory_order_relaxed);  // (its count)
+        if (touching_items && quick_items_touch(x, y, &tx, &ty)) {  // (1.0.1.1: the piece's part of the touch screen)
+            live->SetTouch(mh4n::input_live::TouchPoint{static_cast<u16>(tx), static_cast<u16>(ty)});
             return;
         }
         const SDL_FRect& b = layout.bottom;
@@ -998,7 +1037,11 @@ int main(int argc, char* argv[]) {
             case SDL_EVENT_FINGER_DOWN: {
                 const float x = e.tfinger.x * win_w, y = e.tfinger.y * win_h;
                 if (!touching && inside_bottom(x, y)) {
-                    touching = true;
+                    touching = true, touching_items = false;
+                    touch_finger = e.tfinger.fingerID;
+                    touch_at(x, y, true);
+                } else if (!touching && !touch_editing() && quick_items_hit(x, y)) {
+                    touching = true, touching_items = true;
                     touch_finger = e.tfinger.fingerID;
                     touch_at(x, y, true);
                 }
@@ -1013,7 +1056,9 @@ int main(int argc, char* argv[]) {
             case SDL_EVENT_FINGER_CANCELED:
                 if (touching && e.tfinger.fingerID == touch_finger) {
                     touching = false;
+                    if (touching_items) g_items_hot_until.store(SDL_GetTicks() + 1500, std::memory_order_relaxed);
                     touch_at(0, 0, false);
+                    touching_items = false;
                 }
                 break;
             case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
@@ -1107,7 +1152,7 @@ int main(int argc, char* argv[]) {
             // The touch screen's new picture waits for the top screen's of the same game frame when that one is still on
             // the GPU (it is smaller and comes first): one present a game frame instead of two. On a Mali-G52 at 3x, with
             // the touch screen shown, the window presented twice a game frame and its GPU work slowed the game's frames.
-            if (bottom_shown || bottom_view.texture == nullptr) {
+            if (bottom_shown || bottom_view.texture == nullptr || quick_items_needs_touch_screen()) {
                 const bool before = new_picture;
                 new_picture = false;
                 take(bottom_view, bottom);
@@ -1123,15 +1168,32 @@ int main(int argc, char* argv[]) {
         float town_alpha = 1;
         const bool town_large = town_view(win_w, win_h, &town_rect, &town_alpha);  // (the town's action's screen: town.h)
         bottom_shown = ui_bottom_wanted() || town_large;
-        g_touch_hidden.store(!bottom_shown, std::memory_order_relaxed);
         if (settings_panel_closed_now()) {
             display = ReadDisplayOptions(app_settings_path());  // (the settings may have moved the touch screen)
             ColourAdjust colour;  // (and the colour: as saved, a change not saved goes with the menu)
             app_colour(&colour);
             shared_screens_set_colour(colour);
+            shared_screens_set_ps1(app_setting_bool("Graphics", "Ps1Filter", false),  // (PS1 style's: the same)
+                                   app_low_end_level(app_setting("Graphics", "LowEnd", "off")) == LOW_END_BRICK);
         }
         layout = ComputeLayout(win_w, win_h, static_cast<u32>(top_view.width), static_cast<u32>(top_view.height),
                                static_cast<u32>(bottom_view.width), static_cast<u32>(bottom_view.height), bottom_shown, display);
+        // (1.0.1.1) the quick items' piece: where it goes this frame; the renderer draws the touch screen for it too
+        quick_items_update(win_w, win_h, bottom_shown);
+        {
+            // ([Graphics] QuickItemsEveryFrame on: the touch screen drawn every frame for the piece, as in 1.0.1.1's first
+            // build: a way back should a phone show the piece's picture wrong between its refreshes)
+            static unsigned every_read = ~0u;
+            static bool every_frame = false;
+            if (every_read != app_settings_version())
+                every_read = app_settings_version(), every_frame = app_setting_bool("Graphics", "QuickItemsEveryFrame", false);
+            const int mode = bottom_shown ? 0 : quick_items_needs_touch_screen() ? (every_frame ? 0 : 2) : 1;
+            if (mode == 2 && g_touch_mode.load(std::memory_order_relaxed) != 2) {  // (it shows: its picture at once,
+                g_items_hot_until.store(SDL_GetTicks() + 600, std::memory_order_relaxed);  // and not an old one before)
+                if (g_touch_mode.load(std::memory_order_relaxed) == 1) g_items_picture.store(false, std::memory_order_relaxed);
+            }
+            g_touch_mode.store(mode, std::memory_order_relaxed);
+        }
         if (town_large) {
             layout.bottom = town_rect, layout.bottom_shown = true;
             layout.bottom_alpha = static_cast<u8>(std::clamp(town_alpha, 0.0f, 1.0f) * 255);
@@ -1271,6 +1333,7 @@ int main(int argc, char* argv[]) {
                     float fw = 0, fh = 0;
                     SDL_GetTextureSize(made, &fw, &fh);
                     made_view.texture = made;
+                    made_view.top = true;
                     made_view.source = SDL_FRect{0, 0, fw, fh};
                     made_view.width = static_cast<int>(fw), made_view.height = static_cast<int>(fh);
                     shared_screens_draw(made_view, top, win_w, win_h);
@@ -1283,6 +1346,8 @@ int main(int argc, char* argv[]) {
                     }
                     shared_screens_draw(bottom_view, layout.bottom, win_w, win_h, layout.bottom_alpha);
                 }
+                if (g_items_picture.load(std::memory_order_relaxed))  // (1.0.1.1: the quick items' piece)
+                    quick_items_draw(bottom_view, win_w, win_h, display.opacity);
                 static const bool no_ui_made = [] { const char* v = std::getenv("MH4U_DEBUG_NO_UI"); return v != nullptr && *v == '1'; }();
                 if (!no_ui_made) ui_frame(win_w, win_h, UiScreens{layout.top, layout.bottom, layout.bottom_shown}, controls_real_pad());
                 send_input();
@@ -1316,6 +1381,8 @@ int main(int argc, char* argv[]) {
             }
             shared_screens_draw(bottom_view, layout.bottom, win_w, win_h, layout.bottom_alpha);
         }
+        if (g_items_picture.load(std::memory_order_relaxed))  // (1.0.1.1: the quick items' piece, under the UI)
+            quick_items_draw(bottom_view, win_w, win_h, display.opacity);
         if (!problem.empty()) {
             SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
             SDL_SetRenderScale(renderer, 3, 3);

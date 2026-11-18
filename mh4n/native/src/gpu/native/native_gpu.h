@@ -127,4 +127,22 @@ std::unique_ptr<NativeGpu> MakeNativeGpu(Host& host, const NativeOptions& option
 void SetShadows(bool on);
 bool Shadows();
 
+// PS1 STYLE'S PIXELATED TEXTURES (`--ps1-textures 0-6`, an app's own setting; process-wide, any thread, read at every draw that
+// binds a texture): 0 the textures as the game draws them (nothing of this runs). From 1 the 3D world's textures (a texture with
+// mipmap levels, or a draw with a depth test; never the HUD, the menus, the text, the touch screen or a render target read as a
+// texture) are sampled nearest, their texels sharp squares; 2 to 6 sample a copy at 1/2, 1/4, 1/8, 1/16 or 1/32 of the
+// texture's size (at least one texel a side; each block's average, as a smaller mipmap level), made the first time it is
+// drawn and let go when unused.
+void SetPs1Textures(int level);
+int Ps1Textures();
+
+// PS1 STYLE'S GEOMETRY (`--ps1-geometry on|off`, an app's own setting; process-wide, read at every draw): off, nothing of it
+// runs and every vertex program keeps its id (the shader cache as before). On, the 3D world's draws (a depth test, not the
+// touch screen's turn, not a shadow map) take a variant of their vertex program, with its own id, whose position is divided
+// by its w (every output interpolated affinely, as the PS1 did) and snapped to a grid of 240 cells across each axis (the
+// wobble of the PS1's whole-pixel vertices); the CPU path's vertices get the same (cpuvertex::TriangleBatch::Ps1Snap). Its
+// pipelines are built the first time they are drawn, as any new ones. Not with the lighting fix-up in a geometry stage.
+void SetPs1Geometry(bool on);
+bool Ps1Geometry();
+
 }  // namespace mh4n::gpu::native

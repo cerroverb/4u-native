@@ -172,6 +172,14 @@ def drop_stamp(work: str) -> None:
         pass
 
 
+# The translation's steps (recompile(), then the geometry shaders) and the share of its time each takes, between what a
+# PC (98 s: 35 the first analysis, 2 where its code is, 3 the data pointers, 12 the second analysis, 46 the writing of
+# the C) and a Moto g06 of 4 GB, which swaps, measured (571 s: the code's place and the data pointers 149 of them): the
+# progress of the stage "recompile" goes through them (Stages.translated, translation_progress)
+TRANSLATION = (("first", 0.32), ("cover", 0.06), ("pointers", 0.06), ("second", 0.12), ("writing", 0.42),
+               ("shaders", 0.02))
+
+
 class Stages(io.TextIOBase):
     """build_game.py's output, passed on as it is, with the app's @@ lines for the stages it goes through."""
 
@@ -191,6 +199,9 @@ class Stages(io.TextIOBase):
         self.stage = "extract"
         self.buffer_ = ""
         self.on_stage = None
+        self.steps = {}  # (the translation's steps, TRANSLATION: how far each is, 0 to 1)
+        self.functions = 0
+        self.said = None
 
     def writable(self):
         return True
@@ -211,14 +222,31 @@ class Stages(io.TextIOBase):
             if pattern.search(text) and stage != self.stage:
                 self.set(stage)
         m = self.ANALYSED.search(text)
-        if m:
-            emit(f"@@progress recompile {m.group(1)} {m.group(2)}")
+        if m:  # (recompile()'s own lines, of the second analysis: translation_progress says more, and sooner)
+            self.translated("second", int(m.group(1)) / max(1, int(m.group(2))), int(m.group(2)))
 
     def set(self, stage):
         self.stage = stage
         emit(f"@@stage {stage}")
         if self.on_stage:
             self.on_stage(stage)
+
+    def translated(self, step: str, done: float, functions: int = 0) -> None:
+        """A step of the translation is this far (0 to 1, never back; the steps before it are through): @@progress
+        recompile, in functions (the app shows "N / M functions"), the share of the translation done (TRANSLATION)."""
+        names = [name for name, _ in TRANSLATION]
+        if step not in names:
+            return
+        for name in names[:names.index(step)]:
+            self.steps[name] = 1.0
+        self.steps[step] = max(self.steps.get(step, 0.0), min(1.0, done))
+        self.functions = max(self.functions, functions)
+        part = sum(share * self.steps.get(name, 0.0) for name, share in TRANSLATION)
+        total = self.functions or 1
+        now = (min(total, round(part * total)), total)
+        if now != self.said:
+            self.said = now
+            emit(f"@@progress recompile {now[0]} {now[1]}")
 
 
 class Tail(io.TextIOBase):
@@ -402,6 +430,132 @@ def lean_recompile() -> None:
     arm.ArmTranslator.decode = interned(arm.ArmTranslator.decode)
     thumb.ThumbTranslator.decode = interned(thumb.ThumbTranslator.decode)
 
+    # Python's collector of reference cycles walks every object the analysis keeps (a phone of 4 GB swaps much of the
+    # translator's 2.5 GB out, and a collection reads it all back); the translation makes no cycles worth collecting
+    # (the same peak with it off, measured) and the collections above stay: off until the C is written
+    def collected(run):
+        def wrapper(*a, **k):
+            was = gc.isenabled()
+            gc.disable()
+            try:
+                return run(*a, **k)
+            finally:
+                if was:
+                    gc.enable()
+        return wrapper
+    rc.recompile = collected(rc.recompile)
+
+
+def translation_progress(tap: Stages) -> None:
+    """The translation's progress as it goes (TRANSLATION), from inside recompile() (the same C comes out). Its first
+    analysis, the data pointers and its writing of the C said nothing, only the second analysis did ("analysed N/M"):
+    the screen sat at "Translate the game's code (10 %)" for minutes on a phone (reported as stuck at 10 %), then at
+    30 % while the C was written. Now each step says how far it is about every 2 s (@@progress recompile), and the
+    build's log gets a line at every tenth of a step."""
+    from recomp import analysis
+    from recomp import emit as emitter
+    rc = build_game.recompile
+    analyse_all, analyse = analysis.Analyzer.analyze_all, analysis.Analyzer.analyze
+    pointers, function, recompile = rc.data_pointer_entries, emitter.FunctionEmitter.function, rc.recompile
+    cover = rc.code_cover
+    now = {"step": "", "done": 0, "of": 1, "functions": 0, "at": 0.0, "tenth": -1}
+    words = {"first": "analysing the code", "cover": "where the code is", "pointers": "looking for code in the data",
+             "second": "analysing it again", "writing": "writing the C", "shaders": "the geometry shaders"}
+
+    def tell(force=False):
+        t = time.monotonic()
+        if not force and t - now["at"] < 2:
+            return
+        now["at"] = t
+        part = min(1.0, now["done"] / max(1, now["of"]))
+        tap.translated(now["step"], part, now["functions"] or (now["of"] if now["step"] in ("first", "second") else 0))
+        tenth = int(part * 10)
+        if tenth != now["tenth"]:
+            now["tenth"] = tenth
+            print(f"  translation: {words[now['step']]}, {now['done']} of {now['of']}", flush=True)
+
+    def begin(step, of):
+        now.update(step=step, done=0, of=max(1, of), tenth=-1)
+        tell(True)
+
+    def analyze_all(self, entries, progress=None):
+        begin("second" if progress else "first", len(entries))
+        funcs = analyse_all(self, entries, progress)
+        now["done"] = now["of"] = len(funcs)
+        if progress:
+            now["functions"] = len(funcs)
+        tell(True)
+        return funcs
+
+    def analyze(self, *a, **k):
+        if now["step"] in ("first", "second"):
+            now["done"] += 1
+            tell()
+        return analyse(self, *a, **k)
+
+    class Counted:
+        """The first analysis's functions as code_cover() walks them (values()), counted; the rest goes to the dict."""
+
+        def __init__(self, funcs):
+            self.funcs = funcs
+
+        def values(self):
+            for f in self.funcs.values():
+                now["done"] += 1
+                if now["done"] & 255 == 0:
+                    tell()
+                yield f
+
+        def __getattr__(self, name):
+            return getattr(self.funcs, name)
+
+    def code_cover(funcs):  # (every halfword the first analysis's code covers: on a phone of 4 GB, a minute of swapping)
+        begin("cover", len(funcs))
+        return cover(Counted(funcs))
+
+    def data_pointer_entries(img, an, segments, *rest, **k):
+        # (it reads every word of the data segments, recompile.py's values(): those reads are counted, the analysis's
+        # own reads of the code are not)
+        ranges = [(start, start + size) for start, size in segments]
+        begin("pointers", sum(size // 4 for _, size in segments))
+        read = img.read32
+
+        def counted(a):
+            for lo, hi in ranges:
+                if lo <= a < hi:
+                    now["done"] += 1
+                    if now["done"] & 4095 == 0:
+                        tell()
+                    break
+            return read(a)
+        try:
+            img.read32 = counted
+        except AttributeError:  # (an Image that takes no attribute of its own: not counted)
+            pass
+        try:
+            found = pointers(img, an, segments, *rest, **k)
+        finally:
+            if img.__dict__.get("read32") is counted:
+                del img.read32
+        now["done"] = now["of"]
+        tell(True)
+        return found
+
+    def written(self, f):
+        if now["step"] != "writing":
+            begin("writing", now["functions"])
+        now["done"] += 1
+        tell()
+        return function(self, f)
+
+    def recompiled(*a, **k):
+        res = recompile(*a, **k)
+        begin("shaders", 1)  # (build_game.py's next: the version's table, then the geometry shaders, read from the game)
+        return res
+    analysis.Analyzer.analyze_all, analysis.Analyzer.analyze = analyze_all, analyze
+    emitter.FunctionEmitter.function = written
+    rc.code_cover, rc.data_pointer_entries, rc.recompile = code_cover, data_pointer_entries, recompiled
+
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -492,6 +646,7 @@ def main(argv=None) -> int:
             cmd += ["--compile-only"]
         else:
             lean_recompile()
+            translation_progress(tap)
         progress = CompileProgress(recomp)
 
         def on_stage(stage):

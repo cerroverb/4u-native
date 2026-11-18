@@ -14,10 +14,7 @@ add_subdirectory(${MH4N_DIR}/native mh4n)
 
 add_library(main SHARED android_main.cpp controls.cpp padmap.cpp ui.cpp touch.cpp town.cpp third_party/imgui_backends/imgui_impl_sdlrenderer3.cpp perf_hint.c thread_place.c perfstats.cpp game_options.cpp settings_panel.cpp app_settings.cpp net_rooms.cpp net_lan.cpp game_keyboard.cpp gpu_driver.cpp content.cpp
             app_live.cpp crash_screen.cpp first_run.cpp shared_screens.cpp display_vsync.cpp present_pacing.cpp chat_app.cpp
-            cache_clear.cpp verify_files.cpp diag.cpp frame_gen.cpp hunt_numbers.cpp hunt_bars.cpp hunt_names.cpp)
-# the monsters' names on their bars (hunt_names.cpp): read from the game's archives, inflated with mh4n's lodepng (linked
-# in already, by its HD texture packs)
-set_property(SOURCE hunt_names.cpp APPEND PROPERTY INCLUDE_DIRECTORIES ${MH4N_DIR}/native/third_party/png)
+            cache_clear.cpp verify_files.cpp diag.cpp frame_gen.cpp hunt_numbers.cpp hunt_bars.cpp quick_items.cpp)
 # The port's chat (chat/, the same files as MHGU's runtime/chat; chat_app.cpp is this app's side of it): its keys and
 # signatures with libsecp256k1 (third_party/secp256k1, MIT), its relays through the system's TLS (the app's ChatSocket)
 set(CHAT_SRC chat/chat.cpp chat/chat_crypto.cpp chat/chat_json.cpp chat/chat_text.cpp chat/chat_overlay.cpp

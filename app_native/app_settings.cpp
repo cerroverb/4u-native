@@ -242,6 +242,7 @@ int render_scale_used(int percent, bool adreno_fix) {
 bool app_adreno_fix() { return !same(app_setting("Graphics", "AdrenoFix", "auto"), "off"); }
 
 int app_low_end_level(const std::string& text) {
+    if (same(text, "brick") || text == "3") return LOW_END_BRICK;
     if (same(text, "toaster") || text == "2") return LOW_END_TOASTER;
     for (const char* on : {"on", "1", "true", "yes"})
         if (same(text, on)) return LOW_END_ON;

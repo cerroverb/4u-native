@@ -35,6 +35,7 @@
 //   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "gpu/cpuvertex/triangle_batch.h"
 
+#include <cmath>
 #include <cstddef>
 #include <cstring>
 
@@ -103,6 +104,20 @@ void TriangleBatch::AddTriangle(const OutputVertex& v0, const OutputVertex& v1, 
     vertices_.push_back(MakeHardwareVertex(v0, false));
     vertices_.push_back(MakeHardwareVertex(v1, AreQuaternionsOpposite(v0.quat, v1.quat)));
     vertices_.push_back(MakeHardwareVertex(v2, AreQuaternionsOpposite(v0.quat, v2.quat)));
+}
+
+void TriangleBatch::Ps1Snap() {
+    for (HardwareVertex& v : vertices_) {
+        const float w = v.position[3];
+        if (!(w > 0.0001f)) {
+            continue;
+        }
+        const float s = 1.0f / w;
+        v.position[0] = std::floor(v.position[0] * s * 120.0f + 0.5f) / 120.0f;
+        v.position[1] = std::floor(v.position[1] * s * 120.0f + 0.5f) / 120.0f;
+        v.position[2] *= s;
+        v.position[3] = 1.0f;
+    }
 }
 
 rhi::Result<StreamedBatch> UploadBatch(rhi::Ring& ring, const TriangleBatch& batch) {

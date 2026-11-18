@@ -45,6 +45,10 @@ public:
     ShotSink(const Schedule::ShotSchedule& schedule, std::filesystem::path dir, present::Display& display);
 
     void Publish(const present::DisplayFrame& frame) override;
+    // MH4N_SHOTS_TOUCH_DUTY=N:W (a measurement aid, 1.0.1.1): the touch screen hidden but W frames in N, as the app's quick
+    // items' piece has it (android_main.cpp's WindowSink); a touch screen's shot is named with the frame's place in its
+    // run of drawn frames (_bottom_r1.ppm, _r2...), to see which of them hold a whole picture
+    bool ScreenHidden(u32 screen) const override;
 
     // Waits (up to `timeout`) until every requested screen has been written or given up, then writes
     // gas.txt. False when callbacks were still pending at the timeout. Call it after the last Publish.
@@ -73,6 +77,7 @@ private:
     present::Display& display_;
     std::shared_ptr<State> state_;
     bool gas_since_last_shot_ = false;
+    mutable u32 duty_frames_ = 0, duty_streak_ = 0;
     u32 shots_taken_ = 0;
 };
 

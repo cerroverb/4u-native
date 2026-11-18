@@ -32,6 +32,8 @@ MH4N_REGISTER(mh4n::BootStep, "zz.android.live", mh4n::BootStep{mh4n::Phase::Sta
 void app_live_start() {
     app_live_reverb(app_setting_bool("Audio", "Reverb", true));
     app_live_shadows(app_setting_bool("Graphics", "Shadows", true));
+    app_live_ps1(app_setting_bool("Graphics", "Ps1Filter", false),
+                 app_low_end_level(app_setting("Graphics", "LowEnd", "off")) == LOW_END_BRICK);
 }
 
 void app_live_volume(int percent) {
@@ -46,4 +48,13 @@ void app_live_reverb(bool on) {
 void app_live_shadows(bool on) {
     mh4n::gpu::native::SetShadows(on);
     std::fprintf(stderr, "[Info] App: shadows %s\n", on ? "on" : "off");
+}
+
+void app_live_ps1(bool filter, bool brick) {
+    // (the 3D world's textures: Brick's a sixteenth of their size, the filter's an eighth, as big as the blocks of the
+    // player's picture that asked for it; the geometry: the filter's)
+    mh4n::gpu::native::SetPs1Textures(brick ? 5 : filter ? 4 : 0);
+    mh4n::gpu::native::SetPs1Geometry(filter);
+    if (filter || brick)
+        std::fprintf(stderr, "[Info] App: PS1 style in the renderer:%s%s\n", filter ? " the PS1 filter" : "", brick ? " Brick" : "");
 }

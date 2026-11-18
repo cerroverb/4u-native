@@ -244,6 +244,11 @@ struct VertexShaderConfig {
     bool capture_outputs = false; // the test hook
     bool exact_arithmetic = true; // DecompileInput::exact_arithmetic
     bool pull_fixup = false;      // the lighting fix-up in this stage (see above); geometry_stage is then false
+    // PS1 style's geometry (native_gpu.h SetPs1Geometry; never with geometry_stage): the position divided by its w before
+    // the rasteriser (w = 1: every output interpolated affinely, as the PS1 did) and snapped to a grid of 240 cells across
+    // each axis (the PS1's whole-pixel vertices: the 3D wobbles). In the padding byte before `pull` (the layout, and so
+    // VertexSourceVersion, unchanged) and in Hash() and the saved source only when set: off, every id is as before.
+    bool ps1 = false;
     std::array<PullAttribute, 16> pull{};  // pull_fixup: each input register's attribute (zero otherwise)
 
     bool operator==(const VertexShaderConfig&) const = default;

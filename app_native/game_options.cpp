@@ -26,7 +26,7 @@ const char* const kLive[] = {"fps", "refresh_rate", "steady", "dither", "antiali
                              "haze", "skip_end", "skip_end_hold", "gather_all", "qol_hold_gather", "qol_flex_cancel",
                              "qol_sharpen_cancel", "qol_rewards_no_limit", "rewards_send_all",
                              "single_screen", "effects", "monsters_on_map", "damage_numbers",
-                             "monster_health_bar"};
+                             "monster_health_bar", "quick_items", "bow_aim"};
 
 std::string Trim(std::string s) {
     while (!s.empty() && (s.back() == ' ' || s.back() == '\t' || s.back() == '\r')) s.pop_back();

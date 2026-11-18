@@ -86,6 +86,10 @@ u64 HashWords(const u32* words, size_t count) {
     return h;
 }
 
+static_assert(offsetof(VertexShaderConfig, ps1) == offsetof(VertexShaderConfig, pull_fixup) + 1 &&
+                  offsetof(VertexShaderConfig, pull) == offsetof(VertexShaderConfig, pull_fixup) + 2,
+              "PS1 style's flag must stay in the padding byte before `pull` (VertexSourceVersion hashes the layout)");
+
 u64 VertexShaderConfig::Hash() const {
     u64 h = Combine(program_hash, swizzle_hash);
     h = Combine(h, (static_cast<u64>(program_words) << 32) | swizzle_words);
@@ -98,7 +102,7 @@ u64 VertexShaderConfig::Hash() const {
         h = Combine(h, static_cast<u64>(input.conversion) * 2 + (input.alias_w ? 1 : 0));
     }
     h = Combine(h, (use_clip_planes ? 1u : 0u) | (geometry_stage ? 2u : 0u) | (capture_outputs ? 4u : 0u) |
-                       (exact_arithmetic ? 8u : 0u) | (pull_fixup ? 16u : 0u));
+                       (exact_arithmetic ? 8u : 0u) | (pull_fixup ? 16u : 0u) | (ps1 ? 32u : 0u));
     if (pull_fixup) {
         for (const PullAttribute& a : pull) {
             h = Combine(h, (static_cast<u64>(a.binding) << 56) | (static_cast<u64>(a.format) << 48) |
@@ -594,6 +598,15 @@ TranslateResult GenerateVertexGlsl(const pica::ShaderSetup& setup, const VertexS
         out += "        vtx_pos.y = -vtx_pos.y;\n";
         out += "    }\n";
         out += "    vec4 out_position = vec4(vtx_pos.x, vtx_pos.y, -vtx_pos.z, vtx_pos.w);\n";
+        if (config.ps1) {
+            // PS1 style (VertexShaderConfig::ps1): the same point with w = 1, its x and y on the grid; the clip distances
+            // scaled with it (the same planes). A vertex at or behind the eye keeps its w (the clipper's own case).
+            out += "    float ps1_s = 1.0;\n";
+            out += "    if (out_position.w > 0.0001) {\n";
+            out += "        ps1_s = 1.0 / out_position.w;\n";
+            out += "        out_position = vec4(floor(out_position.xy * ps1_s * 120.0 + 0.5) / 120.0, out_position.z * ps1_s, 1.0);\n";
+            out += "    }\n";
+        }
         out += "    gl_Position = out_position;\n";
         out += "    vec2 out_clip = vec2(0.0);\n";
         if (config.use_clip_planes) {
@@ -601,6 +614,9 @@ TranslateResult GenerateVertexGlsl(const pica::ShaderSetup& setup, const VertexS
             out += "    if (enable_clip1 != 0u) {\n";
             out += "        out_clip.y = dot(clip_coef, vtx_pos);\n";
             out += "    }\n";
+            if (config.ps1) {
+                out += "    out_clip *= ps1_s;\n";
+            }
             out += "    gl_ClipDistance[0] = out_clip.x;\n";
             out += "    gl_ClipDistance[1] = out_clip.y;\n";
         }

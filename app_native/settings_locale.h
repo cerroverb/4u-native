@@ -16,6 +16,7 @@ static inline const char* settings_text(int language, const char* english) {
         {"Keyboard and mouse", "Teclado y ratón"},
         {"Picture and sound", "Imagen y sonido"},
         {"Colour", "Color"},  // (1.0.1: Graphics & Audio > Colour, the colour filter; its rows' texts are with them)
+        {"Brick", "Ladrillo"},  // (1.0.1.1: Low-end mode's level below Toaster)
         {"Screen and HUD", "Pantalla y HUD"},
         {"Advanced", "Avanzado"},
         {"Monster health", "Vida de los monstruos"},
@@ -684,6 +685,10 @@ static inline const char* settings_text(int language, const char* english) {
          "El contador de FPS: arrástralo para moverlo  -  Restablecer lo devuelve arriba"},
         // (1.0.1: the monsters' health bars in the layout editor, hunt_bars.cpp)
         {"Monster health bar", "Barra de vida de los monstruos"},
+        {"Quick items", "Objetos rápidos"},
+        {"Quick items: drag to move, its corner handle, a pinch or - / + for its size  -  Reset puts it back",
+         "Objetos rápidos: arrástralos para moverlos; el asa de la esquina, un pellizco o - / + para su tamaño  -  "
+         "Restablecer los devuelve a su lugar"},
         {"The monsters' health bar: drag to move, its corner handle, a pinch or - / + for its size  -  Reset puts it back",
          "La barra de vida de los monstruos: arrástrala para moverla; su asa de la esquina, un pellizco o - / + para su "
          "tamaño  -  Restablecer la devuelve a su lugar"},

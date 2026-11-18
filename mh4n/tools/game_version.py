@@ -216,6 +216,56 @@ GV_EXPORT const unsigned rc_ext_crc32 = 0x{crc:08x}u;
 """
 
 
+# The port's own copy of the maps (port/src/game_shifts.h): a library carries the port's addresses that
+# config/port_addresses.txt had when it was made, and its id doesn't change with that list, so a library of another
+# version made by older tools lacks the addresses added since (1.0's EUR v1.1.0 libraries and 1.0.1's gather.cpp). The
+# port takes those from this copy, as port_table would have (port/src/game_addr.h's SetGameAddresses).
+PORT_SHIFTS = os.path.join(ROOT, "port", "src", "game_shifts.h")
+
+
+def port_shifts_header(versions: list[dict] | None = None, root: str = ROOT) -> str:
+    """port/src/game_shifts.h: every mapped version's config/shifts, as C++ tables (LF line ends)."""
+    def name(key: str, part: str) -> str:
+        return "kShifts" + "".join(w.capitalize() for w in key.split("_")) + part
+
+    def rows(intervals: list[tuple[int, int, int]]) -> str:
+        return "".join(f"    {{0x{s:08x}u, 0x{e:08x}u, {'-' if d < 0 else ''}0x{abs(d):x}}},\n" for s, e, d in intervals)
+
+    tables, entries = [], []
+    for v in versions if versions is not None else load_versions():
+        if v.get("target") or not v.get("shifts"):
+            continue
+        key = v["key"]
+        shifts = version_map.Shifts.load(os.path.join(root, v["shifts"]))
+        text_start, text_end = shifts.text or (0, 0)
+        tables.append(f"// {v['shifts']}: {v['name']}\n"
+                      f"inline constexpr GameShift {name(key, 'Text')}[] = {{\n{rows(shifts.intervals)}}};\n")
+        data = "nullptr, 0"
+        data_start, data_end = shifts.data or (0, 0)
+        if shifts.data:
+            tables.append(f"inline constexpr GameShift {name(key, 'Data')}[] = {{\n{rows(shifts.data_intervals)}}};\n")
+            data = f"{name(key, 'Data')}, {len(shifts.data_intervals)}"
+        entries.append(f"    {{\"{key}\", 0x{text_start:08x}u, 0x{text_end:08x}u, {name(key, 'Text')}, "
+                       f"{len(shifts.intervals)}, 0x{data_start:08x}u, 0x{data_end:08x}u, {data}}},\n")
+    return ("// Written by tools/game_version.py port-shifts from config/shifts (don't edit it: tests/test_port_addresses.py\n"
+            "// checks that it is current). Each mapped version's map of USA v1.3.0's addresses, as tools/version_map.py's\n"
+            "// Shifts: an address of USA's .text in an interval [start, end) is at address + shift in that version, one of\n"
+            "// .text in none has no address there; outside .text, and outside the data when a version's data moved, an\n"
+            "// address is the same. game_addr.h takes from it the port's addresses that a code library of that version\n"
+            "// doesn't carry (made by tools from before they were in config/port_addresses.txt).\n"
+            "#pragma once\n\n#include <cstdint>\n\nnamespace Port {\n\n"
+            "struct GameShift {\n    std::uint32_t start, end;  // USA v1.3.0's [start, end)\n"
+            "    std::int32_t shift;        // where they are in that version: address + shift\n};\n\n"
+            "struct GameShifts {\n"
+            "    const char* key;                     // config/versions.json's key (a library's rc_game_version)\n"
+            "    std::uint32_t text_start, text_end;  // USA's .text\n"
+            "    const GameShift* text;\n    std::uint32_t text_count;\n"
+            "    std::uint32_t data_start, data_end;  // USA's .rodata to the end of .bss, when the data moved (else 0, 0)\n"
+            "    const GameShift* data;\n    std::uint32_t data_count;\n};\n\n"
+            + "\n".join(tables)
+            + "\ninline constexpr GameShifts kGameShifts[] = {\n" + "".join(entries) + "};\n\n}  // namespace Port\n")
+
+
 def extension_crc(code: bytes, text_base: int, extension: tuple[int, int] | None) -> tuple[int, int, int] | None:
     """(base, size, CRC-32) of the extension's bytes in the code (code.bin starts at text_base)."""
     if not extension:
@@ -289,8 +339,15 @@ def main(argv: list[str] | None = None) -> int:
     t = sub.add_parser("translate", help="a version's addresses for USA v1.3.0 ones")
     t.add_argument("key")
     t.add_argument("addresses", nargs="+")
+    p = sub.add_parser("port-shifts", help="write port/src/game_shifts.h, the port's copy of config/shifts")
+    p.add_argument("-o", "--output", default=PORT_SHIFTS)
     args = ap.parse_args(argv)
     versions = load_versions()
+    if args.cmd == "port-shifts":
+        with open(args.output, "wb") as f:
+            f.write(port_shifts_header(versions).encode())
+        print(f"wrote {args.output}")
+        return 0
     if args.cmd == "list":
         for v in versions:
             state = ("the tables' own" if v.get("target") else

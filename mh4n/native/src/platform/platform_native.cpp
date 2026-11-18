@@ -559,7 +559,18 @@ void StartedStep(Runtime& runtime) {
             usa.push_back(u);
             here.push_back(h);
         }
-        const std::vector<u32> missing = Port::SetGameAddresses(usa.data(), here.data(), static_cast<u32>(usa.size()));
+        // (a library made by older tools lacks the addresses listed since: the port's copy of its version's map gives
+        // them, game_addr.h)
+        std::vector<std::pair<u32, u32>> from_map;
+        const std::vector<u32> missing = Port::SetGameAddresses(usa.data(), here.data(), static_cast<u32>(usa.size()),
+                                                                library->GameVersion().c_str(), &from_map);
+        if (!from_map.empty()) {
+            std::string list;
+            for (const auto& [u, h] : from_map) list += fmt::format(" {:08X}>{:08X}", u, h);
+            MH4N_LOG(Info, kLog, "the code library (made before the port listed them) has no address for {} of the port's "
+                     "addresses: taken from the port's copy of the {} map (config/shifts):{}", from_map.size(),
+                     library->GameVersion(), list);
+        }
         for (const u32 address : missing) {
             MH4N_LOG(Warning, kLog, "the code library has no address for the port's 0x{:08X} (config/port_addresses.txt): "
                      "USA v1.3.0's is used", address);

@@ -130,7 +130,7 @@ std::vector<u8> PipelineBuilder::SaveVertexSource(u64 program) const {
         Put32(out, static_cast<u32>(input.conversion) | (input.alias_w ? 0x100u : 0u));
     }
     Put32(out, (c.use_clip_planes ? 1u : 0u) | (c.geometry_stage ? 2u : 0u) | (c.capture_outputs ? 4u : 0u) |
-                   (c.exact_arithmetic ? 8u : 0u) | (c.pull_fixup ? 16u : 0u));
+                   (c.exact_arithmetic ? 8u : 0u) | (c.pull_fixup ? 16u : 0u) | (c.ps1 ? 32u : 0u));
     for (const shader::PullAttribute& a : c.pull) {
         Put32(out, a.binding | (static_cast<u32>(a.format) << 8) | (static_cast<u32>(a.per_instance) << 16));
         Put32(out, a.offset | (static_cast<u32>(a.stride) << 16));
@@ -167,6 +167,7 @@ std::optional<u64> PipelineBuilder::LoadVertexSource(std::span<const u8> bytes) 
     c.capture_outputs = (flags & 4u) != 0;
     c.exact_arithmetic = (flags & 8u) != 0;
     c.pull_fixup = (flags & 16u) != 0;
+    c.ps1 = (flags & 32u) != 0;  // (PS1 style's, shader/vertex_shader.h: never set in a source saved before it)
     for (shader::PullAttribute& a : c.pull) {
         const u32 v = r.U32(), w = r.U32();
         if (((v >> 8) & 0xFF) > static_cast<u32>(vertex::VertexFormat::R32G32B32A32_FLOAT)) r.ok = false;

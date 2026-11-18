@@ -24,6 +24,8 @@ if (EXISTS "${MH4N_HOOKS_SOURCE}" AND EXISTS "${MH4N_PLATFORM_HEADER}"
         "${MH4N_ONESCREEN_SOURCE}" "${MH4N_HUNT_AIDS_SOURCE}")
     set(mh4n_platform_available ON)
     list(APPEND mh4n_platform_sources "${MH4N_GATHER_SOURCE}")
+    # the health bars' monster names from the game's RomFS (1.0.1.1): this module's own, it reads port/src's hunt aids
+    list(APPEND mh4n_platform_sources monster_names.cpp)
 else()
     message(STATUS "mh4n_platform: port/src/hooks.cpp or recomp.h not found around native/: an empty module")
     set(mh4n_platform_sources unavailable.cpp)
@@ -46,6 +48,7 @@ mh4n_module(
         mh4n_services_fs
     THIRD_PARTY
         mh4n_fmt
+        mh4n_hdpack_lodepng  # (monster_names.cpp: its zlib inflate, the copy the HD packs use)
 )
 
 if (mh4n_platform_available)

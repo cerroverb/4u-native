@@ -6,8 +6,8 @@
 #include <cstdint>
 #include <cstdio>
 
-#include "hunt_names.h"
 #include "imgui.h"
+#include "platform/monster_names.h"  // (the names: mh4n reads them from the game's RomFS, 1.0.1.1)
 #include "settings_panel.h"
 #include "ui.h"
 
@@ -158,8 +158,7 @@ bool hunt_bars_rect(float r[4]) {
 
 void hunt_bars_draw(const SDL_FRect& top) {
     if (!Port::HuntAids::HealthBarOn()) return;
-    const int language = Port::HuntAids::GameLanguage();
-    hunt_names_prepare(language);  // (the names, read once in the game's language: ready before a quest)
+    const int language = Port::HuntAids::GameLanguage();  // (its names: read by the runtime as soon as it is known)
     std::vector<Port::HuntAids::Health> healths = Port::HuntAids::Healths();
     const bool editing = touch_editing();
     std::vector<std::string> names;
@@ -167,7 +166,7 @@ void hunt_bars_draw(const SDL_FRect& top) {
         healths.push_back(Port::HuntAids::Health{1900, 2546, true, 0, 0});
         names.push_back(settings_spanish() ? "Monstruo" : "Monster");
     } else {
-        for (const Port::HuntAids::Health& h : healths) names.push_back(hunt_name(language, h.kind));
+        for (const Port::HuntAids::Health& h : healths) names.push_back(mh4n::platform::monster_names::Name(language, h.kind));
     }
     if (healths.empty()) return;
     const Port::Hooks::GameState game = Port::Hooks::CurrentGameState();

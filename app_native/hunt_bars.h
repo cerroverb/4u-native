@@ -2,7 +2,7 @@
 // HuntAids::Healths() lists each large monster alive in the quest with its health; the app draws a bar for each over the
 // top screen's picture, under the touch controls, never in the game's picture, in the look of the app's own HUD (the FPS
 // counter's plate: wine, with red and moss rules, the numbers in ink), each with the monster's name at its left in the
-// game's language (hunt_names.cpp). Where they go and how big they are can be changed in Customize controls and HUD
+// game's language (mh4n's platform/monster_names.cpp reads them from the game's RomFS). Where they go and how big they are can be changed in Customize controls and HUD
 // (touch.cpp): dragged, sized by their corner handle, a pinch or - / +, Reset.
 #pragma once
 #include <SDL3/SDL.h>

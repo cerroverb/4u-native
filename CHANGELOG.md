@@ -2,6 +2,48 @@
 
 [Español más abajo](#español)
 
+## 1.0.1.1
+
+Your code library stays valid: there's no need to build it again.
+
+1.0.1.1 is a small update after 1.0.1: fixes for what you reported, the PS1 filter you asked for, and quick items on the
+main screen.
+
+### Fixes
+
+- **"Gather everything in one press" closed the game** ([#71](https://github.com/khorne-hub/4u-native/issues/71)) at
+  gathering points with more than one use and when carving, with the European version of the game whose code had been
+  built with 1.0: that code lacked the places in the game that 1.0.1 added, and the option called a wrong one. The app
+  now fills them in by itself, with no rebuild, and if one were ever missing the option would do nothing instead of
+  closing the game.
+- **The monster's name on the health bars** didn't show on phones: it is now read from the game's files the way the
+  game reads them.
+- **Bow: letting go of the shot sends the arrow to the monster by itself**, as asked for 1.0, which only worked with
+  Lock-on on and with one of the game's two Bow Controls. Now it goes to the monster you locked on to or chose with
+  the Target Cam, else to the nearest large monster in view, with or without Lock-on and with either Bow Controls.
+  Turn the camera, or drag on Fire, away from the monster while drawing and the arrow goes where you aim. Gear,
+  **Controls**, **Bow aims at the monster** (on). If your game's Bow Controls draw with R, the touch Fire button now
+  draws and shoots (before, it opened the aiming mode).
+- **The phone build looked stuck at 10 %** ("Translate the game's code"): parts of the translation worked for minutes
+  without showing any progress. Now the percentage moves the whole way, the screen's timer keeps running, it uses a
+  little less memory, and if it goes quiet its log says what it is doing every minute. If yours stopped there, update
+  and tap **Go on**: it continues from where it stopped.
+### New, from your suggestions
+
+- **PS1 filter**, off by default (gear, **Graphics & Audio**, **PS1 filter**): the look of the 3D games of the late
+  90s. Big sharp texture blocks, the top screen's picture on the console's own 240 lines with stronger colours and
+  15-bit colour with a fine dot pattern, wobbly polygons and bending textures, and faint flickering scanlines. It
+  changes no other setting, and the touch screen, the touch controls and our menus stay sharp. Thanks to Ysacaiah for
+  the idea.
+- **Low-end mode › Brick**, a new level below Toaster, for the weakest phones: everything Toaster does, and the 3D
+  world's textures at a sixteenth of their size, drawn as big sharp blocks, so the phone reads less memory each frame.
+  Brick is the one for frame rate, the PS1 filter is the one for looks, and you can use both together.
+- **Show quick items**, off by default (gear, **Graphics & Audio**, **Screen and HUD**): in a quest, the touch
+  screen's quick items panel also shows on the main screen, small, and a tap on an item there uses it. It hides while
+  the whole touch screen shows, with a game menu open, and if your panel layout has no quick items panel. Move and
+  size it in **Customize controls and HUD**. It turns on and off at once, also in the middle of a quest, and doesn't
+  cost frame rate.
+
 ## 1.0.1
 
 Your code library stays valid: there's no need to build it again.
@@ -498,6 +540,48 @@ MH4U for Android is free. Only the links khorne-hub gives are official: if you g
 came with ads, it isn't the official one. Check the APK's SHA-256 against the release's `.sha256` file.
 
 ## Español
+
+## 1.0.1.1
+
+Tu librería de código sigue sirviendo: no hace falta crearla de nuevo.
+
+La 1.0.1.1 es una actualización chica después de la 1.0.1: arreglos de lo que reportaron, el filtro PS1 que pidieron y
+los objetos rápidos en la pantalla principal.
+
+### Arreglos
+
+- **"Recolectar todo de un toque" cerraba el juego** ([#71](https://github.com/khorne-hub/4u-native/issues/71)) en los
+  puntos de varios usos y al tallar, con la versión europea del juego cuyo código se armó con la 1.0: a ese código le
+  faltaban los lugares del juego que agregó la 1.0.1, y la opción llamaba a uno equivocado. Ahora la app los completa
+  sola, sin rearmar nada, y si alguna vez faltara uno la opción no haría nada en vez de cerrar el juego.
+- **El nombre del monstruo en las barras de vida** no se veía en los teléfonos: ahora se lee de los archivos del juego
+  como los lee el juego.
+- **Arco: al soltar el disparo la flecha va sola al monstruo**, como se pidió para la 1.0, que solo andaba con Fijar
+  objetivo y con uno de los dos controles de arco del juego. Ahora va al monstruo que fijaste o elegiste con la cámara
+  de objetivo, o si no al monstruo grande más cercano que se ve, con o sin Fijar objetivo y con cualquiera de los dos
+  controles de arco. Si al tensar giras la cámara, o arrastras sobre Disparo, lejos del monstruo, la flecha va adonde
+  apuntas. Engranaje, **Controles**, **El arco apunta al monstruo** (activado). Si en el juego el arco se tensa con R,
+  el botón táctil Disparo ahora tensa y dispara (antes abría el modo de apuntar).
+- **La creación en el teléfono parecía trabada en 10 %** ("Traducir el código del juego"): partes de la traducción
+  trabajaban minutos sin mostrar avance. Ahora el porcentaje avanza todo el tiempo, el reloj de la pantalla sigue
+  corriendo, usa un poco menos de memoria y, si se queda callada, su registro dice cada minuto qué está haciendo. Si
+  la tuya se quedó ahí, actualiza y toca **Seguir**: continúa desde donde quedó.
+### Lo nuevo, por sus sugerencias
+
+- **Filtro PS1**, apagado por defecto (engranaje, **Gráficos y audio**, **Filtro PS1**): el aspecto de los juegos 3D
+  de fines de los 90. Texturas en bloques grandes y nítidos, la imagen de la pantalla de arriba en las 240 líneas de
+  la consola con colores más fuertes y colores de 15 bits con un patrón fino de puntitos, polígonos que tiemblan y
+  texturas que se doblan, y líneas de barrido suaves que parpadean. No cambia ningún otro ajuste, y la pantalla
+  táctil, los controles táctiles y nuestros menús siguen nítidos. Gracias a Ysacaiah por la idea.
+- **Modo gama baja › Ladrillo**, un nivel nuevo por debajo de Tostadora, para los teléfonos más débiles: todo lo de
+  Tostadora, y las texturas del mundo 3D a un dieciseisavo de su tamaño, en bloques grandes y nítidos, así el teléfono
+  lee menos memoria en cada cuadro. Ladrillo es para los FPS, el filtro PS1 es para el aspecto, y se pueden usar
+  juntos.
+- **Mostrar objetos rápidos**, apagado por defecto (engranaje, **Gráficos y audio**, **Pantalla y HUD**): en una
+  misión, el panel de objetos rápidos de la pantalla táctil también se ve en la pantalla principal, en chico, y tocar
+  un objeto ahí lo usa. Se esconde mientras se ve toda la pantalla táctil, con un menú del juego abierto y si tu
+  distribución de paneles no tiene panel de objetos rápidos. Se mueve y se cambia de tamaño en **Personalizar
+  controles y HUD**. Se prende y se apaga al momento, también en medio de una misión, y no baja los FPS.
 
 ## 1.0.1
 

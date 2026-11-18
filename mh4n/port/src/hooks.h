@@ -66,6 +66,10 @@ int SkipHint();
 /// any thread; it takes effect a moment later.
 void ToggleQuestMap();
 
+/// quick_items (1.0.1.1): whether the app shows the quest's item shortcuts panel on the main screen (GameState's
+/// items_slot says where it is while it shows). Any thread.
+bool QuickItemsOn();
+
 /// The app's mouse camera: a turn to add, in degrees (to the right, up), taken by the camera's
 /// input hook the next time the game turns the camera by its buttons. Safe from any thread.
 void AddCameraTurn(float yaw_degrees, float pitch_degrees);
@@ -131,10 +135,16 @@ struct GameState {
     int action = -1;            // in a quest: the hunter's action (hunter+0x244, the hunter's virtual 33: 0x43
                                 // standing, 0x42 and 0x04 running, 0x05xx a sword and shield's drawn moves...)
     int ranged = 0;             // 1 a bow, 2 a bowgun (light or heavy), 0 anything else
-    int bow_type = 0;           // the Bow Controls option: MH4U has none (X draws), always 0
+    int bow_type = 0;           // in a quest: the game's Bow Controls, 1 R draws and shoots (X the aiming mode), 0 X
+                                // draws and shoots (R aims)
     int item_bar_shown = -1;    // 1 the item bar is drawn at item_bar, 0 it isn't, -1 not known
     float item_bar[4] = {};     // left, top, right, bottom: fractions of the top screen's picture
     int top_width = 400;        // the top screen's picture in the game's pixels (wider with wide_render)
+    int items_slot = -1;        // quick_items (1.0.1.1): the quest's item shortcuts panel the app shows on the main
+                                // screen: its touch-panel slot (0-2 the left column from the top, 3-5 the right one)
+                                // while a quest's small panels are up, -1 none (no such panel in the player's layout,
+                                // the quest menu or a big panel on the touch screen, out of quests, the option off)
+    int items_wide = 0;         // 1 the panel's wide form: that slot and the one beside it (slot + 3)
     std::uint32_t frame = 0;    // the game's frame counter when this was worked out
     struct HudPart {
         int shown = 0;          // 1 drawn in the last frames

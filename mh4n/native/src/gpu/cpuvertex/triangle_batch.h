@@ -142,6 +142,10 @@ public:
     bool Empty() const { return vertices_.empty(); }
     const HardwareVertex* Data() const { return vertices_.data(); }
     const std::vector<HardwareVertex>& Vertices() const { return vertices_; }
+    // PS1 style's geometry (shader::VertexShaderConfig::ps1, the same on the CPU path): each position divided by its w
+    // (w = 1: affine interpolation) with x and y snapped to a grid of 240 cells across each axis; one at or behind the eye
+    // is left as it is.
+    void Ps1Snap();
 
 private:
     std::vector<HardwareVertex> vertices_;
