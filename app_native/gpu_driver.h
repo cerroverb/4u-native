@@ -1,5 +1,9 @@
 // The GPU driver (Settings, Graphics & Audio, GPU driver): the system's Vulkan driver, as always, unless the player
-// chose one of their own for an Adreno GPU (Turnip, or another build), at their own risk. As the MHGU port does it
+// chose one of their own (Turnip for an Adreno, PanVK for a Mali, or another build), at their own risk: any GPU since
+// 1.0.2 (S12, Raypuia's 4u-native #80; only an Adreno before). libadrenotools' loader hook is what opens it on any GPU
+// (a private copy of the system's libvulkan.so whose driver loading opens the player's library instead); its Adreno-only
+// parts (the KGSL memory hooks) are never asked for here. The GPU's own rules (mh4n's) follow its vendor id, not the
+// driver's name. As the MHGU port does it
 // (its runtime/platform/android_gpu.c and DriverActivity.java):
 //   - a driver comes as a .zip with meta.json and the library, the format the emulators' driver packages use;
 //     DriverActivity.java unpacks it into files/gpu_drivers/<folder>/ (and writes import.txt with the outcome)
@@ -27,7 +31,7 @@ struct GpuDriver {
 };
 
 struct GpuDriverStatus {
-    bool adreno = false;         // an Adreno GPU: a driver of one's own can be chosen
+    bool adreno = false;         // an Adreno GPU (the system's driver says so; any GPU can take a driver of its own)
     bool made = false;           // the game's GPU device is made (gpu, driver and running are known)
     std::string gpu;             // the device's name
     std::string driver;          // the driver that runs, as it calls itself (its name, its info, the Vulkan version)

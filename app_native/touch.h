@@ -36,6 +36,9 @@ bool touch_mouse_click_on_picture(Uint64 click_ns);
 bool touch_bottom_wanted();
 // the touch controls are on the screen (or the settings button alone): the chat's button shows with them (chat_app.cpp)
 bool touch_controls_shown();
+// (1.0.2) a menu of the game's is open (the touch controls' menu layout): the chat window afloat hides meanwhile, and the
+// chat's lines beside its button go (settings_panel.cpp, chat_app.cpp)
+bool touch_game_menu();
 void touch_toggle_bottom();
 // Whether the touch screen's corner starts shown (the single-screen mod puts the game's touch menus on the top
 // screen: the corner starts hidden, and the touch-screen button still brings it back).
@@ -56,6 +59,16 @@ void touch_set_setting(const std::string& key, const std::string& value);
 std::uint32_t touch_combo_buttons(int k);
 // Opens the layout editor (the settings panel's Customize the layout; a long press on the settings button does too).
 void touch_edit_begin();
+#ifndef __ANDROID__
+// (the PC) The editor with the mouse: the wheel over a control or a part that has a size (or else the one picked) sizes
+// it, 5 % a notch (x, y: the window's pixels); Esc cancels it (a window over it, the profiles' or the pictures', closes
+// first). True when it was the editor's
+bool touch_edit_wheel(float x, float y, int notches);
+bool touch_edit_escape();
+// A finger of a real touch screen (not the mouse's) has touched it: the touch controls show at Auto from then on, and the
+// settings button with them
+bool touch_screen_touched();
+#endif
 // The control profiles from the settings menu (settings_panel.cpp, its Control profiles page): the profile in use (1 to
 // 10); what slot n holds (-1 nothing, 0 the port's own layout, 1 an emulator-style one); and, at once, the layout in use
 // (its HUD's parts in mh4u.ini) and its files written as the layout editor's Save does: slot n's layout in use, the layout
@@ -63,8 +76,26 @@ void touch_edit_begin();
 // (not the one in use). false: it couldn't be (no such file, the save folder not reached, the editor open). The MHGU
 // port's the same
 int touch_profile_active();
+// (1.0.2) With an emulator-style layout in use: a Buttons on the screen row's (its show_<key> key) button of that layout
+// shown (1) or hidden (0), its editor's Hide; -1 another layout, or a row with no button there. And shown or hidden so
+int touch_emu_shown(const std::string &key);
+void touch_emu_show(const std::string &key, bool on);
 int touch_profile_kind(int n);
 bool touch_profile_use(int n);
 bool touch_profile_store(int n);
 bool touch_profile_new(int n, int kind);
 bool touch_profile_clear(int n);
+// (1.0.2, S3) A control profile in a .zip and back (the settings' profile page: Export, Import), as the MHGU port's. The
+// .zip's name for slot n (MH4U_profile_<n>_<date>.zip); slot n written into the .zip `path`; a .zip made so put into
+// slot n (it is the layout in use when n is), its pictures into the images folder: IMPORT_*. The .zip made in the app's
+// folder for its screen (ProfileZipActivity) to copy out (profile_export/), and the one that screen copies in
+// (profile_import.zip) taken for slot n once it is there (touch_profile_import_poll, the settings' page each frame).
+// What the last one did, for the page (true: something new, into out)
+enum { IMPORT_OK, IMPORT_NOT_ZIP, IMPORT_NOT_PROFILE, IMPORT_ESCAPES, IMPORT_FAILED };
+std::string touch_profile_zip_name(int n);
+bool touch_profile_export(int n, const std::string &path);
+int touch_profile_import(int n, const std::string &path);
+bool touch_profile_export_app(int n);
+void touch_profile_import_wait(int n);
+void touch_profile_import_poll();
+bool touch_profile_said(std::string *out);

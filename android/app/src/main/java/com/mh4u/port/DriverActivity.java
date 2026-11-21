@@ -39,7 +39,7 @@ import java.util.zip.ZipInputStream;
 
 /**
  * Settings -> Graphics & Audio -> Import a driver (app_native/gpu_driver.cpp, through GameActivity.showDriverImport): a
- * Vulkan driver of the player's own for an Adreno GPU, at their own risk, as the MHGU port's DriverActivity takes it. The
+ * Vulkan driver of the player's own for the phone's GPU (any since 1.0.2), at their own risk, as the MHGU port's takes it. The
  * phone's file picker for its .zip (meta.json and the library: the format of the emulators' driver packages, such as
  * Turnip's), then its 64-bit ARM libraries are unpacked into files/gpu_drivers/<folder>/ with driver.txt (its name and
  * version, its library, what meta.json says of it). Choosing it, and everything else, is the settings' (ImGui).

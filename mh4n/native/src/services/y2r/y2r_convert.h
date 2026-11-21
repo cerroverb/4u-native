@@ -70,5 +70,8 @@ struct ConversionConfiguration {
 //    address (which advances by the unit plus the gap). Here every unit is written at the descriptor's
 //    address.
 bool PerformConversion(GuestMemory& memory, ConversionConfiguration conversion);
+// The same conversion the way Azahar does it, byte for byte what PerformConversion makes (the test compares them;
+// MH4N_Y2R_FAST=0 makes PerformConversion use it)
+bool PerformConversionReference(GuestMemory& memory, ConversionConfiguration conversion);
 
 }  // namespace mh4n::y2r

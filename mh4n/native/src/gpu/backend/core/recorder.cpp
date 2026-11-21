@@ -1,5 +1,7 @@
 // The recorder: commands on the calling thread's command list (N2-26).
 #include <algorithm>
+#include <array>
+#include <cstdlib>
 
 #include <fmt/format.h>
 
@@ -260,8 +262,46 @@ void Recorder::Bind(const BindingSet& set, u32 index, std::span<const u32> dynam
                             dynamic_offsets.data());
 }
 
+// MH4N_BIND_CACHE=0 (a measurement aid): every vertex and index buffer bound again at every call, as before
+static bool BindCacheOn() {
+    static const bool on = [] {
+        const char* v = std::getenv("MH4N_BIND_CACHE");
+        return v == nullptr || *v != '0';
+    }();
+    return on;
+}
+
 void Recorder::SetVertexBuffers(u32 first_binding, std::span<const VertexBufferBinding> buffers) {
     RHI_REQUIRE(first_binding + buffers.size() <= kMaxVertexBindings, "at most {} vertex bindings", kMaxVertexBindings);
+    if (BindCacheOn() && !buffers.empty()) {
+        // The bindings this command buffer has already are skipped; the rest go to the driver in one call, straight
+        // (plume's setVertexBuffers makes the same vkCmdBindVertexBuffers through two thread-local vectors)
+        Impl::BoundBuffers& b = impl_->buffers;
+        std::array<VkBuffer, kMaxVertexBindings> vk{};
+        std::array<VkDeviceSize, kMaxVertexBindings> offsets{};
+        bool same = true;
+        for (size_t i = 0; i < buffers.size(); ++i) {
+            const VertexBufferBinding& binding = buffers[i];
+            RHI_REQUIRE(binding.buffer != nullptr && HasUsage(binding.buffer->Usage(), BufferUsage::Vertex),
+                        "a vertex buffer needs Vertex usage");
+            const u32 slot = first_binding + static_cast<u32>(i);
+            vk[i] = static_cast<const ::plume::VulkanBuffer*>(binding.buffer->impl().buffer.get())->vk;
+            offsets[i] = binding.offset;
+            same = same && (b.vertex_known & (1u << slot)) != 0 && b.vertex[slot] == vk[i] && b.vertex_offset[slot] == offsets[i];
+        }
+        if (same) {
+            return;
+        }
+        vkCmdBindVertexBuffers(impl_->vulkan_list()->vk, first_binding, static_cast<uint32_t>(buffers.size()), vk.data(),
+                               offsets.data());
+        for (size_t i = 0; i < buffers.size(); ++i) {
+            const u32 slot = first_binding + static_cast<u32>(i);
+            b.vertex[slot] = vk[i];
+            b.vertex_offset[slot] = offsets[i];
+            b.vertex_known |= 1u << slot;
+        }
+        return;
+    }
     thread_local std::vector<::plume::RenderVertexBufferView> views;
     thread_local std::vector<::plume::RenderInputSlot> slots;
     views.clear();
@@ -283,6 +323,17 @@ void Recorder::SetIndexBuffer(const Buffer& buffer, u64 offset, IndexType type) 
     RHI_REQUIRE(HasUsage(buffer.Usage(), BufferUsage::Index), "an index buffer needs Index usage");
     RHI_REQUIRE(type != IndexType::U8 || impl_->backend->caps.index_uint8,
                 "8-bit indices need Capabilities::index_uint8: widen them");
+    if (BindCacheOn()) {
+        Impl::BoundBuffers& b = impl_->buffers;
+        const VkBuffer vk = static_cast<const ::plume::VulkanBuffer*>(buffer.impl().buffer.get())->vk;
+        if (b.index_known && b.index == vk && b.index_offset == offset && b.index_type == type) {
+            return;
+        }
+        b.index = vk;
+        b.index_offset = offset;
+        b.index_type = type;
+        b.index_known = true;
+    }
     ::plume::RenderFormat format = ::plume::RenderFormat::R16_UINT;
     if (type == IndexType::U8) format = ::plume::RenderFormat::R8_UINT;
     if (type == IndexType::U32) format = ::plume::RenderFormat::R32_UINT;

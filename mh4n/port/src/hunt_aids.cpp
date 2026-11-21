@@ -13,8 +13,10 @@
 // other hunters in the quest (a room's) the paint is left to the game, since a painted monster is shown to the whole
 // party (a paintball's mark goes to everyone) and it was not proven that a timer written here stays on this console.
 //
-// Damage numbers (damage_numbers). Once a frame, each large monster's health (s32 at the status block + 0x3e8; its
-// maximum at + 0x3ec, 0x0091ad08) is compared with the last frame's: a drop is a number, placed where the hit landed
+// Damage numbers (damage_numbers). Once a frame, each monster's health, large and small (1.0.2: a small one has a status
+// block of the same layout; s32 at + 0x3e8, its maximum at + 0x3ec, 0x0091ad08), is compared with the last frame's: a
+// drop is a number (with damage_number_burst, the app's Burst style, a drop within kBurstSeconds of the last one on that
+// monster adds to its number instead), placed where the hit landed
 // (the monster's + 0x1338, a place the game writes at each hit) or, when that place didn't change (poison, a hit the
 // game didn't place there), at the middle of the monster's body (+ 0x168, the centre of its model's bounding sphere,
 // whose radius follows at + 0x174), a little above it (NUMBER_LIFT). The app draws the numbers (Numbers()) over the top
@@ -85,6 +87,7 @@ constexpr int MAX_NUMBERS = 24;
 struct Options {
     bool monsters_on_map = false;
     bool damage_numbers = false;
+    bool burst = false;       // (damage_number_burst, 1.0.2: the app's Burst style)
     bool health_bar = false;  // (monster_health_bar: Healths() for the app's bars)
     bool trace = false;
     bool cost = false;  // (tests: MH4N_HUNT_COST=1, CostMeter's line without hunt_trace's others)
@@ -273,6 +276,7 @@ void Unpaint(RCtx* ctx, Seen& s) {
 struct Dealt {
     float world[3];
     Number number;
+    u32 monster = 0;  // (Burst: the run's monster)
 };
 std::vector<Dealt> dealt;
 u32 next_id = 1;
@@ -308,8 +312,8 @@ std::vector<Number> Numbers() {
     std::lock_guard lock(numbers_mutex);
     const std::int64_t now = SteadyNs();
     std::vector<Number> out;
-    for (const Number& n : published) {
-        if (now - n.born_ns <= static_cast<std::int64_t>(kNumberSeconds * 1e9)) out.push_back(n);
+    for (const Number& n : published) {  // (a Burst run lasts from its last hit)
+        if (now - n.last_ns <= static_cast<std::int64_t>(kNumberSeconds * 1e9)) out.push_back(n);
     }
     return out;
 }
@@ -334,6 +338,8 @@ bool SetOption(const std::string& key, const std::string& value) {
             dealt.clear();
             Publish({});
         }
+    } else if (key == "damage_number_burst") {
+        options.burst = IsOn(value);
     } else if (key == "hunt_trace") {
         options.trace = IsOn(value);
     } else {
@@ -454,12 +460,22 @@ void Frame(RCtx* ctx) {
     std::vector<Health> bars;
     for (u32 i = 0; i < ENEMY_SLOT_COUNT; ++i) {
         const u32 monster = rd32(ctx, enemies + ENEMY_SLOTS + 4 * i);
-        const u32 info = LargeMonsterInfo(ctx, monster);
+        const u32 large_info = LargeMonsterInfo(ctx, monster);
+        // (1.0.2, T40: the numbers are every monster's, large and small; the paint and the bars a large one's)
+        const u32 info = large_info != 0          ? large_info
+                         : options.damage_numbers && HeapPointer(monster) && HeapPointer(rd32(ctx, monster + EM_INFO))
+                             ? rd32(ctx, monster + EM_INFO)
+                             : 0;
         if (info == 0) {
             continue;
         }
+        const bool large = large_info != 0;
         const u8 kind = rd8(ctx, info + INFO_KIND);
         const s32 health = static_cast<s32>(rd32(ctx, info + INFO_HEALTH));
+        if (!large) {  // (a small one: only with a health that reads as one, 0 to its maximum)
+            const s32 most = static_cast<s32>(rd32(ctx, info + INFO_HEALTH + 4));
+            if (!(most > 0 && most < 100000 && health <= most)) continue;
+        }
         Seen* s = Find(monster);
         if (s != nullptr && (s->info != info || s->kind != kind)) {  // (another monster in the same memory)
             *s = Seen{};
@@ -474,7 +490,7 @@ void Frame(RCtx* ctx) {
         s->info = info, s->kind = kind, s->frame = frames;
         const bool dead = Dead(ctx, info);
         // the bars: every large monster alive (one in another area too: the app shows it dimmer)
-        if (options.health_bar && !dead) {
+        if (large && options.health_bar && !dead) {
             const s32 max = static_cast<s32>(rd32(ctx, info + INFO_HEALTH + 4));
             if (max > 0 && max < 1000000) {
                 bars.push_back(Health{std::clamp<s32>(health, 0, max), max, rd8(ctx, info + INFO_AREA) == area, kind,
@@ -482,7 +498,7 @@ void Frame(RCtx* ctx) {
             }
         }
         // the map: a paint timer kept on the monster while the option is on
-        if (paint && !dead) {
+        if (large && paint && !dead) {
             const float paint = ReadF32(ctx, info + INFO_PAINT);
             if (!(paint > PAINT_KEEP)) {     // (a timer of the player's paintball is left alone)
                 if (!(paint >= PAINT_LOW)) WriteF32(ctx, info + INFO_PAINT, PAINT_KEEP);
@@ -506,9 +522,19 @@ void Frame(RCtx* ctx) {
             std::memcpy(d.world, placed ? hit : center, sizeof d.world);
             d.world[1] += NUMBER_LIFT;
             d.number.value = s->health - std::max(health, 0);
-            d.number.born_ns = now;
+            d.number.born_ns = d.number.last_ns = now;
             d.number.id = next_id++;
-            if (rd8(ctx, info + INFO_AREA) == area && std::isfinite(d.world[0] + d.world[1] + d.world[2])) {
+            d.number.kind = kHitPlain;
+            d.monster = monster;
+            Dealt* run = nullptr;  // (Burst: this monster's number of a run still going)
+            for (Dealt& o : dealt) {
+                if (options.burst && o.monster == monster &&
+                    now - o.number.last_ns < static_cast<std::int64_t>(kBurstSeconds * 1e9))
+                    run = &o;
+            }
+            if (run != nullptr) {
+                run->number.value += d.number.value, run->number.hits++, run->number.last_ns = now;
+            } else if (rd8(ctx, info + INFO_AREA) == area && std::isfinite(d.world[0] + d.world[1] + d.world[2])) {
                 if (dealt.size() >= MAX_NUMBERS) dealt.erase(dealt.begin());
                 dealt.push_back(d);
             }
@@ -551,7 +577,7 @@ void Frame(RCtx* ctx) {
     if (options.damage_numbers || !dealt.empty()) {
         dealt.erase(std::remove_if(dealt.begin(), dealt.end(),
                                    [now](const Dealt& d) {
-                                       return now - d.number.born_ns > static_cast<std::int64_t>(kNumberSeconds * 1e9);
+                                       return now - d.number.last_ns > static_cast<std::int64_t>(kNumberSeconds * 1e9);
                                    }),
                     dealt.end());
         const Camera camera = TopCamera(ctx);

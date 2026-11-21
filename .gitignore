@@ -14,6 +14,8 @@ romfs/
 libmh4u_code*.so
 libmh4u_code*.id
 libmh4u_code*.dll
+mh4u_code_native.dll
+mh4u_code_native.id
 *.keystore
 *.jks
 keystore.properties

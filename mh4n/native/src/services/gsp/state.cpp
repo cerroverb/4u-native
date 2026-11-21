@@ -202,6 +202,7 @@ void GspState::SignalInterrupt(gpu::Interrupt id, u64 delay_ns) {
     if (thread_with_rights_ == kNoThread) {
         return;
     }
+    pacing::Mark(pacing::kGspInterrupt, static_cast<u32>(id));
     SignalInterruptForThread(id, thread_with_rights_, delay_ns);
 }
 

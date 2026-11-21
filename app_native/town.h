@@ -21,6 +21,11 @@ bool town_available();
 // Opens the list (by_pad: a controller's button, which then moves its cursor) and closes it
 void town_open(bool by_pad);
 void town_close();
+#ifndef __ANDROID__
+// One of the list's actions at once, as if picked from it (0 Guild Cards, 1 Gestures, 2 Friends, 3 Hunters for Hire: a
+// PC's keys); false when the list couldn't open now
+bool town_pick_now(int action);
+#endif
 // Android's Back (the key or the gesture): the list closes, the large touch screen closes (a menu all the way, with the
 // game's B; the panel back to the map). True when it was the module's.
 bool town_back();

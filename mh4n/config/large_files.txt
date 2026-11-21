@@ -17,3 +17,6 @@ ad5592a76c787ef52de9bcdf7cedf4012b410b94bd710373a9982ac2f4888b8c port/app/icon/m
 4a4f770d617d93bffa1d6437d1caae0626b31b9f01c15d43aa3ed9bbb566b20b native/third_party/open_source_archives/data/country_list.dat
 3627a36b166b145afa8ed07576b3c47554aa7fbcd6e4a79ea8b735360fa397de native/third_party/open_source_archives/data/mii.dat
 5c1ffba10c60a5ec11a3e566fc3a4c4ff356403ea9c2802e5a502ffa66405111 native/third_party/open_source_archives/data/shared_font.dat
+# Basis Universal's transcoder (Apache-2.0, native/third_party/basisu, unchanged; the HD packs' KTX2, 1.0.2): its
+# internal header's tables read as a dense blob.
+d58cebb526fdfeb9820d1f585cec4d1c42101a768b682f882bd2c0d3157ff9dc native/third_party/basisu/transcoder/basisu_transcoder_internal.h

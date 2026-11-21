@@ -98,6 +98,17 @@ bool bubble(float *x, float *y, float *size);  // the chat button's place (fract
 void set_bubble(float x, float y, float size);
 bool bubble_shown();
 void set_bubble_shown(bool on);
+// (1.0.2) the chat window (the menu's chat page on a phone): its place and size, fractions of the screen (x, y its top
+// left); false: none saved, the menu's own. reset_window: the menu's own again
+bool window(float *x, float *y, float *w, float *h);
+void set_window(float x, float y, float w, float h);
+void reset_window();
+// (1.0.2, after tabarong's floating chat) how solid the chat window is: its background, its lines' strips and the field to
+// type in, each a percent from 0 (see-through) to 100 (solid), in steps of 5; the text is always solid. In chat.txt
+// ("opacity"; an older version skips the line), saved as the rest of it (chat.txt.tmp, then put in its place)
+enum Opacity { OPACITY_WINDOW, OPACITY_LINES, OPACITY_FIELD, OPACITIES };
+int opacity(int which);
+void set_opacity(int which, int percent);
 bool flag(const std::string &name);  // the port's own marks kept in chat.txt (a notice seen...)
 void set_flag(const std::string &name);
 
@@ -143,5 +154,12 @@ bool hub_verify(const std::string &hub_id, int64_t at, const std::string &name, 
 
 // S35: a new matchmaking key / room password: 32 lowercase hex digits (128 random bits), made on the device
 std::string new_key();
+
+// (1.0.2, tests: a port's test aid - MHGU_CHAT_TEST in a DEV build's env.txt, MH4U_CHAT_TEST in launch.txt's env=) a line
+// in that chat as if someone had said it (FRIEND: that friend's, peer their key); nothing is sent anywhere
+void test_line(int channel, const std::string &peer, const std::string &name, const std::string &text);
+// ...and test_lines: the port's own lines, a few at once and one more every 10 s (the window's tabs, the lines beside the
+// button). The first friend's lines are its private ones
+void test_lines();
 
 }  // namespace chat

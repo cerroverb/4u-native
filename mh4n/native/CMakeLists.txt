@@ -160,6 +160,20 @@ foreach (dep IN LISTS MH4N_ALL_DEPS)
     endif()
 endforeach()
 
+# MH4N_RENDERER_FLAGS: compile flags for the renderer's modules only (native/src/gpu/...), a list ("-O3;-flto=thin"): a
+# PC build's option to try a stronger optimisation where the renderer thread spends its time without the rest (the
+# shader compilers in third_party/ among it) following. Empty by default: nothing changes for any other build.
+set(MH4N_RENDERER_FLAGS "" CACHE STRING "compile flags for the renderer's modules (native/src/gpu/...)")
+if (MH4N_RENDERER_FLAGS)
+    foreach (module IN LISTS MH4N_ALL_MODULES)
+        get_target_property(module_dir ${module} SOURCE_DIR)
+        if (module_dir MATCHES "/src/gpu/")
+            target_compile_options(${module} PRIVATE ${MH4N_RENDERER_FLAGS})
+        endif()
+    endforeach()
+    message(STATUS "mh4n: the renderer's modules with ${MH4N_RENDERER_FLAGS}")
+endif()
+
 # Every module, linked whole.
 add_library(mh4n_all INTERFACE)
 add_library(mh4n::all ALIAS mh4n_all)

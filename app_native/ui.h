@@ -50,6 +50,11 @@ struct UiGameState {
         int seen = 0;     // drawn at least once since the game started
         SDL_FRect r{};    // its art where it is drawn, or would be (window pixels)
         float dx = 0, dy = 0;  // the player's offset it is drawn with (hud_<key> in mh4u.ini, the top screen's pixels)
+        // (1.0.2) the size it is drawn at (the HUD's size times its own), toward `anchor` (window pixels), and hidden
+        // (shown 0 then, `r` where it would be)
+        float scale = 1.0f;
+        SDL_FPoint anchor{};
+        int hidden = 0;
     };
     static const int HUD_PARTS = 7;
     HudPart hud[HUD_PARTS];
@@ -86,8 +91,19 @@ void ui_set_game_state(const UiGameState& state);
 // neither drawn nor fed, and the panel takes the fingers, the controller's presses and the keys (ui_event).
 void ui_open_settings();
 bool ui_settings_open();
+// (1.0.2) the settings are open as a menu: the game gets no input (not with the chat window afloat over it, but while
+// Say something is typed in it: settings_panel.h)
+bool ui_menu_up();
 // The touch controls' layout editor is open (touch.cpp; the game waits meanwhile, as in the settings, playing alone).
 bool touch_editing();
 // ...and holds the game now: not for a moment of every 100 ms while a part of the game's HUD is dragged (touch.cpp).
 bool touch_editor_holds();
+// (1.0.2) the settings' HUD size changed: the game held for the settings runs a moment of every 100 ms for a little
+// while (touch_hud_size_runs), so the HUD shows at the new size; recent: just now (the waits aren't logged then)
+void touch_hud_size_changed();
+// (1.0.2) the chat's button where the touch controls' editor has it: its centre (fractions of the window) and radius (a
+// fraction of its height)
+bool touch_chat_place(float* fx, float* fy, float* fr);
+bool touch_hud_size_runs();
+bool touch_hud_size_recent();
 void ui_shutdown();

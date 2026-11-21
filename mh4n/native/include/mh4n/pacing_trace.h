@@ -83,6 +83,12 @@ enum Kind : std::uint32_t {
     kTargetHandOver = 55, // a screen target's picture handed over (gpu3; value: 1 at a later transfer, 2 the VBlank, 3 a write, 4 its own transfer)
     kSharedFence = 56,    // a sync file made for a shared picture (value: submissions it covers past the picture's)
     kAppPending = 57,     // the app keeps a picture back until the GPU has finished it (value: 1 with a sync file, 0 without)
+    kGspInterrupt = 58,   // the GSP took a GPU interrupt for the game (not the VBlanks'; value: its id, gpu::Interrupt)
+    kRenderListIn = 59,   // the renderer starts a GX command list (value: its size in words)
+    kRenderListOut = 60,  // ... and has recorded and submitted it (value: the draws in it)
+    kGuestIdle = 61,      // the scheduler's thread has no guest thread to run and waits (value: 1 in, 0 out)
+    kGuestSleep = 62,     // a guest thread called SleepThread (value: the time asked for, us)
+    kGuestSleepFrom = 63, // ... from this guest address (its return address, lr)
 };
 
 struct Entry {

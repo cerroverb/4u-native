@@ -14,3 +14,4 @@ void app_live_shadows(bool on);
 // The renderer's part of PS1 style (the screens' is shared_screens_set_ps1): the PS1 filter's textures (an eighth of their size)
 // and geometry (snapped, affine), Brick's textures (a sixteenth); none, as before
 void app_live_ps1(bool filter, bool brick);
+void app_live_text_outline(bool on);  // (1.0.2, GU#243) [Graphics] TextOutline

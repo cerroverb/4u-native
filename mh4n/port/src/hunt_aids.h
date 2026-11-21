@@ -21,7 +21,16 @@ struct Number {
     int value = 0;
     std::int64_t born_ns = 0;
     std::uint32_t id = 0;     // a number of its own (the app's tests, and a steady jitter)
+    // (1.0.2, the app's "By hit" colour and its styles) what the hit was, as far as the game shows it after the frame
+    // (hunt_aids.cpp, the hit's part): kHit*; a run of hits on one monster (the Burst style) sums in one number, the
+    // last of them at last_ns, `hits` of them
+    std::uint8_t kind = 0;
+    std::int8_t crit = 0;     // 1 a critical hit, -1 a negative one, 0 neither (or not known)
+    std::int64_t last_ns = 0;
+    int hits = 1;
 };
+enum : std::uint8_t { kHitPlain, kHitNormal, kHitWeak, kHitHard, kHitFixed };
+constexpr double kBurstSeconds = 1.2;  // (Burst) a hit within this of the last one adds to its number
 constexpr double kNumberSeconds = 1.0;
 
 /// The damage numbers to draw now (those dealt in the last kNumberSeconds), as the last game frame placed them.
@@ -48,8 +57,8 @@ std::vector<Health> Healths();
 /// 0x002ffeb4). -1 while unknown. Safe from any thread.
 int GameLanguage();
 
-/// The options (mh4u.ini, the app's menu, the runner's --set): monsters_on_map, damage_numbers, monster_health_bar
-/// (on/off, off unless set) and hunt_trace (tests: a line a second with each large monster's place, health and paint,
+/// The options (mh4u.ini, the app's menu, the runner's --set): monsters_on_map, damage_numbers, monster_health_bar,
+/// damage_number_burst (1.0.2: the app's Burst style; on/off, off unless set) and hunt_trace (tests: a line a second with each large monster's place, health and paint,
 /// and one per number and per bar each frame). False for another key. On the emulation thread, or before the game
 /// starts.
 bool SetOption(const std::string& key, const std::string& value);

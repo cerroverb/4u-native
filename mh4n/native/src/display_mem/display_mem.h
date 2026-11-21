@@ -90,6 +90,8 @@ private:
     // The framebuffer the screen shows is about to be read from guest memory: the inner GPU writes it first if it still
     // owes it (asynchronous screens).
     void PrepareScreenMemory(u32 screen);
+    // (1.0.2) The framebuffer the screen shows holds a turn whose draws the renderer left out (ScreenLeftOut).
+    bool ShownFramebufferLeftOut(u32 screen);
 
     gpu::Host& host_;
     std::unique_ptr<gpu::Gpu> inner_;
@@ -104,6 +106,12 @@ private:
     std::shared_ptr<RuntimeLink> link_;
     u64 next_sequence_ = 0;
     u32 top_swaps_ = 0;  // the top screen's buffer swaps seen, in the GSP's order (the pacing trace)
+    // MH4N_PUBLISH_ON_CHANGE=1 (the PC app): the screens published at a VBlank that follows a change (a buffer swap, a
+    // colour fill, a register written), and at least 60 times a second otherwise, not at every VBlank: "No limit"'s
+    // VBlank runs at 1000 Hz and the window shows what it can of them
+    bool publish_on_change_ = false;
+    bool screens_changed_ = true;
+    u64 last_publish_ns_ = 0;
     std::string last_error_[2];
     // MH4N_SCALE_LOG: a screen built from guest memory above 1x (LogMemoryScreen): seen, its last frame, the lines written
     bool memory_screen_seen_[2] = {};

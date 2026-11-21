@@ -28,4 +28,5 @@ void ps1_rows(std::vector<Row>& r) {
         "lugar nuevo). Apagado: la imagen como antes.");
 }
 void reset_ps1() { s.draft.ps1_filter = defaults().ps1_filter; }
-MENU_ENTRY("graphics", 50, ps1_rows, reset_ps1);
+// (1.0.2: before Shadows, in the MHGU port's place)
+MENU_ENTRY("graphics", 37, ps1_rows, reset_ps1);

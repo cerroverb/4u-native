@@ -37,6 +37,23 @@ void settings_panel_notice(const std::string& english, const std::string& spanis
 bool settings_panel_closed_now();
 // The chat button over the game (chat_app.cpp): the menu, once open, shows the chat's page
 void settings_panel_open_chat();
+// (1.0.2, after tabarong's floating chat) The chat window afloat: played by touch with no controller in hand, on the
+// chat's lines or Say something, it floats over the game, which goes on with the touch controls drawn and working round it
+// (the menu doesn't hold the game then: android_main.cpp). A finger is the window's only where settings_panel_chat_claims
+// says (fx, fy: fractions of the screen) - its header and tabs, the text and Send, a friend's arrows, the grip, a row that
+// does something, the lines' scroll strip -; anywhere else the touch controls' and the game's (ui.cpp).
+// settings_panel_chat_typing: Say something is being typed in it. settings_panel_chat_request: SETTINGS_CHAT_CLOSE closes
+// it and the phone's keyboard (a tap away from it while typing, the chat button again), SETTINGS_CHAT_TO_MENU leaves it for
+// the menu (the settings button)
+enum { SETTINGS_CHAT_CLOSE = 1, SETTINGS_CHAT_TO_MENU = 2 };
+bool settings_panel_chat_floating();
+bool settings_panel_chat_typing();
+bool settings_panel_chat_claims(float fx, float fy);
+void settings_panel_chat_request(int what);
+#ifndef __ANDROID__
+// (MH4U for PC: the chat key, pc/pc_net.cpp) the same, with the chat's keyboard up for a line when it can take one
+void settings_panel_type_chat();
+#endif
 
 // Something is unsaved, or a confirmation is up: the panel wants to stay open.
 bool settings_panel_dirty();

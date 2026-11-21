@@ -22,6 +22,11 @@ MH4N_OPTION("runner", "--observable", "FILE",
             "current directory)");
 MH4N_OPTION("runner", "--slice-us", "N",
             "length of a scheduling slice in microseconds when both virtual cores have work (default 1000)");
+MH4N_OPTION("runner", "--stall-pause", "MS",
+            "the stall guard: when the host thread that runs the console has stood still for MS milliseconds (a "
+            "host call that blocks, a slow disk, no CPU), the game clock stops until it moves again, so the game "
+            "sees at most about MS of the stall; online, the game drops a peer it has not heard from for about a "
+            "second (default 0: off; not with --deterministic)");
 MH4N_OPTION("runner", "--user", "DIR", "the user directory (NAND, SD card, saves) for the services that need one");
 MH4N_OPTION("runner", "--saves", "DIR",
             "the SD card's folder (the saves and the extra data) when it is not the user directory's sdmc/: a save "

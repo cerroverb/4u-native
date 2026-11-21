@@ -8,8 +8,10 @@
 // of the decoded texture, or the new one of its bytes when the pack's pack.json says use_new_hash), taken once for each
 // content the texture cache sees, and a texture the pack has gets an image of the pack file's size with its pixels.
 //
-// Only PNG colour maps are drawn (most packs are PNG; DDS and KTX files, normal maps and mip files are counted in the log
-// and left out). A PNG is read and decoded when its texture is first drawn, on two threads of their own (TakePixels): the
+// Only PNG and KTX2 colour maps are drawn (most packs are PNG; DDS and KTX files, normal maps and mip files are counted in
+// the log and left out). A .ktx2 (1.0.2, S9b: ktx2.h) wins over the .png of the same map: Basis Universal's ETC1S and
+// UASTC and files of RGBA8 or BC7, drawn as BC7 where the device samples it and the file's rows run bottom-up, else as
+// RGBA8; its BC7 image takes a quarter of the memory, and counts so in the pack's share. A PNG is read and decoded when its texture is first drawn, on two threads of their own (TakePixels): the
 // frame never waits for it. Until its pixels are ready the texture is the game's own, and the HD image is made once they
 // are (at most kUploadBytesPerPicture of them a screen picture, the renderer's call), so a pack loads as the areas are
 // visited. On
@@ -51,6 +53,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "gpu/native/ktx2.h"
 #include "gpu/texture/formats.h"
 #include "mh4n/types.h"
 
@@ -61,18 +64,22 @@ public:
     struct Replacement {
         u32 file = 0;  // index into files_
         u32 width = 0, height = 0;
+        HdFormat format = HdFormat::Rgba8;  // what TakePixels gives: RGBA8 upright, or BC7 blocks bottom-up (ktx2.h)
+        u64 bytes() const { return HdBytes(format, width, height); }
     };
 
     // Reads the packs under `root` (or none: an empty root, a folder that isn't there). `sync`: each file read and decoded
     // when its texture is first drawn, the frame waiting for it (a --deterministic run draws the same frames every time)
-    void Load(const std::string& root, bool sync = false);
+    // `bc7`: the device samples BC7 (a KTX2 file may then be drawn in it: ktx2.h)
+    void Load(const std::string& root, bool sync = false, bool bc7 = false);
     bool active() const { return !by_hash_[0].empty() || !by_hash_[1].empty() || !dump_dir_.empty(); }
 
     // The pack's texture for a texture whose content hash (the texture cache's) is `content` and whose memory is `data`;
     // nullptr when no pack has it. Answered once for each content.
     const Replacement* Find(u64 content, const u8* data, std::size_t size, u32 width, u32 height, texture::Format format);
 
-    // Its pixels, RGBA8 upright as the texture cache's, read and decoded now. False when the file can't be read.
+    // Its pixels, RGBA8 upright as the texture cache's (or BC7 blocks: r.format), read and decoded now. False when the
+    // file can't be read.
     bool Pixels(const Replacement& r, std::vector<u8>& rgba);
 
     // Its pixels from the loader's threads: Ready (moved into `rgba`), Pending (asked for now if they weren't: the texture
@@ -115,6 +122,8 @@ private:
         bool refused = false;  // (Refuse)
         bool sized = false;    // (Sized: its header read)
         bool half = false;     // drawn at half its size (MH4N_HD_SCALE=half: width and height below are the halves)
+        bool ktx2 = false;     // a .ktx2 (ktx2.h)
+        HdFormat format = HdFormat::Rgba8;  // what its texture gets (a KTX2's: Ktx2Target, when Sized)
         u32 width = 0, height = 0;          // the image's size
         u32 file_width = 0, file_height = 0;  // the PNG's own (its header)
     };
@@ -133,6 +142,8 @@ private:
     std::unique_ptr<Loader> loader_;  // made by the first TakePixels
     bool sync_ = false;               // (Load's `sync`, or MH4N_HD_SYNC=1)
     bool half_ = false;               // (MH4N_HD_SCALE=half)
+    bool bc7_ = false;                // (Load's `bc7`)
+    u64 ktx2_bc7_ = 0, ktx2_rgba8_ = 0;  // the KTX2 files sized so far, by what their textures get
     u64 halved_ = 0;                  // the files drawn at half their size
     std::vector<File> files_;
     std::unordered_map<u64, u32> by_hash_[2];  // old hash, new hash -> file

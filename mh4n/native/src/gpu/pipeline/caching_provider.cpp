@@ -5,6 +5,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <condition_variable>
 #include <deque>
@@ -65,6 +66,41 @@ constexpr u64 kSpirvFormat = 1;
 constexpr size_t kSpirvKeep = 4096;
 
 double MsSince(Clock::time_point start) { return std::chrono::duration<double, std::milli>(Clock::now() - start).count(); }
+
+// (1.0.2) The file that says a fallback (the ubershader) is being built: written before such a build and removed after
+// it. Found at a start, the last session ended inside one (4u-native: an Exynos 2200's driver took more than 20 s and
+// over a gigabyte for each, two at a time, and Android closed the game): the list's fallbacks are not built ahead then.
+constexpr const char* kFallbackMarker = "ubershader-building";
+
+// (1.0.2) The process's memory map entries and the system's most (vm.max_map_count; 65530, the kernel's default, when it
+// cannot be read), or -1 where there are none to count. Reading /proc/self/maps takes the memory map lock: a worker does
+// it, now and then, while the list is compiled.
+long MapEntries() {
+#if defined(__linux__)
+    std::FILE* f = std::fopen("/proc/self/maps", "re");
+    if (f == nullptr) return -1;
+    long lines = 0;
+    char buffer[16384];
+    size_t got = 0;
+    while ((got = std::fread(buffer, 1, sizeof buffer, f)) > 0) {
+        lines += static_cast<long>(std::count(buffer, buffer + got, '\n'));
+    }
+    std::fclose(f);
+    return lines;
+#else
+    return -1;
+#endif
+}
+long MapEntriesMost() {
+    long most = 0;
+#if defined(__linux__)
+    if (std::FILE* f = std::fopen("/proc/sys/vm/max_map_count", "re")) {
+        if (std::fscanf(f, "%ld", &most) != 1) most = 0;
+        std::fclose(f);
+    }
+#endif
+    return most > 0 ? most : 65530;
+}
 
 // The workers yield to the renderer and the game's threads.
 void LowerThreadPriority() {
@@ -243,6 +279,20 @@ private:
     // Builds on the calling thread, or takes a Queued entry over, or waits for a worker; releases the lock meanwhile.
     Built GetNow(std::unique_lock<std::mutex>& lock, const PipelineKey& key);
 
+    // (1.0.2) The next key for a worker, taken from its queue: the urgent queue first, then the list's (while fewer than
+    // background_limit_ list builds run); a fallback only while no other fallback is being built (the ubershader is by
+    // far the largest build, and some drivers take a gigabyte or more for one). False: nothing a worker may take now.
+    bool TakeNext(PipelineKey& key, bool& from_list);
+    bool HasWork() const;
+    // (1.0.2) Whether fallbacks are built before a draw needs one: only when draws are drawn with them (--pipeline-wait,
+    // --deterministic, MH4N_PIPELINE_FALLBACK, --force-ubershader). By default a draw without its own pipeline is left
+    // out, and a fallback serves only a key whose own pipeline failed (asked for then).
+    bool FallbacksAhead() const {
+        return options_.force_ubershader || !options_.never_wait || options_.use_fallback;
+    }
+    void MarkFallbackBuild(bool building);  // the marker file (kFallbackMarker), outside the lock
+    void CheckMapEntries(std::unique_lock<std::mutex>& lock);  // (T27) the list stops near the map entries' limit
+
     void Worker();
     void Saver();
     void ReportProgress();  // (mutex_ held: the saver's turn)
@@ -273,6 +323,10 @@ private:
     u32 building_ = 0;
     u32 background_building_ = 0;  // builds taken from the background queue (one worker is kept for the urgent one)
     u32 background_limit_ = 1;
+    u32 fallback_building_ = 0;    // (1.0.2) fallbacks being built by the workers: one at a time
+    bool fallback_marker_found_ = false;  // (1.0.2) kFallbackMarker was there at the start
+    u32 list_builds_unchecked_ = 0;       // (1.0.2) list builds since the map entries were last counted
+    bool map_guard_tripped_ = false;
     u32 next_order_ = 0;
     bool stop_ = false;
     bool list_dirty_ = false;
@@ -443,6 +497,9 @@ void CachingProvider::Hurry(const PipelineKey& key) {
 }
 
 void CachingProvider::QueueFallback(const PipelineKey& fallback) {
+    if (!FallbacksAhead()) {
+        return;  // (1.0.2) no draw is drawn with it: built only if a key's own pipeline fails (Lookup asks for it then)
+    }
     if (table_.find(fallback) != table_.end()) {
         return;  // queued, being built or failed
     }
@@ -732,20 +789,90 @@ std::vector<native::FrameCounter> CachingProvider::TakeFrameCounters() {
 
 // ---- the workers and the saver ----
 
+bool CachingProvider::HasWork() const {
+    const auto eligible = [&](const std::deque<PipelineKey>& queue) {
+        for (const PipelineKey& key : queue) {
+            if (!key.IsFallback() || fallback_building_ == 0) return true;
+        }
+        return false;
+    };
+    return eligible(urgent_) || (background_building_ < background_limit_ && eligible(background_));
+}
+
+bool CachingProvider::TakeNext(PipelineKey& key, bool& from_list) {
+    for (int q = 0; q < 2; ++q) {
+        std::deque<PipelineKey>& queue = q == 0 ? urgent_ : background_;
+        if (q == 1 && background_building_ >= background_limit_) {
+            break;
+        }
+        for (auto it = queue.begin(); it != queue.end(); ++it) {
+            if (it->IsFallback() && fallback_building_ > 0) {
+                continue;  // (one fallback at a time: the next key that is not one)
+            }
+            key = std::move(*it);
+            queue.erase(it);
+            from_list = q == 1;
+            return true;
+        }
+    }
+    return false;
+}
+
+void CachingProvider::MarkFallbackBuild(bool building) {
+    if (options_.folder.empty()) {
+        return;
+    }
+    const std::filesystem::path marker = options_.folder / kFallbackMarker;
+    if (building) {
+        (void)WriteBytes(marker, std::vector<u8>{'1'});
+    } else {
+        std::error_code ec;
+        std::filesystem::remove(marker, ec);
+    }
+}
+
+// (1.0.2, T27) While the list is compiled, every 512 of its builds: the process's map entries against the system's most.
+// An Adreno 610 holds two /dev/kgsl-3d0 entries for every pipeline: a list of 25,000 keys took 50,000 entries (and 1.7 GB)
+// in a minute, then textures broke and the device was lost (4u-native #69, Discord). Past 60 % of the most, the rest of
+// the list is not built ahead (each key is built when a draw asks for it): the game keeps its room for what it makes as
+// it goes. A list that stays under it (every log so far but those: 35,000 entries at most) changes nothing.
+void CachingProvider::CheckMapEntries(std::unique_lock<std::mutex>& lock) {
+    if (map_guard_tripped_ || ++list_builds_unchecked_ < 512 || background_.empty()) {
+        return;
+    }
+    list_builds_unchecked_ = 0;
+    lock.unlock();
+    const long maps = MapEntries();
+    static const long most = MapEntriesMost();
+    lock.lock();
+    const long limit = options_.map_entries_percent > 0 ? most * static_cast<long>(options_.map_entries_percent) / 100 : 0;
+    if (maps < 0 || limit <= 0 || maps <= limit || map_guard_tripped_) {
+        return;
+    }
+    map_guard_tripped_ = true;
+    const size_t left = background_.size();
+    background_.clear();  // (their entries stay Queued: a draw that asks for one moves it to the urgent queue)
+    precompile_reported_ = true;
+    pipeline_progress::g_compiling.store(false, std::memory_order_relaxed);
+    MH4N_LOG(Info, kLog,
+             "the list stopped at {} keys built: the process has {} memory map entries (the system's most {}, this stop at "
+             "{}); the other {} are built when a draw asks for them",
+             stats_.precompiled, maps, most, limit, left);
+}
+
 void CachingProvider::Worker() {
     LowerThreadPriority();
     std::unique_lock lock(mutex_);
     for (;;) {
-        work_cv_.wait(lock, [&] {
-            return stop_ || !urgent_.empty() || (!background_.empty() && background_building_ < background_limit_);
-        });
+        work_cv_.wait(lock, [&] { return stop_ || HasWork(); });
         if (stop_) {
             return;
         }
-        const bool from_list = urgent_.empty();
-        std::deque<PipelineKey>& queue = from_list ? background_ : urgent_;
-        const PipelineKey key = std::move(queue.front());
-        queue.pop_front();
+        PipelineKey key;
+        bool from_list = false;
+        if (!TakeNext(key, from_list)) {
+            continue;
+        }
         const auto it = table_.find(key);
         if (it == table_.end() || it->second.state != State::Queued) {
             continue;  // built meanwhile (the renderer took it over, or it was queued twice)
@@ -754,13 +881,21 @@ void CachingProvider::Worker() {
         e.state = State::Building;
         ++building_;
         background_building_ += from_list ? 1 : 0;
+        const bool fallback = key.IsFallback();
+        fallback_building_ += fallback ? 1 : 0;
         lock.unlock();
+        if (fallback) MarkFallbackBuild(true);
         const auto t0 = Clock::now();
         Built built = host_.build(key);
         const double ms = MsSince(t0);
+        if (fallback) MarkFallbackBuild(false);
         lock.lock();
         --building_;
         background_building_ -= from_list ? 1 : 0;
+        if (fallback) {
+            --fallback_building_;
+            work_cv_.notify_all();  // (a fallback another worker left for later may go now)
+        }
         Finish(e, built);
         ++stats_.async_builds;
         stats_.async_ms += ms;
@@ -773,6 +908,7 @@ void CachingProvider::Worker() {
             precompile_failures_ += e.state == State::Failed ? 1 : 0;
             pipeline_progress::g_done.store(static_cast<uint32_t>(stats_.precompiled), std::memory_order_relaxed);
             work_cv_.notify_one();  // the background queue may go on
+            CheckMapEntries(lock);
         }
         if (!precompile_reported_ && urgent_.empty() && background_.empty() && building_ == 0) {
             precompile_reported_ = true;
@@ -890,6 +1026,11 @@ void CachingProvider::Load() {
         };
         std::vector<Item> items;
         u64 dropped = 0;
+        // (1.0.2) the last session ended inside a fallback's build (kFallbackMarker): no fallback is built ahead this time
+        // (one a failed key asks for is still built then); the file goes once a fallback's build ends
+        std::error_code marker_ec;
+        fallback_marker_found_ = std::filesystem::exists(dir / kFallbackMarker, marker_ec);
+        u64 fallbacks_left = 0;
         for (const auto& r : records) {
             if (r.size() < 8) {
                 ++dropped;
@@ -905,13 +1046,30 @@ void CachingProvider::Load() {
                 ++dropped;  // (no ubershader here, --no-ubershader: a PowerVR's compiler crashed building it)
                 continue;
             }
-            items.push_back(Item{*key, Get32(r.data()), Get32(r.data() + 4)});
+            const u32 uses = Get32(r.data());
+            // (1.0.2) A fallback no draw asked for (queued ahead, as before 1.0.2 always) is not built ahead when no draw is
+            // drawn with one, nor any after a session that ended inside a fallback's build
+            if (key->IsFallback() && ((!FallbacksAhead() && uses == 0) || fallback_marker_found_)) {
+                ++fallbacks_left;
+                continue;
+            }
+            items.push_back(Item{*key, uses, Get32(r.data() + 4)});
         }
-        // The fallbacks first (they stop a first draw from stalling), then by decreasing use count.
-        std::stable_sort(items.begin(), items.end(), [](const Item& a, const Item& b) {
-            if (a.key.IsFallback() != b.key.IsFallback()) return a.key.IsFallback();
+        // The fallbacks first when draws are drawn with them (they stop a first draw from stalling), else last; then by
+        // decreasing use count.
+        const bool fallbacks_first = FallbacksAhead();
+        std::stable_sort(items.begin(), items.end(), [fallbacks_first](const Item& a, const Item& b) {
+            if (a.key.IsFallback() != b.key.IsFallback()) return a.key.IsFallback() == fallbacks_first;
             return a.uses > b.uses;
         });
+        // (1.0.2, T27) At most list_max keys, the first of that order (the most used): the others are let go (built again
+        // when a draw asks for one, and listed again then). The list only grows otherwise: 25,000 keys on an Adreno 610
+        // after weeks of play, each pipeline two memory map entries and 70 KB there.
+        u64 past_cap = 0;
+        if (options_.list_max > 0 && items.size() > options_.list_max) {
+            past_cap = items.size() - options_.list_max;
+            items.resize(options_.list_max);
+        }
         for (const Item& item : items) {
             Entry& e = table_.try_emplace(item.key).first->second;
             e.state = State::Queued;
@@ -926,9 +1084,17 @@ void CachingProvider::Load() {
         pipeline_progress::g_total.store(static_cast<uint32_t>(items.size()), std::memory_order_relaxed);
         pipeline_progress::g_compiling.store(!items.empty(), std::memory_order_relaxed);
         list = status == ReadStatus::Ok
-                   ? fmt::format("{} keys ({} fallbacks; {} dropped), {} vertex sources", items.size(),
+                   ? fmt::format("{} keys ({} fallbacks; {} dropped{}{}), {} vertex sources", items.size(),
                                  std::count_if(items.begin(), items.end(), [](const Item& i) { return i.key.IsFallback(); }),
-                                 dropped, restored.size())
+                                 dropped,
+                                 fallbacks_left > 0 ? fmt::format(", {} fallbacks not built ahead{}", fallbacks_left,
+                                                                  fallback_marker_found_
+                                                                      ? " (the last session ended while one was built)"
+                                                                      : "")
+                                                    : std::string(),
+                                 past_cap > 0 ? fmt::format(", {} past the cap of {} let go", past_cap, options_.list_max)
+                                              : std::string(),
+                                 restored.size())
                    : fmt::format("{} (vertex sources: {})", ToString(status), ToString(vstatus));
     }
     MH4N_LOG(Info, kLog, "{}: list {}; SPIR-V {}; driver cache {}", utf8::PathToUtf8(dir), list, spirv, driver);
@@ -1025,6 +1191,14 @@ CachingOptions CachingOptionsFrom(const Options& options, bool force_ubershader)
         out.fallback_per_window = !out.never_wait || n == 1 ? 0 : static_cast<u32>(std::clamp<long>(n, 0, 100000));
     }
     out.warm = options.Has("--warm");
+    // (1.0.2, T27; measurement aids) MH4N_PIPELINE_LIST_MAX=<n> the list's cap at start (0 none), MH4N_PIPELINE_MAP_PERCENT=<n>
+    // where the list's compile stops, in % of the system's most memory map entries (0 never)
+    if (const char* v = std::getenv("MH4N_PIPELINE_LIST_MAX")) {
+        out.list_max = static_cast<u32>(std::clamp<long>(std::strtol(v, nullptr, 10), 0, 1000000));
+    }
+    if (const char* v = std::getenv("MH4N_PIPELINE_MAP_PERCENT")) {
+        out.map_entries_percent = static_cast<u32>(std::clamp<long>(std::strtol(v, nullptr, 10), 0, 100));
+    }
     out.list = !options.Has("--no-pipeline-list");
     out.driver_cache = !options.Has("--no-driver-cache");
     out.spirv_cache = !options.Has("--no-spirv-cache");

@@ -258,6 +258,14 @@ bool Runtime::CreateWorld(u32 memory_mode, std::string* error) {
     GuestScheduler::Options scheduler_options;
     scheduler_options.slice_us = static_cast<u32>(
         options_.GetUInt("--slice-us", virtual_time != nullptr ? kDeterministicSliceUs : kDefaultSliceUs));
+    if (virtual_time == nullptr) {
+        const u64 stall_ms = std::min<u64>(options_.GetUInt("--stall-pause", 0), 10000);
+        scheduler_options.stall_pause_us = static_cast<u32>(stall_ms * 1000);
+        if (stall_ms > 0) {
+            MH4N_LOG(Info, kLog, "the stall guard: the game clock stops when the console stands still for {} ms",
+                     stall_ms);
+        }
+    }
     scheduler_ = std::make_unique<GuestScheduler>(*kernel_, *code_host_, *clock_, *time_,
                                                   preemption_.get(), scheduler_options);
     threads_ = std::make_unique<ThreadManager>(*kernel_, *scheduler_);

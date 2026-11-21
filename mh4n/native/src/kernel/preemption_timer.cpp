@@ -24,6 +24,7 @@ public:
         stop_ = false;
         thread_ = std::thread([this] {
             SetHostThreadName("mh4n-timer");
+            SetThreadWaitsCoarse();  // (its deadlines need no precision: a slice a little longer changes nothing)
             Loop();
         });
     }
@@ -35,7 +36,7 @@ public:
             stop_ = true;
             thread = std::move(thread_);
         }
-        cv_.notify_all();
+        source_.Notify(cv_);
         if (thread.joinable()) {
             thread.join();
         }
@@ -54,7 +55,7 @@ public:
             wake = !waiting_ || (deadline_ns && (!waiting_for_ || *deadline_ns < *waiting_for_));
         }
         if (wake) {
-            cv_.notify_all();
+            source_.Notify(cv_);
         }
     }
 

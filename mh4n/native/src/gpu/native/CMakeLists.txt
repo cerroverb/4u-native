@@ -12,11 +12,21 @@ add_library(mh4n_gpu_pipeline_key INTERFACE)
 target_include_directories(mh4n_gpu_pipeline_key INTERFACE "${MH4N_SRC_DIR}")
 target_link_libraries(mh4n_gpu_pipeline_key INTERFACE mh4n_headers)
 
+# Basis Universal's transcoder and the Zstandard decoder it uses (native/third_party/basisu, Apache-2.0 and BSD-3-Clause;
+# 1.0.2's S9b: an HD pack's KTX2 files, ktx2.cpp), as their own library without warnings
+add_library(mh4n_basisu STATIC "${MH4N_ROOT}/third_party/basisu/transcoder/basisu_transcoder.cpp"
+                               "${MH4N_ROOT}/third_party/basisu/zstd/zstddeclib.c")
+target_include_directories(mh4n_basisu SYSTEM PUBLIC "${MH4N_ROOT}/third_party/basisu/transcoder"
+                                                     "${MH4N_ROOT}/third_party/basisu/zstd")
+target_compile_options(mh4n_basisu PRIVATE $<IF:$<BOOL:${MSVC}>,/w,-w>)
+
 mh4n_module(
     SOURCES
         compose.cpp
         default_provider.cpp
         hd_textures.cpp
+        ktx2.cpp
+        memory_budget.cpp
         native_gpu.cpp
         pipeline_builder.cpp
         process_memory.cpp
@@ -37,6 +47,8 @@ mh4n_module(
         mh4n_gpu_texture
         mh4n_gpu_vertex
         mh4n_hdpack
+    THIRD_PARTY
+        mh4n_basisu
 )
 # The headers are included as "gpu/native/<name>.h".
 target_include_directories(mh4n_gpu_native PUBLIC "${MH4N_SRC_DIR}")

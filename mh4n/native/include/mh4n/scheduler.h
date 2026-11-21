@@ -41,9 +41,18 @@
 // and it must outlive them; the Kernel must outlive the scheduler's threads. So: Shutdown(), then
 // the kernel (its handle table drops the timers), then the scheduler; or leave it to process exit.
 // RaiseFlag is not async-signal-safe; the timer thread calls it, a signal handler must not.
+//
+// The stall guard (Options::stall_pause_us, the runner's --stall-pause; off unless asked for): the game clock is
+// the host's, so when the one host thread that runs the console stops for a while (a host call that blocks, a slow
+// disk, a host so busy that the thread gets no CPU), the game's own timers go on and the game finds, when it runs
+// again, that nothing arrived for that long. Online, the console's own network service gives up on a host that is silent for about a
+// second and takes the hall over: the console's own stall dropped it. With the guard, a thread of its own watches
+// the scheduler: when it has not come back to Dispatch for stall_pause_us (and is not waiting idle), the game clock
+// stands still (GameClock::Halt, kHaltStall) until it does; the game sees at most about that much of the stall.
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <condition_variable>
 #include <deque>
 #include <functional>
@@ -136,7 +145,8 @@ enum class RunStatus {
 class GuestScheduler final : public Scheduler {
 public:
     struct Options {
-        u32 slice_us = 1000;  // the runner's --slice-us
+        u32 slice_us = 1000;     // the runner's --slice-us
+        u32 stall_pause_us = 0;  // the runner's --stall-pause (in ms there): 0, no stall guard
     };
     // Plugs itself into `kernel` (SetScheduler, SetClock) and into `host` (the budget callback).
     // `preemption` may be null: then nothing raises the flag by itself, which suits a program with
@@ -291,6 +301,8 @@ private:
     void AccountTo(SchedThread* to);
     void FlushCategory();
     s64 AccountNowNs();
+    void StallGuard();    // the guard's thread
+    void MarkProgress();  // the scheduler thread came back (Dispatch, the end of an idle wait)
 
     Kernel& kernel_;
     CodeHost& host_;
@@ -331,6 +343,20 @@ private:
     volatile u32 preempt_flag_ = 0;
     bool stop_requested_ = false;  // guarded by mutex_
     bool idle_waiting_ = false;    // guarded by mutex_: IdleWait waits on cv_ (nothing else does)
+
+    // The stall guard (see the top of the file).
+    s64 stall_pause_ns_ = 0;
+    std::atomic<s64> progress_ns_{0};      // the host time the scheduler last came back
+    std::atomic<bool> idle_now_{false};    // in IdleWait (idle_waiting_ for the guard, without the lock)
+    std::atomic<bool> stall_held_{false};  // the guard stopped the clock
+    std::mutex stall_mutex_;               // Halt and Unhalt in order, the guard's waits
+    std::condition_variable stall_cv_;
+    bool stall_stop_ = false;              // guarded by stall_mutex_
+    s64 stall_since_ns_ = 0;               // guarded by stall_mutex_: the last progress before the stall
+    s64 stall_held_at_ns_ = 0;             // guarded by stall_mutex_: when the clock was stopped
+    u64 stall_count_ = 0;                  // scheduler thread
+    s64 stall_report_ns_ = 0;              // scheduler thread: the last stall line in the log
+    std::thread stall_thread_;
 };
 
 // RAII forms of the brackets above.

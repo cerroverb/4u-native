@@ -25,8 +25,8 @@ std::uint32_t Le32(const unsigned char* p) {
     return p[0] | p[1] << 8 | p[2] << 16 | static_cast<std::uint32_t>(p[3]) << 24;
 }
 
-// A file of an MT Framework archive (ARC\0, version 0x13: 80-byte entries, a name of 64, its type, sizes and place;
-// the data a zlib stream, or stored) by its name ("eng\msg\emName_eng"), inflated
+}  // namespace
+
 bool ArcFile(const fs::GameRomFsFile& arc, const std::string& name, std::vector<unsigned char>* out) {
     unsigned char h[12];
     if (arc.size < 12 || arc.Read(0, h, sizeof h) != sizeof h || std::memcmp(h, "ARC", 4) != 0) return false;
@@ -52,8 +52,13 @@ bool ArcFile(const fs::GameRomFsFile& arc, const std::string& name, std::vector<
     return false;
 }
 
+namespace {
+
 std::mutex g_mutex;
 std::map<int, std::vector<std::string>> g_names;  // (a language read; empty while being read, or with none)
+#ifndef __ANDROID__
+std::map<int, std::vector<std::string>> g_maps;   // (the maps' names, read with them: MapName; the PC app's)
+#endif
 std::map<int, bool> g_started;
 
 }  // namespace
@@ -124,6 +129,18 @@ void Prepare(int language) {
         std::string why;
         const auto t0 = std::chrono::steady_clock::now();
         const bool ok = Read(language, &names, &why);
+#ifndef __ANDROID__  // (the PC app's Discord Rich Presence names the map: the phone's needs none)
+        std::vector<std::string> maps;
+        if (ok) {  // (the maps' names, from the same archive: none is no reason to drop the monsters')
+            const std::string lang = Folder(language), file = lang + "\\msg\\common\\mapName_" + lang;
+            fs::GameRomFsFile arc;
+            std::string ignored;
+            std::vector<unsigned char> lmd;
+            if (!fs::OpenGameRomFsFile(lang + "/data/core_common.arc", &arc, &ignored) || !ArcFile(arc, file, &lmd) ||
+                !LmdTexts(lmd, &maps))
+                maps.clear();
+        }
+#endif
         if (!ok && why == "no game runs") {  // (too early: again on a later frame)
             std::lock_guard lock(g_mutex);
             g_started.erase(language);
@@ -139,6 +156,9 @@ void Prepare(int language) {
         }
         std::lock_guard lock(g_mutex);
         g_names[language] = std::move(names);
+#ifndef __ANDROID__
+        g_maps[language] = std::move(maps);
+#endif
     }).detach();
 }
 
@@ -148,6 +168,15 @@ std::string Name(int language, int kind) {
     if (it == g_names.end() || kind <= 0 || kind >= static_cast<int>(it->second.size())) return {};
     return it->second[kind];
 }
+
+#ifndef __ANDROID__
+std::string MapName(int language, int stage) {
+    std::lock_guard lock(g_mutex);
+    const auto it = g_maps.find(language);
+    if (it == g_maps.end() || stage < 1 || stage > static_cast<int>(it->second.size())) return {};
+    return it->second[stage - 1];
+}
+#endif
 
 namespace {
 

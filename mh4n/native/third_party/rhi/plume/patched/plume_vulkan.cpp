@@ -97,6 +97,9 @@ namespace plume {
         VK_KHR_PRESENT_ID_EXTENSION_NAME,
         VK_KHR_PRESENT_WAIT_EXTENSION_NAME,
         VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME,
+        // mh4n (patch 24): memory shared with the same driver's OpenGL on Windows (an NT handle); only when the caller
+        // names it.
+        "VK_KHR_external_memory_win32",
         // mh4n (patch 16): memory shared with the system's other graphics APIs (Android's hardware buffers) and the
         // sync file of a fence; only when the caller names them.
         "VK_ANDROID_external_memory_android_hardware_buffer",

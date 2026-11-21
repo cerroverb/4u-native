@@ -20,11 +20,15 @@
 
 #include <algorithm>
 #include <bit>
+#include <cstdlib>
 #include <cstring>
+#include <utility>
 
 #include "deterministic.h"
 #include "mh4n/assert.h"
+#include "mh4n/guest_sleep.h"
 #include "mh4n/log.h"
+#include "mh4n/pacing_trace.h"
 #include "svc_internal.h"
 
 // The registers of a guest thread (RCtx). Last: recomp.h defines short macros.
@@ -365,7 +369,26 @@ void SvcTable::Impl::CreateThread(SvcFrame& f) {
 
 void SvcTable::Impl::SleepThread(SvcFrame& f) {
     // r0/r1: the duration in nanoseconds. No outputs: the registers stay as they were.
-    sched.Sleep(static_cast<s64>(SvcGet64(f.ctx, 0, 1)));
+    s64 ns = static_cast<s64>(SvcGet64(f.ctx, 0, 1));
+    pacing::Mark(pacing::kGuestSleep, static_cast<u32>(std::clamp<s64>(ns / 1000, 0, 0xFFFFFFFF)));
+    pacing::Mark(pacing::kGuestSleepFrom, f.ctx.r[14]);
+    // MH4N_SLEEP_CAP=<return address, hex>:<us> (a measurement aid): the sleeps called from that address no longer
+    // than that (a game's polling loop that sleeps a fixed time between its looks)
+    static const std::pair<u32, s64> cap = [] {
+        const char* v = std::getenv("MH4N_SLEEP_CAP");
+        if (v == nullptr || *v == 0) return std::pair<u32, s64>{0, 0};
+        char* end = nullptr;
+        const u32 lr = static_cast<u32>(std::strtoul(v, &end, 16));
+        const s64 us = end != nullptr && *end == ':' ? std::atoll(end + 1) : 0;
+        return std::pair<u32, s64>{lr, us * 1000};
+    }();
+    if (cap.first != 0 && f.ctx.r[14] == cap.first && ns > cap.second) {
+        ns = cap.second;
+    }
+    if (g_sleep_filter != nullptr) {  // (the port's: guest_sleep.h)
+        ns = g_sleep_filter(f.ctx.r[14], ns);
+    }
+    sched.Sleep(ns);
 }
 
 void SvcTable::Impl::GetThreadPriority(SvcFrame& f) {

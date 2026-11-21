@@ -3,6 +3,9 @@
 
 #include <algorithm>
 #include <cctype>
+#if defined(_WIN32)
+#include <cstdlib>
+#endif
 #include <cstring>
 #include <ctime>
 #include <filesystem>
@@ -335,6 +338,13 @@ bool HasReadableGameDlc(const FsState& state) {
 }
 
 std::string SaveBackupsFolder(const FsState& state) {
+#if defined(_WIN32)
+    if (const char* own = std::getenv("MH4N_SAVE_BACKUPS"); own != nullptr && *own != 0) {  // (the PC's: pc_main.cpp)
+        std::string folder = own;
+        if (!host::IsSeparator(folder.back())) folder += '/';
+        return folder;
+    }
+#endif
     std::string folder = state.user_folder;
     if (folder.empty()) return {};
     while (!folder.empty() && host::IsSeparator(folder.back())) folder.pop_back();

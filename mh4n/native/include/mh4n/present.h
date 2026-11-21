@@ -107,6 +107,21 @@ struct TargetLayout {
     u32 UprightHeight() const { return row_pixels; }
 };
 
+// On Windows a shared picture's memory is a Vulkan allocation exported as an NT handle (VK_KHR_external_memory_win32,
+// opaque), which the PC app's OpenGL imports (GL_EXT_memory_object_win32): SharedPicture::HardwareBuffer() points to
+// this. The handle stays the renderer's (closed when its buffer goes); an import does not take it over. The UUIDs are
+// the Vulkan device's and driver's (VkPhysicalDeviceIDProperties), for the reader to check its GL is on the same GPU and
+// driver (GL_DEVICE_UUID_EXT, GL_DRIVER_UUID_EXT).
+struct Win32SharedMemory {
+    void* handle = nullptr;     // a HANDLE
+    u64 size = 0;               // the allocation's size in bytes
+    u32 width = 0, height = 0;  // the image: R8G8B8A8, optimal tiling, one level
+    bool dedicated = true;      // a dedicated allocation (GL_DEDICATED_MEMORY_OBJECT_EXT)
+    bool linear = false;        // linear tiling (GL_TEXTURE_TILING_EXT GL_LINEAR_TILING_EXT), else optimal
+    u8 device_uuid[16] = {};
+    u8 driver_uuid[16] = {};
+};
+
 // A screen's picture in memory the system's own graphics read with no copy (an AHardwareBuffer on Android), drawn by the
 // renderer on the GPU: what a sink that asks for it (ScreenSink::WantsSharedPictures) gets where the renderer has the
 // screen's picture, so that the app shows it without reading it back. Its memory is not drawn into again while this

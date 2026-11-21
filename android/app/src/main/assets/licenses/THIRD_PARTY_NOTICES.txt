@@ -78,6 +78,19 @@ LodePNG
 bc7enc
     Copyright (c) 2020-2021 Richard Geldreich, Jr. MIT licence (bc7enc.txt).
 
+AMD FidelityFX Super Resolution 1.0 (FSR 1: the Upscale filter's, app_native/fsr1.cpp)
+    Copyright (c) 2021 Advanced Micro Devices, Inc. MIT licence (FSR1.txt).
+    https://github.com/GPUOpen-Effects/FidelityFX-FSR
+
+Basis Universal 2.1.0, its transcoder (HD texture packs' .ktx2 files; mh4n/native/third_party/basisu)
+    Copyright (c) 2016-2026 Binomial LLC. Apache License 2.0, with the attribution notices of its NOTICE
+    (BasisUniversal.txt). https://github.com/BinomialLLC/basis_universal
+    Modified for this project: one file, transcoder/basisu_astc_helpers.h (a tracking parameter removed from a link
+    in a comment; the file says so).
+
+Zstandard's decoder, as Basis Universal carries it (UASTC .ktx2 files supercompressed with Zstandard)
+    Copyright (c) 2016-present, Facebook, Inc. BSD-3-Clause (Zstandard.txt).
+
 libadrenotools and linkernsbypass (your own GPU driver on an Adreno)
     Copyright (c) 2021, Billy Laws. BSD-2-Clause (libadrenotools.txt). https://github.com/bylaws/libadrenotools
 

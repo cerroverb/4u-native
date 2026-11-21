@@ -34,6 +34,9 @@ struct MadeDevice {
     u32 driver_id = 0;
     u32 api_version = 0;
     u32 driver_version = 0;   // VkPhysicalDeviceProperties::driverVersion, in the vendor's own encoding
+    // (Windows) VkPhysicalDeviceIDProperties::deviceLUID, the adapter's in DXGI and D3DKMT: the PC app's readout opens it
+    u8 luid[8] = {};
+    bool luid_valid = false;
 };
 
 struct DriverHooks {

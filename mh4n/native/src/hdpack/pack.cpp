@@ -55,6 +55,9 @@ FileFormat MakeFileFormat(std::string_view ext) {
     if (ext == "ktx") {
         return FileFormat::Ktx;
     }
+    if (ext == "ktx2") {
+        return FileFormat::Ktx2;
+    }
     return FileFormat::None;
 }
 
@@ -306,12 +309,19 @@ std::optional<Pack> ScanPack(const std::string& dir, std::string* error) {
         pack.files.push_back(std::move(file));
     }
 
-    // Material::AddMapTexture: a second file for the same map of a hash is ignored.
+    // Material::AddMapTexture: a second file for the same map of a hash is ignored. A .ktx2 wins over another file of
+    // the same map, wherever either is (1.0.2, S9b: a pack may carry both, the .png for older versions).
     for (std::size_t i = 0; i < pack.files.size(); ++i) {
         const PackFile& file = pack.files[i];
         for (const u64 hash : file.hashes) {
             PackMaterial& material = pack.materials[hash];
             int& slot = material.file[static_cast<std::size_t>(file.type)];
+            if (slot >= 0 && slot != static_cast<int>(i) &&
+                (file.format == FileFormat::Ktx2) != (pack.files[static_cast<std::size_t>(slot)].format == FileFormat::Ktx2)) {
+                ++pack.stats.ktx2_preferred;
+                if (file.format == FileFormat::Ktx2) slot = static_cast<int>(i);
+                continue;
+            }
             if (slot >= 0) {
                 if (slot != static_cast<int>(i)) {
                     ++pack.stats.duplicate_maps;

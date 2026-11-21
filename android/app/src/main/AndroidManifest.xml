@@ -132,6 +132,12 @@
             android:excludeFromRecents="true"
             android:exported="false" />
 
+        <!-- Ajustes -> Perfiles de controles -> un perfil -> Exportar / Importar (el .zip del perfil, 1.0.2) -->
+        <activity android:name=".ProfileZipActivity"
+            android:theme="@android:style/Theme.NoTitleBar.Fullscreen"
+            android:screenOrientation="sensorLandscape"
+            android:exported="false" />
+
         <!-- The layout editor's Picture -> Add pictures: the players' own pictures for the touch buttons (PicturesActivity) -->
         <activity android:name=".PicturesActivity"
             android:theme="@android:style/Theme.NoTitleBar.Fullscreen"

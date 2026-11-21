@@ -2,7 +2,7 @@
 # functions, is compiled into this module flat (no RC_PAGED: it reads guest memory through ctx->mem,
 # as the code libraries of --native do), and NativePlatform gives it what the Azahar build's
 # Azahar-build platform gives it: the game clock, the refresh rate (to the GSP's VBlank period through
-# Runtime::SetRefreshRate), the user directory, the log, and local-only network sync until N4.
+# Runtime::SetRefreshRate), the user directory, the log, and the net sync in a room (netsync_native.h, 1.0.2).
 # The `started` boot step installs the hooks on the code library once it is loaded.
 #
 # hooks.cpp is the port's file (shared with the Azahar build) and is not edited here. A copy of
@@ -14,6 +14,8 @@ set(MH4N_GATHER_SOURCE "${MH4N_REPO_ROOT}/port/src/gather.cpp")  # (gather every
 set(MH4N_KEYBOARD_SOURCE "${MH4N_REPO_ROOT}/port/src/swkbd_bridge.cpp")
 set(MH4N_ONESCREEN_SOURCE "${MH4N_REPO_ROOT}/port/src/onescreen.cpp")
 set(MH4N_HUNT_AIDS_SOURCE "${MH4N_REPO_ROOT}/port/src/hunt_aids.cpp")
+set(MH4N_PRESENCE_SOURCE "${MH4N_REPO_ROOT}/port/src/presence.cpp")  # (the PC app's Discord Rich Presence)
+set(MH4N_WEAPON_TREE_SOURCE "${MH4N_REPO_ROOT}/port/src/weapon_tree.cpp")  # (the Smithy's weapon tree, 1.0.2)
 set(MH4N_PLATFORM_HEADER "${MH4N_REPO_ROOT}/port/src/platform.h")
 set(MH4N_SCHEDULE_HEADER "${MH4N_REPO_ROOT}/port/src/schedule.h")
 set(MH4N_RECOMP_RUNTIME "${MH4N_REPO_ROOT}/tools/recomp/runtime")
@@ -21,11 +23,18 @@ set(MH4N_RECOMP_RUNTIME "${MH4N_REPO_ROOT}/tools/recomp/runtime")
 if (EXISTS "${MH4N_HOOKS_SOURCE}" AND EXISTS "${MH4N_PLATFORM_HEADER}"
     AND EXISTS "${MH4N_SCHEDULE_HEADER}" AND EXISTS "${MH4N_RECOMP_RUNTIME}/recomp.h")
     set(mh4n_platform_sources platform_native.cpp "${MH4N_HOOKS_SOURCE}" "${MH4N_KEYBOARD_SOURCE}"
-        "${MH4N_ONESCREEN_SOURCE}" "${MH4N_HUNT_AIDS_SOURCE}")
+        "${MH4N_ONESCREEN_SOURCE}" "${MH4N_HUNT_AIDS_SOURCE}" "${MH4N_WEAPON_TREE_SOURCE}")
+    if (NOT ANDROID)  # (the PC app only: hooks.cpp reads it on the PC)
+        list(APPEND mh4n_platform_sources "${MH4N_PRESENCE_SOURCE}")
+    endif()
     set(mh4n_platform_available ON)
     list(APPEND mh4n_platform_sources "${MH4N_GATHER_SOURCE}")
     # the health bars' monster names from the game's RomFS (1.0.1.1): this module's own, it reads port/src's hunt aids
     list(APPEND mh4n_platform_sources monster_names.cpp)
+    # the net sync in a room (1.0.2, the net_sync option): this module's own
+    list(APPEND mh4n_platform_sources netsync_native.cpp)
+    # the weapon tree's weapon names, from the same RomFS archive (1.0.2): it gives them to port/src's weapon tree
+    list(APPEND mh4n_platform_sources weapon_names.cpp)
 else()
     message(STATUS "mh4n_platform: port/src/hooks.cpp or recomp.h not found around native/: an empty module")
     set(mh4n_platform_sources unavailable.cpp)
@@ -46,6 +55,7 @@ mh4n_module(
         mh4n_cpu
         mh4n_ipc
         mh4n_services_fs
+        mh4n_net
     THIRD_PARTY
         mh4n_fmt
         mh4n_hdpack_lodepng  # (monster_names.cpp: its zlib inflate, the copy the HD packs use)

@@ -126,7 +126,8 @@ bool ReadDlcTitle(const std::string& folder, u64 title_id, u32 media, DlcTitle* 
 bool HasReadableGameDlc(const FsState& state);
 
 // The folder the app keeps its save backups in: save_backups/ beside the user folder (the app's user/ and
-// save_backups/ share a folder), with its slash; empty without a user folder.
+// save_backups/ share a folder), with its slash; empty without a user folder. MH4N_SAVE_BACKUPS names another one (the
+// PC's, in its save folder: app_native/pc/pc_main.cpp).
 std::string SaveBackupsFolder(const FsState& state);
 
 // Copies the game's save, before the hooks first change it, the way the app's own backups are laid out

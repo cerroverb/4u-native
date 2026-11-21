@@ -2,6 +2,10 @@
 
 #include "game_addr.h"
 #include "hunt_aids.h"
+#ifndef __ANDROID__
+#include "presence.h"  // (where the player is: the PC app's Discord Rich Presence)
+#endif
+#include "weapon_tree.h"
 #include "onescreen.h"
 #include "swkbd_bridge.h"
 #include "gather.h"  // (gather everything in one press, 1.0.1)
@@ -20,10 +24,12 @@
 #include <mutex>
 #include <sstream>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <vector>
 #include <fmt/format.h>
 #if __has_include("mh4n/pacing_trace.h")
+#include "mh4n/guest_sleep.h"
 #include "mh4n/pacing_trace.h"
 #define PACE_MARK(kind, value) mh4n::pacing::Mark(mh4n::pacing::kind, (value))
 #define PACE_GAME_FRAME(value) mh4n::pacing::g_game_frame.store((value), std::memory_order_relaxed)
@@ -147,6 +153,12 @@ struct Options {
     // player's choice
     bool steady = false;
     float refresh_rate = 0; // refresh_rate / MH4U_REFRESH_RATE: emulated LCD Hz, 0 = the 3DS's
+    // job_poll_us / MH4U_JOB_POLL_US: with a frame-rate cap above 60, the game's job workers look for work every that
+    // many microseconds instead of every 1 ms (their SleepThread in the loop at JOB_POLL_SLEEP_RET); the main thread
+    // waits on them each frame. 0 (the default): the game's own millisecond
+    u32 job_poll_us = 0;
+    // job_poll_all / MH4U_JOB_POLL_ALL (a measurement aid for the phones): job_poll_us at any cap, 60 and below too
+    bool job_poll_all = false;
                             // (or, with an fps above 60, that fps: see RefreshRate)
     float widescreen = 0;   // widescreen / MH4U_WIDESCREEN: top-screen aspect ratio, 0 = native
     bool widescreen_match = false;  // widescreen = match: the top screen takes the frontend's
@@ -184,8 +196,10 @@ struct Options {
     bool bow_aim = true;          // bow_aim / MH4U_BOW_AIM (1.0.1.1): a bow's shot goes to the monster as it is let go
                                   // (BowAimStep), on unless "off"
     bool hud_edges = true;  // hud_edges / MH4U_HUD_EDGES: with wide_render, HUD to the edges
+    float hud_anchor = 0;   // hud_anchor (the PC app's HUD anchor): the HUD's sides no further out than this aspect
+                            // ratio's width ("16:9", "21:9", "32:9"; 0, "whole": the picture's edges)
     u32 trace_layout = 0;   // trace_layout / MH4U_TRACE_LAYOUT: log HUD objects every n frames
-    NetSyncMode net_sync = NetSyncMode::Session;  // net_sync / MH4U_NET_SYNC
+    NetSyncMode net_sync = NetSyncMode::Off;  // net_sync / MH4U_NET_SYNC (1.0.2: off unless turned on; on: Session)
     float net_sync_slack = 0;  // net_sync_slack / MH4U_NET_SYNC_SLACK: ms, 0 = the default
     u32 filters_off = 0;    // bloom, motion_blur, depth_of_field, radial_blur, haze = off: the
                             // screen filters (FILTER_* bits) the port skips
@@ -201,6 +215,9 @@ struct Options {
     // rewards_send_all: choosing "Send to Item Box" on the quest's rewards screen sends every reward that fits at once
     // (Alfonso's idea, S43; QolRewardsSendAll below), off unless set
     bool rewards_send_all = false;
+    // supply_box_wait (tests, 1.0.2): the supply box keeps the game's wait between items (SupplyBoxStep below: without
+    // it, always, each item can be followed by the next at once); off unless set, and live
+    bool supply_box_wait = false;
     // dlc_flags (1.0.1): with the game's DLC installed, the save's DLC flag set so that the game uses it in every save
     // (DlcFlagsStep below), on unless "off"; read at the start
     bool dlc_flags = true;
@@ -211,7 +228,16 @@ struct Options {
     // hud_<part> = dx dy: a part of the hunting HUD moved by this much (top-screen pixels, right and down: the app's
     // layout editor drags it; item_bar is hud_items as an earlier version wrote it)
     float hud_dx[HUD_PART_COUNT] = {}, hud_dy[HUD_PART_COUNT] = {};
+    // (1.0.2) hud_<part> = dx dy size hidden: the part's own size, HUD_PART_MIN .. HUD_PART_MAX (1 unless given), and
+    // hidden (1; 0 unless given): the editor's - / + and Hide. "dx dy" alone, as up to 1.0.1.1, is both at their defaults
+    float hud_k[HUD_PART_COUNT] = {1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f};
+    bool hud_hidden[HUD_PART_COUNT] = {};
+    // (1.0.2) hud_size / MH4U_HUD_SIZE: the HUD's size, 60 to 100 % (Graphics & Audio > Screen and HUD), each part toward
+    // its corner times its own size, and the quests' talk and yes / no windows with the game's other HUD (HUD_GROUPS)
+    float hud_size = 1.0f;
 };
+static_assert(HUD_PART_COUNT == 7, "Options::hud_k's defaults");
+constexpr float HUD_PART_MIN = 0.5f, HUD_PART_MAX = 2.0f, HUD_SIZE_MIN = 0.6f;
 
 // The screen filters an option can turn off (see SCREEN_FILTERS below), by option name.
 constexpr u32 FILTER_BLOOM = 1u << 0, FILTER_MOTION_BLUR = 1u << 1, FILTER_DEPTH_OF_FIELD = 1u << 2,
@@ -308,6 +334,9 @@ std::atomic<bool> quest_map_off{false};  // ToggleQuestMap: the whole touch scre
 // The frontend's surface shape (Port::SetWindowSize), for `widescreen = match`.
 u32 window_width = 0;
 u32 window_height = 0;
+// The part of the top screen's picture the frontend shows, a fraction of its width centred (Port::SetShownWidth; 0: all
+// of it): the PC app's window narrower than the picture the game was started with
+std::atomic<float> shown_width{0.0f};
 
 // An overlay or widescreen read at boot has to have the screen layout worked out again once
 // the game draws (see Frame): Android works the layout out as the surface appears, before
@@ -339,6 +368,10 @@ void Set(Options& o, const std::string& key, const std::string& value) {
         o.steady = IsOn(value);
     } else if (key == "refresh_rate") {
         o.refresh_rate = std::max(0.0f, std::strtof(value.c_str(), nullptr));
+    } else if (key == "job_poll_all") {
+        o.job_poll_all = IsOn(value);
+    } else if (key == "job_poll_us") {
+        o.job_poll_us = static_cast<u32>(std::clamp(std::strtol(value.c_str(), nullptr, 10), 0L, 1000L));
     } else if (key == "widescreen") {
         // match: the frontend passes its window's shape (Port::SetWindowSize) and Install
         // resolves it; the other values are the aspect ratio itself
@@ -395,6 +428,8 @@ void Set(Options& o, const std::string& key, const std::string& value) {
         o.net_sync_slack = std::max(0.0f, std::strtof(value.c_str(), nullptr));
     } else if (key == "hud_edges") {
         o.hud_edges = IsOn(value);
+    } else if (key == "hud_anchor") {
+        o.hud_anchor = value == "whole" || value == "off" ? 0.0f : ParseAspect(value);
     } else if (key == "trace_layout") {
         o.trace_layout = static_cast<u32>(std::max(0L, std::strtol(value.c_str(), nullptr, 10)));
     } else if (key == "trace_frames") {
@@ -413,6 +448,8 @@ void Set(Options& o, const std::string& key, const std::string& value) {
         o.qol_rewards_no_limit = IsOn(value);
     } else if (key == "rewards_send_all") {
         o.rewards_send_all = IsOn(value);
+    } else if (key == "supply_box_wait") {
+        o.supply_box_wait = IsOn(value);
     } else if (key == "dlc_flags") {
         o.dlc_flags = !IsOff(value);
     } else if (key == "single_screen") {
@@ -421,16 +458,35 @@ void Set(Options& o, const std::string& key, const std::string& value) {
         o.effects = !IsOff(value);
     } else if (HuntAids::SetOption(key, value)) {
         // monsters_on_map, damage_numbers (hunt_aids.cpp keeps them)
+    } else if (WeaponTree::SetOption(key, value)) {
+        // weapon_tree, weapon_tree_trace (weapon_tree.cpp keeps them)
     } else if (key == "trace_state") {
         o.trace_state = IsOn(value) || value == "actions";
         o.trace_state_actions = value == "actions";
     } else if (key == "hud_probe") {
         o.hud_probe = static_cast<u32>(std::strtoul(value.c_str(), nullptr, 16));
+    } else if (key == "hud_size") {
+        // (percent, 60 to 100; a fraction, 0.6 to 1, too)
+        float v = std::strtof(value.c_str(), nullptr);
+        if (v > 2.0f) v /= 100.0f;
+        o.hud_size = v > 0 ? std::clamp(v, HUD_SIZE_MIN, 1.0f) : 1.0f;
     } else if (const int part = key == "item_bar" ? HUD_PART_COUNT - 1 : HudPartIndex(key); part >= 0) {
-        float dx = 0, dy = 0;
-        std::istringstream(value) >> dx >> dy;
+        float dx = 0, dy = 0, k = 1.0f;
+        int hidden = 0;
+        std::istringstream in(value);
+        in >> dx >> dy;
+        if (!(in >> k) || !(k > 0)) k = 1.0f;  // ("dx dy" alone: as up to 1.0.1.1)
+        if (!(in >> hidden)) hidden = 0;
         o.hud_dx[part] = std::clamp(dx, -400.0f, 400.0f);
         o.hud_dy[part] = std::clamp(dy, -240.0f, 240.0f);
+        if (key != "item_bar") {  // (the item bar's place as an earlier version wrote it: its place alone)
+            o.hud_k[part] = std::clamp(k, HUD_PART_MIN, HUD_PART_MAX);
+            o.hud_hidden[part] = hidden != 0;
+        }
+#ifndef __ANDROID__
+        // (the PC's first 1.0.2 test builds wrote "dx dy hidden": hidden too)
+        if (key != "item_bar" && value.find("hidden") != std::string::npos) o.hud_hidden[part] = true;
+#endif
     } else {
         for (const auto& [name, bit] : FILTER_OPTIONS) {
             if (key == name) {
@@ -468,6 +524,8 @@ Options LoadOptions(std::vector<std::string>& log) {
     const std::pair<const char*, const char*> env[] = {
         {"MH4U_FPS", "fps"},
         {"MH4U_REFRESH_RATE", "refresh_rate"},
+        {"MH4U_JOB_POLL_US", "job_poll_us"},
+        {"MH4U_JOB_POLL_ALL", "job_poll_all"},
         {"MH4U_PACE", "pace"},
         {"MH4U_LIMITER_SLEEP", "limiter_sleep"},
         {"MH4U_STEADY", "steady"},
@@ -488,6 +546,7 @@ Options LoadOptions(std::vector<std::string>& log) {
         {"MH4U_QUICK_ITEMS", "quick_items"},
         {"MH4U_BOW_AIM", "bow_aim"},
         {"MH4U_HUD_EDGES", "hud_edges"},
+        {"MH4U_HUD_SIZE", "hud_size"},
         {"MH4U_DITHER", "dither"},
         {"MH4U_STEREO_3D", "stereo_3d"},
         {"MH4U_ANTIALIASING", "antialiasing"},
@@ -535,6 +594,18 @@ float RefreshRate() {
 }
 
 GameAddr SVC_SLEEP_THREAD{0x0010d934};  // nn::svc::SleepThread(s64 ns), r0:r1 (the limiter's own sleep)
+// The return address of the job workers' SleepThread(1 ms) between their looks for work (the loop of 0x00bfa7ec, which
+// compares two threads' ids and sleeps when the caller is not the one that hands the work out)
+GameAddr JOB_POLL_SLEEP_RET{0x00bfa898};
+
+/// job_poll_us (guest_sleep.h): that sleep no longer than the option says while the cap is above 60
+std::int64_t JobPollSleep(std::uint32_t return_address, std::int64_t ns) {
+    const std::int64_t most = static_cast<std::int64_t>(options.job_poll_us) * 1000;
+    if (return_address == JOB_POLL_SLEEP_RET && most > 0 && ns > most && (options.fps_cap > 60.0f || options.job_poll_all)) {
+        return most;
+    }
+    return ns;
+}
 constexpr float NATIVE_REFRESH = 59.831f;     // the 3DS's LCD
 
 #if __has_include("mh4n/pacing_trace.h")
@@ -744,7 +815,11 @@ bool QolRewardsHold(RCtx* ctx, u32* screen, u32* left, u32* part);  // (jM5557's
 void QolRewardsKeep(RCtx* ctx, u32 screen, u32 left, u32 part);
 void QolRewardsSendAll(RCtx* ctx);  // (Send to Item Box sends every reward, below)
 void DlcFlagsStep(RCtx* ctx);       // (the installed DLC in every save, below)
+void SupplyBoxStep(RCtx* ctx);      // (the supply box without the wait between items, below)
 u32 WideRows();                     // (wide_render's width of the top screen, or 0: below)
+u32 EdgeRows();                     // (the width the HUD's sides go to: below)
+
+std::atomic<int> test_stall_ms{0};  // (tests: test_stall, the runner's --set)
 
 void Frame(RCtx* ctx, RFunc original) {
     PACE_MARK(kFrameStart, static_cast<u32>(frames));
@@ -787,6 +862,13 @@ void Frame(RCtx* ctx, RFunc original) {
     u32 rewards = 0, rewards_left = 0, rewards_part = 0;
     const bool rewards_held = QolRewardsHold(ctx, &rewards, &rewards_left, &rewards_part);
     DlcFlagsStep(ctx);
+    SupplyBoxStep(ctx);
+    if (test_stall_ms > 0) {  // (the runner's --set, for tests: this frame stalls that long, once)
+        const int ms = test_stall_ms.exchange(0);
+        LogInfo("test stall: {} ms", ms);
+        std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+    }
+    P().NetSyncFrame();  // (net_sync: may wait for a port console in the room that stalled)
     original(ctx);
     if (rewards_held) {
         QolRewardsKeep(ctx, rewards, rewards_left, rewards_part);
@@ -798,6 +880,10 @@ void Frame(RCtx* ctx, RFunc original) {
     UpdateGameState(ctx);
     ItemBarStep(ctx);
     HuntAids::Frame(ctx);  // (monsters on the map, damage numbers: hunt_aids.cpp)
+#ifndef __ANDROID__
+    Presence::Frame(ctx);  // (where the player is, for the PC app's Discord Rich Presence: presence.cpp)
+#endif
+    WeaponTree::Frame(ctx);  // (the Smithy's weapon tree: weapon_tree.cpp)
     if (options.trace_filters) {
         TraceFilters();
     }
@@ -887,6 +973,25 @@ u32 WideRows() {
     }
     const u32 rows = static_cast<u32>(std::lround(LCD_COLUMNS * options.widescreen / 8.0f)) * 8;
     return std::min(rows, MAX_WIDE_ROWS);
+}
+
+/// The width the hunting HUD's sides go to (hud_edges), in the wide picture's pixels, or 0 (where the game puts them):
+/// the picture's edges, or nearer when the frontend shows only its middle (SetShownWidth) or the HUD anchor
+/// (hud_anchor) says so; never inside the console's 400.
+u32 EdgeRows() {
+    const u32 rows = options.hud_edges ? WideRows() : 0u;
+    if (rows == 0) {
+        return 0;
+    }
+    float limit = static_cast<float>(rows);
+    const float shown = shown_width.load(std::memory_order_relaxed);
+    if (shown > 0.0f && shown < 1.0f) {
+        limit = std::min(limit, rows * shown);
+    }
+    if (options.hud_anchor > 0.0f) {
+        limit = std::min(limit, LCD_COLUMNS * options.hud_anchor);
+    }
+    return std::max<u32>(TOP_ROWS, static_cast<u32>(std::lround(limit)));
 }
 
 /// nDraw::Scene::Scene(this, params): params {columns, rows, ...}; the main scene target.
@@ -1024,7 +1129,8 @@ constexpr u32 LAYOUT_TOUCH_SCREEN = 7;          //   (7 the touch screen's: view
 //   party    the name plates: the hunter 8AC1CCC4, the Palico FDC6FC52, a second hunter and their Palico in local
 //            play (64CFADE8, 13C89D7E), and four rows that were empty with two players (4639C2C3, 60497133,
 //            174E41A5, 892AD406: a larger party's); the box is the first row's
-//   map      the area's map at the top screen's right (not in the Arena): an object per area of each map, named
+//   map      the area's map at the top screen's right (not in the Arena; 1.0.2: the whole map of the hunting ground,
+//            which the game draws there when the player's touch panels have no Map, below): an object per area of each map, named
 //            ui<map>a<area>_l_<layer> (the area itself was ui293a00_l_area_2, 65DD1792, on an expedition, with its
 //            numbers ui293a00_l_suuji, DA514713; the names are in the code image, MapObjectHashes below); the box is
 //            the area's on that expedition, a little larger. Its icons are layout ui250's (MapIconHashes: the hunters
@@ -1097,9 +1203,45 @@ constexpr HudObject HUD_OBJECTS[] = {
     {0x81F165C8, HUD_SHARPNESS, 0, 0, 0, 0},  // ui202_panel_bin
     {0xFFC7E011, HUD_SHARPNESS, 0, 0, 0, 0},  // ui202_panel_tama
     {0x68DBFF2A, HUD_ITEMS, 269, 179, 389, 192},  // ui205_bowgun_base (a bowgun's ammo above the item bar)
+    // (1.0.2) the whole map of a hunting ground: drawn on the top screen by the game when the player's touch panels have
+    // no Map (and by single-screen code mods), ui<map>_l_area and ui<map>_l_map (WholeMapHashes below); up to 1.0.1.1 it
+    // was in no part, so the part moved the hunter's arrow and left this map behind (4u-native #72, #75, #76). The box:
+    // the 128x128 map of every whole map's layout (ui251 .. ui300: m01_map0 to m21_map, each ui<map>_l_map 0,0 - 128,128)
+    // at the game's base for the map, -272, -16 (as the area map's), checked with hud_probe on the Ancestral Steppe
+    // (B4A50FA3 ui251_l_area, AB99C880 ui251_l_map)
+    {0, HUD_MAP, 272, 16, 399, 143},
 };
 constexpr int HUD_OBJECT_COUNT = static_cast<int>(std::size(HUD_OBJECTS));
 constexpr int HUD_MAP_AREA = 15;  // (HUD_OBJECTS' index of the area objects)
+constexpr int HUD_MAP_WHOLE = HUD_OBJECT_COUNT - 1;  // (and of the whole map's)
+static_assert(HUD_OBJECTS[HUD_MAP_AREA].hash == 0 && HUD_OBJECTS[HUD_MAP_AREA].part == HUD_MAP);
+static_assert(HUD_OBJECTS[HUD_MAP_WHOLE].hash == 0 && HUD_OBJECTS[HUD_MAP_WHOLE].part == HUD_MAP);
+
+// (1.0.2) The HUD's size (hud_size, and each part's own: hud_<part>'s third number): a part is drawn smaller or larger
+// toward its corner of the 400x240 screen, at the game's place (after Heavenfall's smaller HUD, core/interface/hud: the
+// clock, the bars, the sharpness and the names at the top left, the item bar at the bottom right, the map and the target
+// camera at the top right). The anchor moves with the part (hud_edges, the player's offset). The scale goes into the
+// projection of the object's copy of the pass's constants (OneScreen::ScaleObject, as the single-screen menus'), so what
+// the game's code places inside the part (the map's icons, a weapon's gauge, the counts) follows with no patch.
+constexpr float HUD_ANCHOR[HUD_PART_COUNT][2] = {{0, 0}, {0, 0}, {0, 0}, {0, 0}, {400, 0}, {400, 0}, {400, 240}};
+// The game's other HUD in a quest, with hud_size alone, each toward its own anchor (their layouts' boxes, USA v1.3.0,
+// eng/data/core_quest.arc and core_common.arc): the grab, fishing and mounting bars (ui204: bottom middle; its Frenzy at
+// the names, top left), the "Quest Complete" stamp (ui207: the middle), the yes / no windows (ui220, ui221: the middle),
+// an expedition's points (ui222: bottom left), the talk windows (ui005: bottom left). Not the bowgun's scope (ui200,
+// ui201: the whole screen), the markers over the world, nor a menu (the item pouch, the supply box, the rewards).
+struct HudGroup {
+    const char* name;
+    float x, y;
+};
+constexpr HudGroup HUD_GROUPS[] = {
+    {"ui204_hold", 200, 240}, {"ui204_fish", 200, 240}, {"ui204_nori", 200, 240}, {"ui204_virus", 0, 0},
+    {"ui207_hanko", 200, 120},
+    {"ui220_listwaku00", 200, 120}, {"ui220_mozi00", 200, 120}, {"ui220_yn_cursor", 200, 120}, {"ui220_mozi01", 200, 120},
+    {"ui221_listwaku00", 200, 120}, {"ui221_mozi00", 200, 120}, {"ui221_yn_cursor", 200, 120}, {"ui221_mozi01", 200, 120},
+    {"ui222_point", 0, 240},
+    {"ui005_kaiwa00", 0, 240}, {"ui005_kaiwa01", 0, 240}, {"ui005_kaiwa02", 0, 240}, {"ui005_kaiwa03", 0, 240},
+    {"ui005_kaiwa04", 0, 240}, {"ui005_chat", 0, 240},
+};
 
 /// The layout's name hash: the CRC-32 of the name without its final inversion (makeNameKey 0x005ed628).
 u32 LayoutNameHash(std::string_view name) {
@@ -1139,6 +1281,24 @@ const std::vector<u32>& MapObjectHashes() {
     return hashes;
 }
 
+/// The hashes of the whole maps' objects (sorted): ui<250-302>_l_area, _l_map, _l_map01, _l_map02, the root groups of
+/// each hunting ground's map (eng/data/m<NN>_map*.arc of USA v1.3.0: m01_map0 ui251 ... m13_map ui300, m20_map ui272;
+/// m06, m14 and m21 with _l_map01 and _l_map02); the names that don't exist cost nothing. With MapObjectHashes, every
+/// root group of the quests' map layouts (the towns' v*_map.arc hold menus, not maps).
+const std::vector<u32>& WholeMapHashes() {
+    static const std::vector<u32> hashes = [] {
+        std::vector<u32> v;
+        for (int map = 250; map <= 302; ++map) {
+            for (const char* layer : {"area", "map", "map01", "map02"}) {
+                v.push_back(LayoutNameHash(fmt::format("ui{}_l_{}", map, layer)));
+            }
+        }
+        std::sort(v.begin(), v.end());
+        return v;
+    }();
+    return hashes;
+}
+
 /// The hashes of the area map's icons (sorted): layout ui250's ui250_l_icon_000 .. 017 (the traps, this hunter's arrow
 /// at 004, the other hunters and the Palicoes, the monsters) and ui250_sign_1 .. 4 (the call circles).
 const std::vector<u32>& MapIconHashes() {
@@ -1156,6 +1316,26 @@ const std::vector<u32>& MapIconHashes() {
     return hashes;
 }
 
+#ifndef __ANDROID__
+// The area map's layout last drawn (ui<n>, MapObjectHashes' n), for the PC app's Discord Rich Presence: its map. A hash
+// is looked up only when it is one of the map's (one of a few objects a frame)
+std::atomic<int> map_layout_seen{-1};
+void NoteMapLayout(u32 hash) {
+    static const std::vector<std::pair<u32, int>> layouts = [] {
+        std::vector<std::pair<u32, int>> v;
+        static constexpr const char* layers[] = {"area", "area_1", "area_2", "area_3", "area_4", "area_5", "area_6",
+                                                 "icon", "map1", "map2", "yaji", "koware", "suuji", "tsuta"};
+        for (int map = 270; map <= 302; ++map)
+            for (int area = 0; area <= 12; ++area)
+                for (const char* layer : layers) v.emplace_back(LayoutNameHash(fmt::format("ui{}a{:02}_l_{}", map, area, layer)), map);
+        std::sort(v.begin(), v.end());
+        return v;
+    }();
+    const auto it = std::lower_bound(layouts.begin(), layouts.end(), std::make_pair(hash, 0));
+    if (it != layouts.end() && it->first == hash) map_layout_seen.store(it->second, std::memory_order_relaxed);
+}
+#endif
+
 /// HUD_OBJECTS' index of a top-screen layout object, or -1.
 int HudObjectOf(u32 hash) {
     for (int i = 0; i < HUD_OBJECT_COUNT; ++i) {
@@ -1163,7 +1343,46 @@ int HudObjectOf(u32 hash) {
             return i;
         }
     }
-    return std::binary_search(MapObjectHashes().begin(), MapObjectHashes().end(), hash) ? HUD_MAP_AREA : -1;
+    if (std::binary_search(MapObjectHashes().begin(), MapObjectHashes().end(), hash)) {
+#ifndef __ANDROID__
+        NoteMapLayout(hash);  // (which map: the PC app's Discord Rich Presence)
+#endif
+        return HUD_MAP_AREA;
+    }
+    return std::binary_search(WholeMapHashes().begin(), WholeMapHashes().end(), hash) ? HUD_MAP_WHOLE : -1;
+}
+
+/// HUD_GROUPS' anchor of a top-screen layout object (the 400x240 screen's pixels, x then y), or nullptr.
+const float* HudGroupAnchor(u32 hash) {
+    static const std::vector<std::pair<u32, int>> groups = [] {
+        std::vector<std::pair<u32, int>> v;
+        for (int i = 0; i < static_cast<int>(std::size(HUD_GROUPS)); ++i) {
+            v.emplace_back(LayoutNameHash(HUD_GROUPS[i].name), i);
+        }
+        std::sort(v.begin(), v.end());
+        return v;
+    }();
+    const auto it = std::lower_bound(groups.begin(), groups.end(), std::make_pair(hash, -1));
+    return it != groups.end() && it->first == hash ? &HUD_GROUPS[it->second].x : nullptr;
+}
+
+bool hud_in_quest = false;  // (UpdateGameState: the area on top is a quest's, not yet at its rewards: HUD_GROUPS' size)
+
+/// The top screen's picture in HUD pixels: wide_render's width, else the console's 400.
+float PictureRows() {
+    return WideRows() ? static_cast<float>(WideRows()) : static_cast<float>(TOP_ROWS);
+}
+
+/// A top-screen object drawn at `scale` about `anchor` (the 400x240 screen's pixels at the game's place) moved by (dx,
+/// dy), as the object itself is: the copy of the pass's constants that does it (OneScreen::ScaleObject).
+void ScaleAbout(RCtx* ctx, u32 object, u32 draw, float scale, const float* anchor, float dx, float dy) {
+    if (scale == 1.0f) {
+        return;
+    }
+    const float rows = PictureRows();
+    const float ax = anchor[0] + (rows - TOP_ROWS) / 2.0f + dx, ay = anchor[1] + dy;
+    OneScreen::ScaleObject(ctx, object, draw, scale, (1.0f - scale) * (ax - rows / 2.0f),
+                           (1.0f - scale) * (ay - LCD_COLUMNS / 2.0f));
 }
 
 bool WatchingQuestMap();                         // the quest's touch panels (below)
@@ -1176,7 +1395,7 @@ void LayoutObjectConstants(RCtx* ctx, RFunc original) {
     const u32 object = ctx->r[0];
     const u32 draw = ctx->r[1];
     original(ctx);
-    const u32 rows = options.hud_edges ? WideRows() : 0;
+    const u32 rows = EdgeRows();
     const bool trace = options.trace_layout && frames % options.trace_layout == 0;
     const u32 constants = rd32(ctx, draw + CDRAW_OBJECT_CONSTANTS);
     const u32 screen = rd32(ctx, draw + CDRAW_SCREEN) >> 1 & 0x1f;
@@ -1191,6 +1410,10 @@ void LayoutObjectConstants(RCtx* ctx, RFunc original) {
                 hash, screen, ReadF32(ctx, constants), ReadF32(ctx, constants + 4));
     }
     if (screen == LAYOUT_TOUCH_SCREEN) {
+#ifndef __ANDROID__
+        // (the touch screen's map panel names the map too: a HUD without the top screen's area map)
+        if (std::binary_search(MapObjectHashes().begin(), MapObjectHashes().end(), hash)) NoteMapLayout(hash);
+#endif
         if (WatchingQuestMap() || WatchingQuestItems()) {
             NoteTouchScreenObject(ReadF32(ctx, constants), ReadF32(ctx, constants + 4));
         }
@@ -1207,6 +1430,12 @@ void LayoutObjectConstants(RCtx* ctx, RFunc original) {
     const bool map_icon = object_index < 0 &&
                           std::binary_search(MapIconHashes().begin(), MapIconHashes().end(), hash);
     if (object_index < 0 && !map_icon) {
+        // (1.0.2) the game's other HUD in a quest, at the HUD's size
+        if (hud_in_quest && options.hud_size != 1.0f) {
+            if (const float* anchor = HudGroupAnchor(hash)) {
+                ScaleAbout(ctx, object, draw, options.hud_size, anchor, 0, 0);
+            }
+        }
         return;
     }
     // the part at its side's edge of a wider picture, and where the player put it (pixels right and down; layout x
@@ -1222,6 +1451,12 @@ void LayoutObjectConstants(RCtx* ctx, RFunc original) {
     if (!map_icon) {
         NoteHudObject(object_index);
     }
+    // (1.0.2) hidden (the editor's Hide, the map's button): drawn off the screen, as hud_probe's; else at its size
+    if (options.hud_hidden[part]) {
+        WriteF32(ctx, constants + 4, ReadF32(ctx, constants + 4) + 2000.0f);
+        return;
+    }
+    ScaleAbout(ctx, object, draw, options.hud_size * options.hud_k[part], HUD_ANCHOR[part], dx, dy);
 }
 
 /// Sets every tunable with this name (config/tunables.txt); returns how many there were.
@@ -1284,6 +1519,11 @@ constexpr u32 HUD_TARGET_REQUEST = 0x27e;  // u8: toggle the target camera as a 
 constexpr u32 HUD_STATE = 0x2a8;        // u8
 constexpr u8 HUD_HUNTING = 2, HUD_MENU_OPENING = 3, HUD_MENU = 4;
 constexpr u8 HUD_BOX_OPENING = 9, HUD_BOX = 10;  // the supply box (or the item box at camp) open, traced on the Galaxy
+// (1.0.2) The delivery box's window (Deliver, the quantity to hand in): the quest HUD's update (0x00b9dfe0) goes from
+// hunting (2) to 11 and then 12 for it, as to 9 and 10 for the supply box: the same opening steps, asked by the HUD's
+// byte +0x1c5 (the supply box's +0x1be) or by the quest's +0x9de (the supply box's +0x9dc). 4u-native #73: the hunt's
+// layout stayed over it, without the menu pad for the quantity.
+constexpr u8 HUD_DELIVERY_OPENING = 11, HUD_DELIVERY = 12;
 constexpr u32 HUD_PANEL_STATE = 0x2a9;  // u8
 constexpr u8 PANELS_BIG = 2;
 constexpr u32 PANEL_BUSY = 0xac;        // u8 (panel manager)
@@ -1730,6 +1970,8 @@ bool quest_items_wide = false;  // and in its wide form
 bool quest_items_drawn = false; // this frame: drawn on the touch screen
 bool items_wide_shown = false;  // the form of the slot items_choice shows
 QuestOverlayChoice items_choice;
+QuestOverlayChoice touch_items_choice;  // (the same, whatever quick_items says: GameState::touch_items_slot)
+bool touch_items_wide = false;
 u32 quest_panel_types[PANEL_SLOTS] = {};  // the panels' types the last time they ran, and the slots covered (+0xb1)
 u32 quest_panel_hidden = 0;
 u64 items_missing_logged = 0;  // (the panels last said to have no item shortcuts panel: once per layout)
@@ -1863,6 +2105,12 @@ void UpdateQuestOverlay(RCtx* ctx) {
     quest_map_drawn = false;
     quest_items_drawn = false;
     const u8 panel_state = rd8(ctx, QUEST_HUD + HUD_PANEL_STATE);
+    {  // (the item shortcuts panel on the touch screen, whatever quick_items says: GameState::touch_items_slot)
+        const bool touch_ui_now = hud == HUD_MENU_OPENING || hud == HUD_MENU ||
+                                  (hud == HUD_HUNTING && panel_state == PANELS_BIG);
+        touch_items_choice.Update(EmulatedSeconds(), panels, quest_items_slot, items_drawn, touch_ui_now);
+        if (panels && quest_items_slot >= 0 && touch_items_choice.Shown() == quest_items_slot) touch_items_wide = quest_items_wide;
+    }
     if (options.quick_items) {  // (the item shortcuts for the app's main screen: GameState::items_slot)
         const bool touch_ui_now = hud == HUD_MENU_OPENING || hud == HUD_MENU ||
                                   (hud == HUD_HUNTING && panel_state == PANELS_BIG);
@@ -2698,6 +2946,64 @@ void QolRewardsSendAll(RCtx* ctx) {
             sent, special, kept, lists[state], empty ? ": back to the menu" : "");
 }
 
+// ── The supply box without the wait between items (1.0.2, S21: as the MHGU port has it) ──
+//
+// The supply box is the quest's holder's ([0x00fbeffc], QUEST_HOLDER): 40 slots of {u16 item, s16 count} at +0xdf66
+// (row r and column c: slot 8r + c), the cursor's column and row at +0xe007 and +0xe008, and +0xe009 = 1 lays the
+// window out again. Three timers in 1/60 s, each above 0 taken down by the frame's SMAIN_DELTA in the box's update
+// (0x006a14c4, which the quest HUD runs while its +0x1be is set, in HUD_BOX): +0xe00c the wait for the host's answer,
+// +0xe010 the box opening (20, from 0x006a1b44 as the hunter opens it) and +0xe014 the taken item's flight to the
+// pouch. While any of them is above 0 the box's input step (0x0069f2c4) does nothing at all: no cursor, no A, no B.
+//   - Alone (or a quest with flag 0x40000000): A on a slot asks the pouch's room (0x005e59cc); a count that doesn't fit
+//     gets sound 3 and nothing else. Else +0xe00c = 0 and +0xe014 = 30, the flight starts (0x006a631c), the item goes
+//     into the pouch (0x00b6d484), sound 9, the slot is emptied and +0xe009 = 1.
+//   - Online: A on a slot not yet taken (+0xe018's bit) sends the request to the host (0x006ad66c), +0xe00c = 1800.
+//     The host (0x006ad448, a request) marks the slot taken and answers everyone with it, or with 0xff when someone had
+//     it first. The one who asked (0x006ad448, the answer) gets the item into the pouch and, with the box open, sound 9,
+//     the flight and +0xe014 = 30; every console takes the host's taken slots and +0xe00c = 1.
+// When +0xe014 runs out the update sets it to 0 and +0xe009 = 1 (0x006a1540), and the next press counts: that flight,
+// half a second after every item, was the wait between items. Here, with the box open, a flight under way is left with
+// 1/1024 to go before the game's frame: the box's update ends it in that frame, as it ends every flight, and the input
+// step takes the next press. What is taken, the pouch's room, each item's limit, the requests and the host's answers
+// online, and the waits for the opening and for the host, stay the game's. Memory only (the code library's id doesn't
+// change): the game's addresses here are QUEST_HUD and QUEST_HOLDER. supply_box_wait = on (tests) leaves the flight.
+constexpr u32 SUPPLY_SLOTS = 0xdf66, SUPPLY_SLOT_COUNT = 40;  // holder: {u16 item, s16 count}
+constexpr u32 SUPPLY_FLIGHT = 0xe014;                          // holder: f32, the item's flight to the pouch (1/60 s)
+constexpr float SUPPLY_FLIGHT_START = 30.0f;                    // (what 0x0069f47c and 0x006ad51c set)
+constexpr float SUPPLY_FLIGHT_LAST = 1.0f / 1024;
+constexpr u32 HUD_BOX_OPEN = 0x1be;                             // u8: the quest HUD runs the box's update
+float supply_flight_seen = 0;  // +0xe014 after the last step: a larger one is a new item
+u32 supply_taken = 0;          // the items taken since the box opened (trace_state's lines)
+s64 supply_taken_ns = 0;       // when the last one was seen
+
+void SupplyBoxStep(RCtx* ctx) {
+    const u32 holder = rd32(ctx, QUEST_HOLDER);
+    if (rd8(ctx, QUEST_HUD + HUD_STATE) != HUD_BOX || rd8(ctx, QUEST_HUD + HUD_BOX_OPEN) == 0 || !HeapPointer(holder)) {
+        supply_flight_seen = 0, supply_taken = 0;
+        return;
+    }
+    const float flight = ReadF32(ctx, holder + SUPPLY_FLIGHT);
+    if (!(flight > 0.0f && flight <= SUPPLY_FLIGHT_START)) {  // (none under way; NaN or another value: not touched)
+        supply_flight_seen = 0;
+        return;
+    }
+    const bool taken = flight > supply_flight_seen;
+    const bool cut = !options.supply_box_wait && flight > SUPPLY_FLIGHT_LAST;
+    if (cut) {
+        WriteF32(ctx, holder + SUPPLY_FLIGHT, SUPPLY_FLIGHT_LAST);
+    }
+    supply_flight_seen = cut ? SUPPLY_FLIGHT_LAST : flight;
+    if (taken && options.trace_state) {
+        u32 left = 0;
+        for (u32 i = 0; i < SUPPLY_SLOT_COUNT; ++i) left += rd16(ctx, holder + SUPPLY_SLOTS + 4 * i) != 0;
+        const s64 now = SteadyNs();
+        const s64 since = ++supply_taken > 1 ? (now - supply_taken_ns) / 1000000 : 0;
+        LogInfo("supply box: item {} taken (frame {}, {} ms after the last), {} slots with items; {}", supply_taken, frames,
+                since, left, cut ? "its flight cut short" : "the game's flight");
+        supply_taken_ns = now;
+    }
+}
+
 // ── The installed DLC in every save (1.0.1, the owner's call: every save gets the DLC the player installed) ──
 //
 // The game asks the system about its add-on content title (am:app, then the NCCH archive: the DLC the player imported,
@@ -2805,6 +3111,7 @@ std::string FormatGameState(const GameState& s) {
 /// Once a frame (Frame, after the original): CurrentGameState's copy.
 void UpdateGameState(RCtx* ctx) {
     GameState s;
+    bool quest_rewards = false;
     s.frame = rd32(ctx, FRAMES_SUBMITTED);
     const u32 areas = rd32(ctx, SAREA_INSTANCE);
     const u32 count = HeapPointer(areas) ? rd32(ctx, areas + AREA_COUNT) : 0;
@@ -2845,10 +3152,11 @@ void UpdateGameState(RCtx* ctx) {
         // item box beside them, the sale): the game's windows have the buttons until the area goes
         const u32 end_stage = rd32(ctx, top + AQUEST_END_STAGE);
         const bool rewards = end_stage >= AQUEST_END_REWARDS && end_stage < 0x100;
+        quest_rewards = rewards;
         // (not the helpers' talks that come up by themselves in a hunt, as the Caravaneer's: the hunt's
         // layout has A and B for them, and nothing found tells them apart from the hunt yet)
         s.menu = hud == HUD_MENU_OPENING || hud == HUD_MENU || hud == HUD_BOX_OPENING || hud == HUD_BOX ||
-                         GameMenuOpen(ctx) || rewards ? 1 : 0;
+                         hud == HUD_DELIVERY_OPENING || hud == HUD_DELIVERY || GameMenuOpen(ctx) || rewards ? 1 : 0;
         if (options.trace_state) {
             static u32 end_logged = 0;
             if (end_stage != end_logged) {
@@ -2892,6 +3200,7 @@ void UpdateGameState(RCtx* ctx) {
     default:
         break;
     }
+    hud_in_quest = s.place == GameState::PLACE_QUEST && !quest_rewards;
     // (out of a quest, to a town or the title: no lock-on left on for the next hunt)
     if ((s.place == GameState::PLACE_TOWN || s.place == GameState::PLACE_OTHER) && LockOn()) {
         SetLockOn(false);
@@ -2929,30 +3238,43 @@ void UpdateGameState(RCtx* ctx) {
         out.offset[1] = options.hud_dy[k];
         // (the hooks' own move of it: the boxes were measured where the game draws the parts, its own translation
         // included, as the area map's, which the game places with one: -272, -16 on the expedition)
-        const u32 rows = options.hud_edges ? WideRows() : 0;
+        const u32 rows = EdgeRows();
         const float tx = -(HUD_SIDE[k] * (rows != 0 ? (static_cast<float>(rows) - TOP_ROWS) / 2.0f : 0.0f) +
                            options.hud_dx[k]);
         const float ty = -options.hud_dy[k];
         const float dx = (width - TOP_ROWS) / 2.0f - tx, dy = -ty;
-        out.rect[0] = (box[0] + dx) / width;
-        out.rect[1] = (box[1] + dy) / LCD_COLUMNS;
-        out.rect[2] = (box[2] + 1 + dx) / width;
-        out.rect[3] = (box[3] + 1 + dy) / LCD_COLUMNS;
+        // (1.0.2) at its size, toward its anchor (which moves with it); hidden, not shown (no item bar to tap, no
+        // target camera to ring) but where it would be
+        const float scale = options.hud_size * options.hud_k[k];
+        const float ax = HUD_ANCHOR[k][0] + dx, ay = HUD_ANCHOR[k][1] + dy;
+        out.rect[0] = (ax + (box[0] + dx - ax) * scale) / width;
+        out.rect[1] = (ay + (box[1] + dy - ay) * scale) / LCD_COLUMNS;
+        out.rect[2] = (ax + (box[2] + 1 + dx - ax) * scale) / width;
+        out.rect[3] = (ay + (box[3] + 1 + dy - ay) * scale) / LCD_COLUMNS;
+        out.scale = scale;
+        out.anchor[0] = ax / width;
+        out.anchor[1] = ay / LCD_COLUMNS;
+        out.hidden = options.hud_hidden[k] ? 1 : 0;
+        if (out.hidden) {
+            out.shown = 0;
+        }
     }
     // the item bar's touch zone: the bar itself (the selection, its name and count), where the part is, but not the
     // coating or the ammo above it, whose place a bow's or a bowgun's touch controls use (the part's box has them)
     const GameState::HudPart& bar = s.hud[HUD_ITEMS];
     if (bar.shown) {
-        const u32 rows = options.hud_edges ? WideRows() : 0;
+        const u32 rows = EdgeRows();
         const float dx = (width - TOP_ROWS) / 2.0f + HUD_SIDE[HUD_ITEMS] *
                          (rows != 0 ? (static_cast<float>(rows) - TOP_ROWS) / 2.0f : 0.0f) + options.hud_dx[HUD_ITEMS];
         const float dy = options.hud_dy[HUD_ITEMS];
         constexpr float X0 = 273, Y0 = 193, X1 = 378, Y1 = 239;  // (HUD_OBJECTS' selection and name)
+        // (1.0.2: at the bar's size, toward its corner)
+        const float k = bar.scale, ax = HUD_ANCHOR[HUD_ITEMS][0] + dx, ay = HUD_ANCHOR[HUD_ITEMS][1] + dy;
         s.item_bar_shown = 1;
-        s.item_bar[0] = std::clamp((X0 + dx) / width, 0.0f, 1.0f);
-        s.item_bar[1] = std::clamp((Y0 + dy) / LCD_COLUMNS, 0.0f, 1.0f);
-        s.item_bar[2] = std::clamp((X1 + dx) / width, 0.0f, 1.0f);
-        s.item_bar[3] = std::clamp((Y1 + dy) / LCD_COLUMNS, 0.0f, 1.0f);
+        s.item_bar[0] = std::clamp((ax + (X0 + dx - ax) * k) / width, 0.0f, 1.0f);
+        s.item_bar[1] = std::clamp((ay + (Y0 + dy - ay) * k) / LCD_COLUMNS, 0.0f, 1.0f);
+        s.item_bar[2] = std::clamp((ax + (X1 + dx - ax) * k) / width, 0.0f, 1.0f);
+        s.item_bar[3] = std::clamp((ay + (Y1 + dy - ay) * k) / LCD_COLUMNS, 0.0f, 1.0f);
     } else {
         s.item_bar_shown = scene != 0 ? 0 : -1;
     }
@@ -2960,6 +3282,8 @@ void UpdateGameState(RCtx* ctx) {
         s.items_slot = items_choice.Shown();
         s.items_wide = s.items_slot >= 0 && items_wide_shown ? 1 : 0;
     }
+    s.touch_items_slot = touch_items_choice.Shown();
+    s.touch_items_wide = s.touch_items_slot >= 0 && touch_items_wide ? 1 : 0;
     std::lock_guard lock(game_state_mutex);
     if (hold) {
         s.menu = game_state.menu;
@@ -3590,10 +3914,20 @@ void SetWindowSize(std::uint32_t width, std::uint32_t height) {
     window_height = height;
 }
 
+void SetShownWidth(float fraction) {
+    shown_width.store(fraction > 0.0f && fraction < 1.0f ? fraction : 0.0f, std::memory_order_relaxed);
+}
+
 std::vector<std::string> Install(const RCodeInfo& info) {
     std::vector<std::string> log;
     HuntAids::Reset();  // (its options are read with the others, below)
     HuntAids::SetLog([](const std::string& line) { LogInfo("{}", line); });
+#ifndef __ANDROID__
+    Presence::Reset();
+    Presence::SetLog([](const std::string& line) { LogInfo("{}", line); });
+#endif
+    WeaponTree::Reset();
+    WeaponTree::SetLog([](const std::string& line) { LogInfo("{}", line); });
     options = LoadOptions(log);
     // (gather.cpp calls the game's functions only when this library has them at this version's addresses)
     if (const std::string why = Gather::Check(info); !why.empty()) log.push_back(why);
@@ -3615,6 +3949,7 @@ std::vector<std::string> Install(const RCodeInfo& info) {
     // from the last one, whose emulated clock and game objects are gone
     frames = 0;
     dlc_installed = -1, dlc_flags_phase = 0, dlc_flags_backup.clear(), dlc_flags_failed = false, dlc_flags_set = 0;
+    supply_flight_seen = 0, supply_taken = 0, supply_taken_ns = 0;
     owner_regions.clear();
     quest_start_held = 0;
     target_held = 0;
@@ -3633,6 +3968,7 @@ std::vector<std::string> Install(const RCodeInfo& info) {
     quest_choice = {};
     quest_items_slot = -1, quest_items_wide = quest_items_drawn = items_wide_shown = false;
     items_choice = {};
+    touch_items_choice = {}, touch_items_wide = false;
     items_missing_logged = 0;
     last_panel_states = 0xFFFFFFFF;
     filters_drawn = filters_skipped = 0;
@@ -3668,6 +4004,13 @@ std::vector<std::string> Install(const RCodeInfo& info) {
         log.push_back(fmt::format("emulated screen refresh rate {} Hz{} (experimental)", RefreshRate(),
                                   options.refresh_rate > 0 ? "" : ", as fps"));
     }
+#if __has_include("mh4n/pacing_trace.h")  // (the runtime's headers, as guest_sleep.h above)
+    if (options.job_poll_us > 0 && JOB_POLL_SLEEP_RET.Known()) {
+        mh4n::g_sleep_filter = &JobPollSleep;
+        log.push_back(fmt::format("the game's job workers look for work every {} us {} (not every 1 ms)",
+                                  options.job_poll_us, options.job_poll_all ? "at any FPS limit" : "above 60 FPS"));
+    }
+#endif
     if (options.widescreen > 0) {
         log.push_back(WideRows() ? fmt::format("widescreen: top screen rendered {}x{} (experimental)",
                                                WideRows(), LCD_COLUMNS)
@@ -3834,6 +4177,15 @@ bool LockOnFollowing() {
     return lock_on.load(std::memory_order_relaxed) && at != 0 && SteadyNs() - at < 300'000'000;
 }
 
+#ifndef __ANDROID__
+int MapLayoutSeen() {
+    return map_layout_seen.load(std::memory_order_relaxed);
+}
+void ClearMapLayout() {
+    map_layout_seen.store(-1, std::memory_order_relaxed);
+}
+#endif
+
 int MissingHookPoints() {
     return missing_hook_points;
 }
@@ -3903,6 +4255,9 @@ bool SetOption(const std::string& key, const std::string& value) {
     if (HuntAids::SetOption(key, value)) {  // monsters_on_map, damage_numbers: taken at the next frame
         return true;
     }
+    if (WeaponTree::SetOption(key, value)) {  // weapon_tree, weapon_tree_trace
+        return true;
+    }
     if (key == "lock_on") {  // (the runner's --set, for tests: the app calls SetLockOn)
         SetLockOn(IsOn(value));
         return true;
@@ -3925,6 +4280,17 @@ bool SetOption(const std::string& key, const std::string& value) {
         item_test_steps += static_cast<int>(std::strtol(value.c_str(), nullptr, 10));
         return true;
     }
+    if (key == "net_sync" || key == "net_sync_slack") {  // (the app's switch, at once)
+        Set(options, key, value);
+        std::vector<std::string> lines;
+        P().InstallNetSync(options.net_sync, options.net_sync_slack, lines);
+        for (const std::string& line : lines) LogInfo("{}", line);
+        return true;
+    }
+    if (key == "test_stall") {  // (the runner's --set, for tests: the next frame stalls that many ms)
+        test_stall_ms = std::clamp(static_cast<int>(std::strtol(value.c_str(), nullptr, 10)), 0, 60000);
+        return true;
+    }
     if (Gather::SetOption(key, value)) {  // gather_all, gather_trace (and the tests' gather_test): at the next frame
         return true;
     }
@@ -3934,9 +4300,10 @@ bool SetOption(const std::string& key, const std::string& value) {
         "kick",
         "target", "skip", "skip_panel", "skip_hint", "skip_end", "skip_end_hold", "touch_overlay",
         "quest_overlay", "target_overlay",
-        "hud_edges", "trace_frames", "trace_layout", "trace_panels", "bloom", "motion_blur",
-        "depth_of_field", "radial_blur", "haze", "trace_filters", "trace_state", "item_bar", "hud_probe",
+        "hud_edges", "hud_anchor", "trace_frames", "trace_layout", "trace_panels", "bloom", "motion_blur",
+        "depth_of_field", "radial_blur", "haze", "trace_filters", "trace_state", "item_bar", "hud_probe", "hud_size",
         "qol_hold_gather", "qol_flex_cancel", "qol_sharpen_cancel", "qol_rewards_no_limit", "rewards_send_all",
+        "supply_box_wait",
         "single_screen", "effects", "quick_items", "bow_aim"};
     if (std::find(std::begin(live), std::end(live), key) == std::end(live) && HudPartIndex(key) < 0) {
         return false;

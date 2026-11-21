@@ -2,7 +2,9 @@
 // need, so one log answers most questions and it stops growing release after release.
 #include "diag.h"
 
+#ifdef __ANDROID__
 #include <jni.h>
+#endif
 #include <pthread.h>
 #include <time.h>
 #include <unistd.h>
@@ -124,7 +126,9 @@ void diag_log_cap(void) {
 }
 
 void diag_log_env(void) {
+#ifdef __ANDROID__
     extern char** environ;
+#endif
     std::string line = "[settings] the environment's MH4U_ and MH4N_ variables:";
     int n = 0;
     for (char** v = environ; v != nullptr && *v != nullptr; v++)
@@ -140,6 +144,7 @@ void diag_log_env(void) {
 
 static std::atomic<int> g_battery_tenths{-2147483647 - 1};
 int diag_battery_tenths(void) { return g_battery_tenths.load(std::memory_order_relaxed); }
+#ifdef __ANDROID__  // (the Java side's: the PC has none)
 JNIEXPORT void JNICALL Java_com_mh4u_port_Diag_nativeBattery(JNIEnv*, jclass, jint tenths) {
     g_battery_tenths.store(tenths, std::memory_order_relaxed);
 }
@@ -163,6 +168,7 @@ JNIEXPORT jboolean JNICALL Java_com_mh4u_port_Diag_nativeEvent(JNIEnv* env, jcla
     env->ReleaseStringUTFChars(text, s);
     return JNI_TRUE;
 }
+#endif
 
 }  // extern "C"
 

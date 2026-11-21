@@ -84,6 +84,13 @@ public:
     // The touch screen's picture is shown (false: nothing shows it, present::ScreenSink::ScreenHidden). Hidden, the
     // renderer leaves out the draws of the touch screen's turn into the target its transfer reads. Any thread.
     virtual void SetTouchScreenShown(bool shown) { (void)shown; }
+    // The framebuffer at physical address `paddr` was last written by a transfer of the touch screen's turn whose draws
+    // were left out: it holds the top screen's picture (the target the two screens share), not the touch screen's. The
+    // display builds no picture of it (1.0.2). On the renderer's own thread.
+    virtual bool ScreenLeftOut(u32 paddr) const {
+        (void)paddr;
+        return false;
+    }
     struct SharedScreen {
         std::shared_ptr<const present::SharedPicture> picture;
         present::ImageRegion region;  // the screen in the picture's buffer: (rows * N) x (stride / bytes per pixel * N)

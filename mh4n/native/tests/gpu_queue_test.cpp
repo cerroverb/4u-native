@@ -703,6 +703,48 @@ TEST_CASE("queue/the_safety_cap_blocks_the_vblank_that_would_pass_it_until_a_fra
     CHECK(Find(counters, "queue_frame_waits").value == 4); // the 2nd to the 5th VBlank(0)
 }
 
+TEST_CASE("queue/with_frames_are_swaps_only_a_vblank_after_a_top_screen_swap_ends_a_frame") {
+    WATCHDOG();
+    QueueConfig config;  // max_frames_in_flight 1, max_frames_queued 4
+    config.frames_are_swaps = true;
+    Rig rig(config);
+    QueueGpu& q = rig.q();
+    q.Execute(Cmd(kGated, 0, 0, 0));  // the renderer is held in frame 1
+    rig.script.entered.Wait();
+    for (int vblank = 0; vblank < 8; ++vblank) {
+        q.VBlank(0);  // VBlanks with no new picture: no frame ends, none counted, none blocks
+        q.VBlank(1);
+    }
+    CHECK(q.BlockedCallers() == 0);
+    q.SetBufferSwap(1, Info(0x18000000));  // the bottom screen's swap ends no frame
+    q.VBlank(0);
+    q.SetBufferSwap(0, Info(0x18100000));  // the top screen's: the next VBlank(0) ends a frame
+    q.VBlank(0);
+    q.VBlank(0);  // (no swap since)
+    q.SetBufferSwap(0, Info(0x18200000));
+    q.VBlank(0);  // the second frame queued: beyond the engine's lag, counted
+    CHECK(q.BlockedCallers() == 0);
+    rig.script.gate.Open();
+    q.WaitIdle();
+    CHECK(Find(q.TakeFrameCounters(), "queue_frame_waits").value == 1);
+}
+
+TEST_CASE("queue/with_frames_are_swaps_every_16th_vblank_without_a_swap_still_ends_a_frame") {
+    WATCHDOG();
+    QueueConfig config;
+    config.frames_are_swaps = true;
+    Rig rig(config);
+    QueueGpu& q = rig.q();
+    q.Execute(Cmd(kGated, 0, 0, 0));
+    rig.script.entered.Wait();
+    for (u32 vblank = 0; vblank < 2 * kIdleVBlanksPerFrame; ++vblank) {
+        q.VBlank(0);  // the 16th and the 32nd end a frame: the second of them is beyond the lag
+    }
+    rig.script.gate.Open();
+    q.WaitIdle();
+    CHECK(Find(q.TakeFrameCounters(), "queue_frame_waits").value == 1);
+}
+
 TEST_CASE("queue/the_frame_limits_are_settings_and_are_clamped") {
     WATCHDOG();
     {

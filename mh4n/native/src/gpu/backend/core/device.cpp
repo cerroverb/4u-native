@@ -557,6 +557,11 @@ Result<std::shared_ptr<Backend>> CreateBackend(std::shared_ptr<Instance> instanc
         extensions.push_back(VK_EXT_QUEUE_FAMILY_FOREIGN_EXTENSION_NAME);
         extensions.push_back(VK_KHR_EXTERNAL_FENCE_FD_EXTENSION_NAME);
     }
+#elif defined(_WIN32)
+    // Images the PC app's OpenGL reads (gpu/backend/shared: an allocation exported as an NT handle), the same way
+    if (probe.caps.api_version >= MakeApi(1, 1) && std::getenv("MH4N_NO_SHARED_IMAGES") == nullptr) {
+        extensions.push_back("VK_KHR_external_memory_win32");
+    }
 #endif
     if (surface != VK_NULL_HANDLE) {
         if (!mask.Has(Cap::PresentWait)) {
@@ -700,6 +705,18 @@ Result<std::shared_ptr<Backend>> CreateBackend(std::shared_ptr<Instance> instanc
         VkPhysicalDeviceProperties props = {};
         vkGetPhysicalDeviceProperties(impl->physical_device, &props);
         made.driver_version = props.driverVersion;
+#if defined(_WIN32)
+        {
+            VkPhysicalDeviceIDProperties ids = {};
+            ids.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES;
+            VkPhysicalDeviceProperties2 props2 = {};
+            props2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+            props2.pNext = &ids;
+            vkGetPhysicalDeviceProperties2(impl->physical_device, &props2);
+            made.luid_valid = ids.deviceLUIDValid == VK_TRUE;
+            for (int i = 0; i < 8; ++i) made.luid[i] = ids.deviceLUID[i];
+        }
+#endif
         if (!c.driver_name.empty()) {  // (the driver's properties answered the probe: its info as well)
             VkPhysicalDeviceDriverProperties driver = {};
             driver.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES;

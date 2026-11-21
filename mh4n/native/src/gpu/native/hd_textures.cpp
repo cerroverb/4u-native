@@ -105,6 +105,16 @@ bool ReadPng(const std::string& path, bool flip, u32 width, u32 height, std::vec
     return true;
 }
 
+// A pack file read and decoded as `format` (a KTX2's, ktx2.h: RGBA8 or BC7 blocks; a PNG's: RGBA8), at half its size when
+// `half` (RGBA8 only)
+bool ReadFile(const std::string& path, bool ktx2, HdFormat format, bool flip, u32 width, u32 height, std::vector<u8>& out,
+              std::string& error, bool half) {
+    if (!ktx2) return ReadPng(path, flip, width, height, out, error, half);
+    if (!ReadKtx2(path, format, width, height, out, error)) return false;
+    if (half && format == HdFormat::Rgba8) HalveRgba8(out, width, height);
+    return true;
+}
+
 // The decoded pixels the loader may keep waiting for the renderer: MH4N_HD_READY_MB, else by the device's memory (96 MB
 // for every phone in 1.0.1's first build: a 3 GB phone kept as much of them as an 8 GB one)
 u64 ReadyCapBytes() {
@@ -142,7 +152,9 @@ struct HdTextures::Loader {
         std::string path;
         bool flip = false;
         bool half = false;
-        u32 width = 0, height = 0;  // the PNG's own size
+        bool ktx2 = false;
+        HdFormat format = HdFormat::Rgba8;
+        u32 width = 0, height = 0;  // the file's own size
     };
     struct Done {
         bool ok = false;
@@ -202,7 +214,7 @@ struct HdTextures::Loader {
             lock.unlock();
             const auto t0 = Clock::now();
             Done done;
-            done.ok = ReadPng(job.path, job.flip, job.width, job.height, done.rgba, done.error, job.half);
+            done.ok = ReadFile(job.path, job.ktx2, job.format, job.flip, job.width, job.height, done.rgba, done.error, job.half);
             done.at = Clock::now();
             const double ms = std::chrono::duration<double, std::milli>(done.at - t0).count();
             lock.lock();
@@ -219,21 +231,38 @@ struct HdTextures::Loader {
 HdTextures::HdTextures() = default;
 HdTextures::~HdTextures() {
     if (replaced_ > 0) {
-        MH4N_LOG(Info, kLog, "HD textures: {} drawn from the packs in this run{}", replaced_, LoaderStats());
+        MH4N_LOG(Info, kLog, "HD textures: {} drawn from the packs in this run{}{}", replaced_, LoaderStats(),
+                 ktx2_bc7_ + ktx2_rgba8_ ? fmt::format("; KTX2 files: {} as BC7, {} as RGBA8", ktx2_bc7_, ktx2_rgba8_)
+                                         : std::string());
     }
 }
 
 bool HdTextures::Sized(File& f, u32 game_width, u32 game_height) {
     if (!f.sized) {
         f.sized = true;
-        if (!PngSize(f.path, f.file_width, f.file_height)) {
+        Ktx2Info info;
+        bool read = false;
+        if (f.ktx2) {  // (its header and key/values: the size, the kind, which way its rows run; ktx2.h)
+            read = Ktx2Header(f.path, info) && info.readable;
+            if (read) {
+                f.file_width = info.width, f.file_height = info.height;
+                f.format = Ktx2Target(info, bc7_);
+                ++(f.format == HdFormat::Bc7 ? ktx2_bc7_ : ktx2_rgba8_);
+            } else {
+                MH4N_LOG(Warning, kLog, "{}: not a KTX2 file this port reads ({})", f.path,
+                         info.kind.empty() ? "no KTX2 header" : info.kind);
+            }
+        } else {
+            read = PngSize(f.path, f.file_width, f.file_height);
+        }
+        if (!read) {
             f.width = f.height = f.file_width = f.file_height = 0;
             Refuse(Replacement{static_cast<u32>(&f - files_.data()), 0, 0});
         } else {
             // (half: only a file at least four times the game's texture each way, so that the half is still twice it, and
-            // of even sizes; a pack's 2x files stay whole)
-            f.half = half_ && f.file_width % 2 == 0 && f.file_height % 2 == 0 && f.file_width >= 4 * game_width &&
-                     f.file_height >= 4 * game_height;
+            // of even sizes; a pack's 2x files stay whole; never a BC7 one)
+            f.half = half_ && f.format == HdFormat::Rgba8 && f.file_width % 2 == 0 && f.file_height % 2 == 0 &&
+                     f.file_width >= 4 * game_width && f.file_height >= 4 * game_height;
             f.width = f.half ? f.file_width / 2 : f.file_width;
             f.height = f.half ? f.file_height / 2 : f.file_height;
             if (f.half) ++halved_;
@@ -268,7 +297,7 @@ HdTextures::Take HdTextures::TakePixels(const Replacement& r, std::vector<u8>& r
     w->second = now;
     if (asked) {
         const File& f = files_[r.file];
-        l.queue.push_back(Loader::Job{r.file, f.path, f.flip, f.half, f.file_width, f.file_height});
+        l.queue.push_back(Loader::Job{r.file, f.path, f.flip, f.half, f.ktx2, f.format, f.file_width, f.file_height});
         l.cv.notify_one();
     }
     return Take::Pending;
@@ -307,8 +336,9 @@ void HdTextures::Tick() {
     if (freed) l.cv.notify_all();
 }
 
-void HdTextures::Load(const std::string& root, bool sync) {
+void HdTextures::Load(const std::string& root, bool sync, bool bc7) {
     sync_ = SyncFor(sync);
+    bc7_ = bc7;
     if (const char* v = std::getenv("MH4N_HD_SCALE"); v != nullptr && std::string(v) == "half") {
         half_ = true;
         MH4N_LOG(Info, kLog, "MH4N_HD_SCALE=half: a pack's files four times the game's texture or more are drawn at half their "
@@ -354,21 +384,22 @@ void HdTextures::Load(const std::string& root, bool sync) {
             continue;
         }
         const int mode = pack->options.use_new_hash ? 1 : 0;
-        u32 png = 0, other = 0, normal = 0, taken = 0;
+        u32 png = 0, ktx2 = 0, other = 0, normal = 0, taken = 0;
         for (const auto& [hash, material] : pack->materials) {
             if (material.file[static_cast<int>(hdpack::MapType::Normal)] >= 0) ++normal;
             const int index = material.file[static_cast<int>(hdpack::MapType::Color)];
             if (index < 0) continue;
             const hdpack::PackFile& pf = pack->files[static_cast<std::size_t>(index)];
-            if (pf.format != hdpack::FileFormat::Png) {
+            if (pf.format != hdpack::FileFormat::Png && pf.format != hdpack::FileFormat::Ktx2) {
                 ++other;
                 continue;
             }
-            ++png;
+            ++(pf.format == hdpack::FileFormat::Ktx2 ? ktx2 : png);
             if (by_hash_[mode].count(hash) != 0) continue;  // (an earlier pack has it: the first wins, as in a load order)
             File f;
             f.path = utf8::PathToUtf8(dir / utf8::PathFromUtf8(pf.path));
             f.flip = !pack->options.flip_png_files;
+            f.ktx2 = pf.format == hdpack::FileFormat::Ktx2;
             // (its size from its header when its texture is first found, Sized: a whole pack's thousands of files are not
             // all opened at the start, which kept the screen black a while with a whole pack, 4u-native #56)
             by_hash_[mode][hash] = static_cast<u32>(files_.size());
@@ -377,10 +408,16 @@ void HdTextures::Load(const std::string& root, bool sync) {
         }
         total_files += taken;
         MH4N_LOG(Info, kLog,
-                 "texture pack {}: {} textures drawn from it ({} PNG colour maps; left out: {} DDS or KTX, {} normal maps; {} "
-                 "names ignored, {} files without a hash); {} hash, files {}",
-                 dir_text, taken, png, other, normal, pack->stats.ignored_names, pack->stats.files_without_hash,
+                 "texture pack {}: {} textures drawn from it ({} PNG and {} KTX2 colour maps; left out: {} DDS or KTX, {} normal "
+                 "maps; {} names ignored, {} files without a hash); {} hash, files {}",
+                 dir_text, taken, png, ktx2, other, normal, pack->stats.ignored_names, pack->stats.files_without_hash,
                  mode ? "the new (use_new_hash)" : "the old", pack->options.flip_png_files ? "flipped as Azahar does" : "as they are");
+        if (ktx2) {
+            MH4N_LOG(Info, kLog, "texture pack {}: {} KTX2 files ({} of them over another file of the same texture), drawn as {}",
+                     dir_text, ktx2, pack->stats.ktx2_preferred,
+                     bc7 ? "BC7 where their rows run bottom-up (KTXorientation ru: a quarter of the memory), else RGBA8"
+                         : "RGBA8 (this device has no BC7: the same memory as a PNG)");
+        }
     }
     if (total_files) {
         MH4N_LOG(Info, kLog, "HD textures: {} in all, the packs read in {} ms; each file is read when the game first draws its "
@@ -424,11 +461,12 @@ const HdTextures::Replacement* HdTextures::Find(u64 content, const u8* data, std
             File& f = files_[it->second];
             if (!Sized(f, width, height)) break;  // (its header unreadable: the game's own texture)
             a.found = true;
-            a.r = Replacement{it->second, f.width, f.height};
+            a.r = Replacement{it->second, f.width, f.height, f.format};
             if (++replaced_ <= 30 || replaced_ % 100 == 0) {
-                MH4N_LOG(Info, kLog, "{} {}x{} format {} drawn from {} ({}x{}, {:.1f} MB; {} textures from packs so far)",
+                MH4N_LOG(Info, kLog, "{} {}x{} format {} drawn from {} ({}x{}{}, {:.1f} MB; {} textures from packs so far)",
                          texture::CustomTextureStem(width, height, hashes[mode], format), width, height,
-                         static_cast<u32>(format), f.path, f.width, f.height, f.width * f.height * 4 / 1048576.0, replaced_);
+                         static_cast<u32>(format), f.path, f.width, f.height, f.format == HdFormat::Bc7 ? " BC7" : "",
+                         HdBytes(f.format, f.width, f.height) / 1048576.0, replaced_);
             }
         }
     }
@@ -439,7 +477,7 @@ bool HdTextures::Pixels(const Replacement& r, std::vector<u8>& rgba) {
     const File& f = files_[r.file];
     std::string error;
     const auto t0 = std::chrono::steady_clock::now();
-    const bool ok = ReadPng(f.path, f.flip, f.file_width, f.file_height, rgba, error, f.half);
+    const bool ok = ReadFile(f.path, f.ktx2, f.format, f.flip, f.file_width, f.file_height, rgba, error, f.half);
     ++sync_reads_;
     sync_ms_ += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     if (!ok) {

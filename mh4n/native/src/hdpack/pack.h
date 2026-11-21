@@ -32,7 +32,8 @@ struct PackOptions {
     bool use_new_hash = false;
 };
 
-enum class FileFormat : u8 { None = 0, Png = 1, Dds = 2, Ktx = 3 }; // Azahar's CustomFileFormat
+// Azahar's CustomFileFormat, and KTX2 (1.0.2, S9b: ours; gpu/native/ktx2.h), which wins over another file of the same map
+enum class FileFormat : u8 { None = 0, Png = 1, Dds = 2, Ktx = 3, Ktx2 = 4 };
 enum class MapType : u8 { Color = 0, Normal = 1 };                   // Azahar's MapType (norm)
 inline constexpr std::size_t kMapTypeCount = 2;
 
@@ -74,6 +75,7 @@ struct ScanStats {
     u32 ignored_dds = 0;         // a DDS file in a pack that skips mipmaps
     u32 files_without_hash = 0;  // a texture file whose name and pack.json give no hash
     u32 duplicate_maps = 0;      // two files for the same map of one hash (the first is kept)
+    u32 ktx2_preferred = 0;      // a .ktx2 and another file for the same map of one hash: the .ktx2 is kept
 };
 
 struct Pack {

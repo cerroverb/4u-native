@@ -15,7 +15,11 @@
 #include <sstream>
 #include <vector>
 
+#ifdef __ANDROID__
 #include <jni.h>
+#else
+#include "pc_input.h"  // (the PC's own keybinds: pc/pc_input.cpp)
+#endif
 
 #include "app_settings.h"
 #include "hooks.h"
@@ -23,6 +27,7 @@
 #include "imgui_impl_sdl3.h"
 #include "mh4n/host.h"
 #include "town.h"
+#include "weapon_tree_ui.h"
 #include "padmap.h"
 #include "settings_panel.h"
 #include "touch.h"
@@ -42,6 +47,7 @@ constexpr Uint64 kChordWaitMs = 60;
 constexpr Uint64 kOpenGraceMs = 500;  // a controller just opened can't take over (one whose buttons read as held)
 constexpr float kCircle = 156.0f;     // the Circle Pad's and the C-stick's reach, in HID's units
 constexpr float kTrigger = 8000;      // of 32767: a trigger this far is pressed
+constexpr int kTriggerHalf = 16384;   // (a trigger that is a combined button's: pressed past half its travel)
 constexpr int kTakeOver = 22000;      // of 32767: a stick of another controller this far makes it the one in use
 constexpr float kWalk = .45f;         // Shift with W A S D: walking
 // The camera at full tilt and speed 100 %, degrees a second (the game's own turn by the C-stick tops out near these)
@@ -62,6 +68,9 @@ struct Settings {
     int combo_pad[kCombos] = {};  // [Controls] Combo<n>Pad: kComboPadKeys' index (COMBO_PAD's button), 0 none
     Keybinds binds;               // [Keybinds]
     float mouse_sens = 1.0f;      // [Mouse] MouseSensitivity, 0.1 .. 10 (the MHGU port's)
+#ifndef __ANDROID__
+    bool mouse_inv_x = false, mouse_inv_y = false;  // (the PC) [Mouse] InvertX, InvertY: the camera turned the other way
+#endif
 };
 Settings g_set;
 unsigned g_set_version = ~0u;
@@ -113,14 +122,16 @@ void read_settings() {
              : !SDL_strcasecmp(town.c_str(), "off") ? TOWN_OFF : TOWN_SELECT;
     std::string pads;
     for (int k = 0; k < kCombos; k++) {
-        const std::string v = app_setting("Controls", ("Combo" + std::to_string(k + 1) + "Pad").c_str(), "None");
-        for (int i = 1; i < (int)std::size(kComboPadKeys); i++)
-            if (!SDL_strcasecmp(v.c_str(), kComboPadKeys[i])) s.combo_pad[k] = i;
-        if (s.combo_pad[k]) pads += ", combined button " + std::to_string(k + 1) + " on " + kComboPadKeys[s.combo_pad[k]];
+        s.combo_pad[k] = controls_combo_pad_value(app_setting("Controls", ("Combo" + std::to_string(k + 1) + "Pad").c_str(), "None"));
+        if (s.combo_pad[k]) pads += ", combined button " + std::to_string(k + 1) + " on " + controls_combo_pad_key(s.combo_pad[k]);
     }
     s.binds = controls_read_binds();
     s.mouse_sens = std::clamp(std::strtof(app_setting("Mouse", "MouseSensitivity", "1.0").c_str(), nullptr), 0.1f, 10.0f);
     if (!(s.mouse_sens >= 0.1f)) s.mouse_sens = 1.0f;  // (not a number)
+#ifndef __ANDROID__
+    s.mouse_inv_x = app_setting_bool("Mouse", "InvertX", false);
+    s.mouse_inv_y = app_setting_bool("Mouse", "InvertY", false);
+#endif
     static bool read_once = false;  // (the first read: no change to say)
     if (read_once && !(s.binds == g_set.binds)) std::fprintf(stderr, "[Info] Controls: the keybinds changed\n");
     read_once = true;
@@ -135,18 +146,56 @@ void read_settings() {
 // runtime/host_input.c): while that button is held the game gets the combined button's buttons (touch.h
 // touch_combo_buttons), and the button does nothing else - not the game's button it was, nor the touch screen, the
 // lock-on, the town's list, START + SELECT or the settings. One whose combined button has no buttons is left as it was
+// (1.0.2: any button. A, B, X and Y by their place - SDL's east, south, north and west -, never by FaceButtons; ZL and
+// ZR are axes: COMBO_ZL / COMBO_ZR, trigger_combo_bits; Raw<i> a button of the controller's own numbering, raw_combo_bits)
+enum { COMBO_ZL = 17, COMBO_ZR = 18 };
 const SDL_GamepadButton COMBO_PAD[] = {
     SDL_GAMEPAD_BUTTON_INVALID,        SDL_GAMEPAD_BUTTON_LEFT_STICK,     SDL_GAMEPAD_BUTTON_RIGHT_STICK,
     SDL_GAMEPAD_BUTTON_BACK,           SDL_GAMEPAD_BUTTON_GUIDE,          SDL_GAMEPAD_BUTTON_MISC1,
     SDL_GAMEPAD_BUTTON_RIGHT_PADDLE1,  SDL_GAMEPAD_BUTTON_LEFT_PADDLE1,   SDL_GAMEPAD_BUTTON_RIGHT_PADDLE2,
-    SDL_GAMEPAD_BUTTON_LEFT_PADDLE2,   SDL_GAMEPAD_BUTTON_TOUCHPAD};
+    SDL_GAMEPAD_BUTTON_LEFT_PADDLE2,   SDL_GAMEPAD_BUTTON_TOUCHPAD,       SDL_GAMEPAD_BUTTON_EAST,
+    SDL_GAMEPAD_BUTTON_SOUTH,          SDL_GAMEPAD_BUTTON_NORTH,          SDL_GAMEPAD_BUTTON_WEST,
+    SDL_GAMEPAD_BUTTON_LEFT_SHOULDER,  SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER, SDL_GAMEPAD_BUTTON_INVALID,
+    SDL_GAMEPAD_BUTTON_INVALID,        SDL_GAMEPAD_BUTTON_START,          SDL_GAMEPAD_BUTTON_DPAD_UP,
+    SDL_GAMEPAD_BUTTON_DPAD_DOWN,      SDL_GAMEPAD_BUTTON_DPAD_LEFT,      SDL_GAMEPAD_BUTTON_DPAD_RIGHT};
 static_assert(std::size(COMBO_PAD) == std::size(kComboPadKeys), "a button for each of Combo<n>Pad's values");
+// the gamepad button a Combo<n>Pad value is (INVALID: none, a trigger or a raw button)
+SDL_GamepadButton combo_pad_button(int v) { return v > 0 && v < (int)std::size(COMBO_PAD) ? COMBO_PAD[v] : SDL_GAMEPAD_BUTTON_INVALID; }
 // the game's buttons button b presses as a combined button's (more than one on it: all of theirs), 0 none: b is its own
 u32 combo_bits(SDL_GamepadButton b) {
     u32 bits = 0;
     for (int k = 0; k < kCombos; k++)
-        if (g_set.combo_pad[k] && COMBO_PAD[g_set.combo_pad[k]] == b) bits |= touch_combo_buttons(k);
+        if (g_set.combo_pad[k] && combo_pad_button(g_set.combo_pad[k]) == b && b != SDL_GAMEPAD_BUTTON_INVALID)
+            bits |= touch_combo_buttons(k);
     return bits;
+}
+// ...a trigger's (left: ZL), or raw button i's
+u32 trigger_combo_bits(bool left) {
+    u32 bits = 0;
+    for (int k = 0; k < kCombos; k++)
+        if (g_set.combo_pad[k] == (left ? COMBO_ZL : COMBO_ZR)) bits |= touch_combo_buttons(k);
+    return bits;
+}
+bool trigger_taken(bool left) {
+    for (int k = 0; k < kCombos; k++)
+        if (g_set.combo_pad[k] == (left ? COMBO_ZL : COMBO_ZR) && touch_combo_buttons(k)) return true;
+    return false;
+}
+u32 raw_combo_bits(int i) {
+    u32 bits = 0;
+    for (int k = 0; k < kCombos; k++)
+        if (g_set.combo_pad[k] == kComboPadRaw + i) bits |= touch_combo_buttons(k);
+    return bits;
+}
+// Raw button i of controller p has a name in its map (the map makes it one of the gamepad's buttons, or a trigger)
+bool raw_bound(SDL_Gamepad* p, int i) {
+    int n = 0;
+    SDL_GamepadBinding** b = SDL_GetGamepadBindings(p, &n);
+    bool bound = false;
+    for (int k = 0; b && k < n; k++)
+        if (b[k] && b[k]->input_type == SDL_GAMEPAD_BINDTYPE_BUTTON && b[k]->input.button == i) bound = true;
+    SDL_free(b);
+    return bound;
 }
 
 // ---- Aiming with the gyro ([Controls] GyroAim), as the MHGU port's (its runtime/host_input.c gyro_update): while a
@@ -178,6 +227,25 @@ void gyro_off() {
 Uint64 g_report_next = 0;
 bool g_report_all = true;  // (the whole report: the start, a device came or went)
 void report_soon() { g_report_all = true, g_report_next = SDL_GetTicks() + 1000; }
+#ifndef __ANDROID__
+// (the PC: the joysticks SDL sees, each a line, at the start and when one comes or goes)
+void input_report() {
+    const Uint64 now = SDL_GetTicks();
+    if (!g_report_all || now < g_report_next) return;
+    g_report_all = false;
+    int n = 0;
+    SDL_JoystickID* ids = SDL_GetJoysticks(&n);
+    std::fprintf(stderr, "[input] %d joystick%s\n", n, n == 1 ? "" : "s");
+    for (int i = 0; ids != nullptr && i < n; i++) {
+        char guid[33];
+        SDL_GUIDToString(SDL_GetJoystickGUIDForID(ids[i]), guid, sizeof guid);
+        const char* name = SDL_GetJoystickNameForID(ids[i]);
+        std::fprintf(stderr, "[input]   %s: %s, guid %s\n", name ? name : "?",
+                     SDL_IsGamepad(ids[i]) ? "a controller SDL maps" : "no map of SDL's", guid);
+    }
+    SDL_free(ids);
+}
+#else
 void input_report() {
     static bool failed = false;
     const Uint64 now = SDL_GetTicks();
@@ -208,6 +276,7 @@ void input_report() {
     if (cls) env->DeleteLocalRef(cls);
     env->DeleteLocalRef(act);
 }
+#endif
 
 // ---- which devices are controllers
 // A controller in the player's hands hides the touch controls. Android calls other devices a gamepad too: the
@@ -241,10 +310,11 @@ bool any_button(SDL_Gamepad* g) {
 
 // The settings (ImGui's backend) read the controller the game reads, unless it is the one being mapped, or its map
 // changed while a button was held (that button would read as another one: the menu waits for it to be let go)
+bool g_pad_capture = false;  // (the settings' Press a controller button: controls_pad_capture)
 void imgui_pad() {
     Pad* p = find_pad(g_active);
     if (g_remapped && (!p || p->id != g_remapped || !any_button(p->pad))) g_remapped = 0;
-    SDL_Gamepad* want = p && p->id != padmap_joystick() && p->id != g_remapped ? p->pad : nullptr;
+    SDL_Gamepad* want = p && p->id != padmap_joystick() && p->id != g_remapped && !g_pad_capture ? p->pad : nullptr;
     if (want == g_imgui_pad && g_imgui_manual) return;
     g_imgui_pad = want, g_imgui_manual = true;
     ImGui_ImplSDL3_SetGamepadMode(ImGui_ImplSDL3_GamepadMode_Manual, want ? &want : nullptr, want ? 1 : 0);
@@ -302,6 +372,11 @@ void joystick_seen(SDL_JoystickID id) {
                          "(Controls, Controller, Map a controller)\n",
                  name ? name : "?", SDL_GetJoystickVendorForID(id), SDL_GetJoystickProductForID(id));
     if (!name_is_pad(name)) return;  // (not a controller in the player's hands)
+#ifndef __ANDROID__
+    // (the PC: a device with no name of its own, "0x1532/0x022b" as SDL calls it, is a keyboard's or a mouse's extra
+    // interface far more often than a controller: logged above, no notice)
+    if (name != nullptr && name[0] == '0' && name[1] == 'x' && std::strchr(name, '/') != nullptr) return;
+#endif
     const std::string who = name ? name : "";
     settings_panel_notice((who.empty() ? std::string("A controller") : who) +
                               ": to use it, map it in the settings: Controls, Controller, Map a controller.",
@@ -367,10 +442,19 @@ u32 pad_held(SDL_Gamepad* p) {
     u32 b = 0;
     for (SDL_GamepadButton sb : buttons)
         if (SDL_GetGamepadButton(p, sb) && !combo_bits(sb)) b |= button_bit(p, sb);  // (a combined button's: below)
-    for (int k = 0; k < kCombos; k++)
-        if (g_set.combo_pad[k] && SDL_GetGamepadButton(p, COMBO_PAD[g_set.combo_pad[k]])) b |= touch_combo_buttons(k);
-    if (SDL_GetGamepadAxis(p, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) > kTrigger) b |= ZL_BIT;
-    if (SDL_GetGamepadAxis(p, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) > kTrigger) b |= ZR_BIT;
+    SDL_Joystick* joy = SDL_GetGamepadJoystick(p);
+    for (int k = 0; k < kCombos; k++) {
+        const int v = g_set.combo_pad[k];
+        const SDL_GamepadButton cb = combo_pad_button(v);
+        if (cb != SDL_GAMEPAD_BUTTON_INVALID && SDL_GetGamepadButton(p, cb)) b |= touch_combo_buttons(k);
+        if (v == COMBO_ZL || v == COMBO_ZR)
+            if (SDL_GetGamepadAxis(p, v == COMBO_ZL ? SDL_GAMEPAD_AXIS_LEFT_TRIGGER : SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) > kTriggerHalf)
+                b |= touch_combo_buttons(k);
+        if (v >= kComboPadRaw && v < kComboPadRaw + kComboPadRaws && joy && SDL_GetJoystickButton(joy, v - kComboPadRaw))
+            b |= touch_combo_buttons(k);
+    }
+    if (!trigger_taken(true) && SDL_GetGamepadAxis(p, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) > kTrigger) b |= ZL_BIT;
+    if (!trigger_taken(false) && SDL_GetGamepadAxis(p, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) > kTrigger) b |= ZR_BIT;
     return b;
 }
 
@@ -381,6 +465,40 @@ const u32 BIND_BITS[BINDS] = {
     mh4n::kPadStart, mh4n::kPadSelect, mh4n::kPadUp, mh4n::kPadDown, mh4n::kPadLeft, mh4n::kPadRight};
 u32 g_mouse_held = 0;            // the mouse's buttons held (bit: SDL_BUTTON_*), while it is captured
 Uint64 g_wheel_until[2] = {};    // a notch up, down on a button's keybind: pressed until then (SDL_GetTicks)
+#ifndef __ANDROID__
+// (the PC, as the MHGU port's desktop) A mouse button (or a wheel notch) on A presses it only with the weapon out, in a
+// menu or a talk of the game's, or out of the towns and the quests (the title, the save's choice): by default A is F,
+// O and the right click, and the right click attacks then - it never talks, opens the item box, gathers or carves by
+// mistake (F does). g_mouse_a: allowed now (mouse_a_ok, each turn)
+bool g_mouse_a = true;
+bool is_mouse_code(int code) { return code > kKeyMouse && code <= kKeyWheelDown; }
+bool mouse_a_ok() {
+    const Port::Hooks::GameState g = Port::Hooks::CurrentGameState();
+    if (g.weapon_drawn == 1 || g.menu == 1 || g.front_end == 1) return true;
+    return g.place != Port::Hooks::GameState::PLACE_TOWN && g.place != Port::Hooks::GameState::PLACE_QUEST;
+}
+// A modifier key (Ctrl, Alt, the Windows key; not Shift) on a keybind that presses something presses it only when
+// tapped alone: let go with no other key or mouse button pressed meanwhile, and then as long as a wheel notch. With
+// another key it is a shortcut's (Alt+Tab, Alt+Enter, Ctrl+V) and presses nothing: Alt is the lock-on and Ctrl the touch
+// screen by default. On a stick's direction or Walk every key is held as it is (the MHGU port's)
+constexpr int kMods = SDL_SCANCODE_RGUI - SDL_SCANCODE_LCTRL + 1;
+bool g_mod_held[kMods] = {}, g_mod_spent[kMods] = {};
+Uint64 g_mod_until[kMods] = {};
+bool is_tap_mod(int code) {
+    return code >= SDL_SCANCODE_LCTRL && code <= SDL_SCANCODE_RGUI && code != SDL_SCANCODE_LSHIFT && code != SDL_SCANCODE_RSHIFT;
+}
+bool bind_taps(int b) { return b >= BIND_A; }  // (a button's, a click's, the item bar's...: not moving, Walk, the camera)
+void mods_spend() {  // (another key or button went down: the modifiers held are a shortcut's)
+    for (int i = 0; i < kMods; i++)
+        if (g_mod_held[i]) g_mod_spent[i] = true;
+}
+// In a menu, a window or a talk of the game's (the hooks' menu), the movement keys (W A S D) are the D-pad and push no
+// Circle Pad: the game's cursor moves with the D-pad in its menus (the pause menu, the pouch, the item box, a shop, the
+// quest board), not with the Circle Pad, as MHGU for PC's WASD (g_keys_menu: each controls_input)
+bool g_keys_menu = false;
+const int kMoveBinds[4] = {BIND_MOVE_UP, BIND_MOVE_DOWN, BIND_MOVE_LEFT, BIND_MOVE_RIGHT};
+const u32 kMoveDpad[4] = {mh4n::kPadUp, mh4n::kPadDown, mh4n::kPadLeft, mh4n::kPadRight};
+#endif
 bool code_held(int code) {
     if (code > 0 && code < SDL_SCANCODE_COUNT) return g_keys[code];
     if (code > kKeyMouse && code <= kKeyMouse + SDL_BUTTON_X2) return (g_mouse_held >> (code - kKeyMouse) & 1) != 0;
@@ -388,9 +506,23 @@ bool code_held(int code) {
     return false;
 }
 bool bind_held(int b) {
+#ifdef __ANDROID__
     for (int k = 0; k < kBindKeys; k++)
         if (g_set.binds.keys[b][k] && code_held(g_set.binds.keys[b][k])) return true;
     return false;
+#else
+    for (int k = 0; k < kBindKeys; k++) {
+        const int code = g_set.binds.keys[b][k];
+        if (!code) continue;
+        if (b == BIND_A && !g_mouse_a && is_mouse_code(code)) continue;
+        if (bind_taps(b) && is_tap_mod(code)) {
+            if (SDL_GetTicks() < g_mod_until[code - SDL_SCANCODE_LCTRL]) return true;
+            continue;
+        }
+        if (code_held(code)) return true;
+    }
+    return false;
+#endif
 }
 bool bind_has(int b, int code) {
     for (int k = 0; k < kBindKeys; k++)
@@ -404,9 +536,14 @@ u32 code_bits(int code) {
     u32 b = 0;
     for (int i = 0; i < BINDS; i++) {
         if (!bind_has(i, code)) continue;
+#ifndef __ANDROID__
+        if (i == BIND_A && !g_mouse_a && is_mouse_code(code)) continue;  // (the right click with the weapon sheathed)
+        for (int k = 0; k < 4; k++)  // (a menu's: the movement keys are the D-pad)
+            if (g_keys_menu && i == kMoveBinds[k]) b |= kMoveDpad[k];
+#endif
         if (BIND_BITS[i]) b |= BIND_BITS[i];
         else if (i == BIND_RSTICK) b |= rstick_bits();
-        else if (i >= BIND_COMBO1) b |= touch_combo_buttons(i - BIND_COMBO1);
+        else if (i >= BIND_COMBO1 && i <= BIND_COMBO15) b |= touch_combo_buttons(i - BIND_COMBO1);
     }
     return b;
 }
@@ -424,15 +561,23 @@ u32 keys_held() {
         if (!bind_held(i)) continue;
         if (BIND_BITS[i]) b |= BIND_BITS[i];
         else if (i == BIND_RSTICK) b |= rstick_bits();
-        else if (i >= BIND_COMBO1) b |= touch_combo_buttons(i - BIND_COMBO1);
+        else if (i >= BIND_COMBO1 && i <= BIND_COMBO15) b |= touch_combo_buttons(i - BIND_COMBO1);
     }
+#ifndef __ANDROID__
+    for (int k = 0; k < 4; k++)  // (a menu's: the movement keys are the D-pad)
+        if (g_keys_menu && bind_held(kMoveBinds[k])) b |= kMoveDpad[k];
+#endif
     return b;
 }
 
 // (not while the settings are open: a press there is the settings', and its release must not reach the game after them)
 void pressed(u32 bits) {
-    if (town_takes_pad() && !ui_settings_open() && !padmap_active()) g_town_presses |= bits;  // (however short: town.h)
-    if (ui_settings_open() || padmap_active() || town_takes_pad() || settings_panel_thanks_open()) return;
+    const bool module = town_takes_pad() || weapon_tree_takes_pad();  // (town.h; 1.0.2: the Smithy's weapon tree)
+    if (module && !ui_menu_up() && !padmap_active()) g_town_presses |= bits;  // (however short)
+    if (ui_menu_up() || padmap_active() || module || settings_panel_thanks_open()) return;  // (1.0.2: the chat afloat: the game's)
+#ifndef __ANDROID__
+    if (touch_editing() || pc_help_open()) return;  // (the HUD editor, the list of the controls: theirs)
+#endif
     const Uint64 now = SDL_GetTicks();
     for (u32 b = bits; b; b &= b - 1) g_down_at[__builtin_ctz(b)] = now;
 }
@@ -606,6 +751,14 @@ void script_input(u32 frame, ControlsInput& out) {
 int g_kbm = 0;  // (1 a keyboard, 2 a mouse)
 Uint64 g_kbm_next = 0;
 void kbm_soon() { g_kbm_next = SDL_GetTicks() + 500; }
+#ifndef __ANDROID__
+// (the PC: a keyboard and a mouse are always there)
+void kbm_poll() {
+    if (g_kbm == 3) return;
+    g_kbm = 3;
+    std::fprintf(stderr, "[input] keyboard and mouse: the settings' Controls show Keybinds and the mouse's speed\n");
+}
+#else
 void kbm_poll() {
     static bool failed = false;
     static int said = -1;
@@ -632,6 +785,7 @@ void kbm_poll() {
                      bits == 3 ? ": the settings' Controls show Keybinds and the mouse's speed" : said == 3 ? ": Keybinds hidden again" : "");
     said = bits;
 }
+#endif
 
 // ---- a key or a mouse button went down (not while the settings are open: pressed() says so): the buttons of the
 // keybinds it is on, and what the stick's clicks and the item bar's keybinds do at once
@@ -642,8 +796,19 @@ bool code_used(int code) {
 }
 void code_down(int code) {
     pressed(code_bits(code));
-    if (ui_settings_open() || padmap_active() || settings_panel_thanks_open() || typing()) return;
-    if (bind_has(BIND_RSTICK, code) && g_set.r3 == R3_LOCKON) touch_lock_key();  // (a controller's right stick click's)
+#ifndef __ANDROID__
+    if (touch_editing() || pc_help_open()) {  // (the list of the controls: its own key hides it)
+        if (pc_help_open() && bind_has(BIND_HELP, code)) pc_bind_pressed(BIND_HELP);
+        return;
+    }
+#endif
+    if (ui_menu_up() || padmap_active() || settings_panel_thanks_open() || typing()) return;
+    if (bind_has(BIND_RSTICK, code) && (weapon_tree_is_open() || weapon_tree_available())) {  // (1.0.2: the Smithy's tree)
+        if (weapon_tree_is_open()) weapon_tree_close();
+        else weapon_tree_open(true);
+    } else if (bind_has(BIND_RSTICK, code) && g_set.r3 == R3_LOCKON) {
+        touch_lock_key();  // (a controller's right stick click's)
+    }
     if (bind_has(BIND_LSTICK, code)) {  // (the left stick's click: the town's list as the controller's, else the touch screen)
         if (g_set.town == TOWN_L3 && town_list_open()) town_close();
         else if (g_set.town == TOWN_L3 && town_available()) town_open(true);
@@ -651,6 +816,10 @@ void code_down(int code) {
     }
     if (bind_has(BIND_ITEM_LEFT, code)) touch_item_key(-1);
     if (bind_has(BIND_ITEM_RIGHT, code)) touch_item_key(1);
+#ifndef __ANDROID__
+    for (int i = BIND_HELP; i < BINDS; i++)  // (the PC's own: the controls' list, the touch screen's shortcuts)
+        if (bind_has(i, code)) pc_bind_pressed(i);
+#endif
 }
 
 // ---- the mouse: captured (relative mode) by a left click on the game's picture while a keyboard and a mouse are
@@ -689,10 +858,16 @@ bool mouse_event(const SDL_Event& e) {
         const bool picture = b == SDL_BUTTON_LEFT && touch_mouse_click_on_picture(e.button.timestamp);
         if (g_mouse_captured) {
             g_last_pad = true;
+#ifndef __ANDROID__
+            mods_spend();  // (Ctrl or Alt held with a click: a shortcut's, no tap)
+#endif
             g_mouse_held |= 1u << b;
             code_down(kKeyMouse + b);
             return true;
         }
+#ifndef __ANDROID__
+        if (weapon_tree_is_open()) return false;  // (1.0.2: a click on the Smithy's weapon tree is its finger, no capture)
+#endif
         if (picture && !ui_settings_open() && !typing() && controls_keyboard_mouse() && !g_mouse_refused && !g_mouse_grab) {
             std::fprintf(stderr, "[input] capturing the mouse (a click on the game's picture; Escape lets it go)\n");
             g_mouse_grab = true;  // (the click that captures it presses nothing)
@@ -710,6 +885,9 @@ bool mouse_event(const SDL_Event& e) {
     case SDL_EVENT_MOUSE_WHEEL: {
         if (!g_mouse_captured) return false;
         const int n = static_cast<int>(e.wheel.integer_y) * (e.wheel.direction == SDL_MOUSEWHEEL_FLIPPED ? -1 : 1);
+#ifndef __ANDROID__
+        if (n) mods_spend();
+#endif
         if (n) wheel_turn(n);
         return true;
     }
@@ -724,6 +902,18 @@ void mouse_capture(bool settings_open) {
     if (want == g_mouse_captured) return;
     SDL_Window* w = SDL_GetKeyboardFocus();
     if (!w) w = SDL_GetMouseFocus();
+#ifndef __ANDROID__
+    // (tests, MH4U_TEST_NO_GRAB=1: the mouse is the game's as if captured, but the real pointer is left alone - the
+    // test's mouse is its script's events, and the PC's own mouse is not taken from the person at it)
+    static const bool no_grab = std::getenv("MH4U_TEST_NO_GRAB") != nullptr && *std::getenv("MH4U_TEST_NO_GRAB") == '1';
+    if (no_grab) {
+        g_mouse_captured = want;
+        std::fprintf(stderr, "[input] mouse %s (a test's: the pointer left alone)\n", want ? "captured: it turns the camera" : "free");
+        g_mouse_dx = g_mouse_dy = g_mouse_vx = g_mouse_vy = 0;
+        if (!want) g_mouse_held = 0;
+        return;
+    }
+#endif
     if (!w) return;
     if (SDL_SetWindowRelativeMouseMode(w, want) || !want) {
         g_mouse_captured = want;
@@ -737,7 +927,11 @@ void mouse_capture(bool settings_open) {
 }
 // the mouse's movement since the last turn: the camera
 void mouse_camera(bool hook, float dt, ControlsInput& out) {
+#ifndef __ANDROID__
+    const float dx = g_mouse_dx * (g_set.mouse_inv_x ? -1.0f : 1.0f), dy = g_mouse_dy * (g_set.mouse_inv_y ? -1.0f : 1.0f);
+#else
     const float dx = g_mouse_dx, dy = g_mouse_dy;
+#endif
     g_mouse_dx = g_mouse_dy = 0;
     const Uint64 now = SDL_GetTicks();
     if (dx != 0 || dy != 0) g_mouse_moved_ms = now;
@@ -850,7 +1044,19 @@ void controls_init(const std::string& data_dir, std::function<void(bool, int, in
     }
 }
 
+#ifndef __ANDROID__
+int g_last_device = 1;  // (controls_last_device: 0 the mouse or a finger, 1 the keyboard, 2 a controller)
+#endif
+
 bool controls_event(const SDL_Event& e) {
+#ifndef __ANDROID__
+    if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN || (e.type == SDL_EVENT_GAMEPAD_AXIS_MOTION && std::abs(e.gaxis.value) > kTakeOver))
+        g_last_device = 2;
+    else if (e.type == SDL_EVENT_KEY_DOWN)
+        g_last_device = 1;
+    else if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN || e.type == SDL_EVENT_MOUSE_WHEEL || e.type == SDL_EVENT_FINGER_DOWN)
+        g_last_device = 0;
+#endif
     if (g_capture && capture_event(e)) return true;  // (the settings choosing a key: the next one is theirs)
     switch (e.type) {
     case SDL_EVENT_GAMEPAD_ADDED:
@@ -872,6 +1078,21 @@ bool controls_event(const SDL_Event& e) {
         joystick_seen(e.jdevice.which);
         report_soon();
         return false;
+    case SDL_EVENT_JOYSTICK_BUTTON_DOWN: {  // (a controller's raw button: one its map has no name for, 1.0.2)
+        Pad* p = find_pad(e.jbutton.which);
+        if (!p || p->id == padmap_joystick() || e.jbutton.button >= kComboPadRaws || raw_bound(p->pad, e.jbutton.button))
+            return false;
+        static std::vector<std::pair<SDL_JoystickID, int>> told;
+        if (std::find(told.begin(), told.end(), std::make_pair(p->id, (int)e.jbutton.button)) == told.end()) {
+            told.emplace_back(p->id, (int)e.jbutton.button);
+            std::fprintf(stderr, "[Info] Controls: %s button %d pressed: no name in the controller's map (a combined button "
+                                 "can take it with Press a controller button)\n",
+                         SDL_GetGamepadName(p->pad) ? SDL_GetGamepadName(p->pad) : "?", (int)e.jbutton.button);
+        }
+        if (p->id == g_active && !ui_settings_open())
+            if (const u32 combo = raw_combo_bits(e.jbutton.button)) pressed(combo);
+        return false;
+    }
     case SDL_EVENT_GAMEPAD_BUTTON_UP:
         if (g_debug) std::fprintf(stderr, "[Info] Controls: %u %s up\n", (unsigned)e.gbutton.which,
                                   SDL_GetGamepadStringForButton(static_cast<SDL_GamepadButton>(e.gbutton.button)));
@@ -896,6 +1117,13 @@ bool controls_event(const SDL_Event& e) {
             return true;
         }
         if (chord(p->pad, b)) return true;
+        // (1.0.2) in the Smithy, with a weapon shown, the right stick's click opens the weapon tree and closes it (no
+        // lock-on in a town; weapon_tree_ui.h)
+        if (b == SDL_GAMEPAD_BUTTON_RIGHT_STICK && !ui_settings_open() && (weapon_tree_is_open() || weapon_tree_available())) {
+            if (weapon_tree_is_open()) weapon_tree_close();
+            else weapon_tree_open(true);
+            return true;
+        }
         // (a stick's click as the town's list's button: in a town it opens the list, and closes it)
         if ((b == SDL_GAMEPAD_BUTTON_LEFT_STICK && g_set.town == TOWN_L3) ||
             (b == SDL_GAMEPAD_BUTTON_RIGHT_STICK && g_set.town == TOWN_R3)) {
@@ -921,9 +1149,11 @@ bool controls_event(const SDL_Event& e) {
         }
         if (!p || p->id != g_active) return false;
         if (e.gaxis.axis == SDL_GAMEPAD_AXIS_LEFT_TRIGGER || e.gaxis.axis == SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) {
-            bool& was = e.gaxis.axis == SDL_GAMEPAD_AXIS_LEFT_TRIGGER ? p->zl : p->zr;
-            const bool now = e.gaxis.value > kTrigger;
-            if (now && !was) pressed(e.gaxis.axis == SDL_GAMEPAD_AXIS_LEFT_TRIGGER ? ZL_BIT : ZR_BIT);
+            const bool left = e.gaxis.axis == SDL_GAMEPAD_AXIS_LEFT_TRIGGER;
+            bool& was = left ? p->zl : p->zr;
+            const bool taken = !ui_settings_open() && trigger_taken(left);  // (a combined button's: past half, its buttons)
+            const bool now = e.gaxis.value > (taken ? kTriggerHalf : kTrigger);
+            if (now && !was) pressed(taken ? trigger_combo_bits(left) : left ? ZL_BIT : ZR_BIT);
             was = now;
         }
         return false;
@@ -945,6 +1175,24 @@ bool controls_event(const SDL_Event& e) {
         }
         if (e.key.down && code_used(e.key.scancode)) g_last_pad = true;
         if (e.key.scancode < SDL_SCANCODE_COUNT && !(e.key.down && typing())) {
+#ifndef __ANDROID__
+            // (a modifier's keybinds: pressed as it is let go, if no other key or button went down meanwhile)
+            const int sc = e.key.scancode;
+            if (e.key.down && !e.key.repeat && !g_keys[sc]) mods_spend();
+            if (is_tap_mod(sc)) {
+                const int m = sc - SDL_SCANCODE_LCTRL;
+                if (e.key.down && !g_keys[sc]) g_mod_held[m] = true, g_mod_spent[m] = false;
+                if (!e.key.down && g_mod_held[m]) {
+                    g_mod_held[m] = false;
+                    if (!g_mod_spent[m] && !typing()) {
+                        g_mod_until[m] = SDL_GetTicks() + kWheelPressMs;
+                        code_down(sc);
+                    }
+                }
+                g_keys[sc] = e.key.down;
+                return false;
+            }
+#endif
             if (e.key.down && !e.key.repeat && !g_keys[e.key.scancode]) code_down(e.key.scancode);
             g_keys[e.key.scancode] = e.key.down;
         }
@@ -963,6 +1211,9 @@ bool controls_event(const SDL_Event& e) {
     case SDL_EVENT_WINDOW_FOCUS_LOST:
     case SDL_EVENT_DID_ENTER_BACKGROUND:
         std::fill(std::begin(g_keys), std::end(g_keys), false);  // (their ups will not come)
+#ifndef __ANDROID__
+        std::fill(std::begin(g_mod_held), std::end(g_mod_held), false);  // (Alt+Tab: no tap of Alt)
+#endif
         g_mouse_held = 0;
         if (g_mouse_grab) mouse_let_go("the app in the background");
         return false;
@@ -971,7 +1222,59 @@ bool controls_event(const SDL_Event& e) {
     }
 }
 
+// ---- the settings' Press a controller button (controls_pad_capture): what each open controller held as it began (or
+// since let go of: a press again counts), and the first new press, as its Combo<n>Pad value
+namespace {
+struct PadSnap {
+    SDL_JoystickID id;
+    std::uint64_t buttons, raw;
+    bool zl, zr;
+};
+std::vector<PadSnap> g_snap;
+int g_pad_captured = -1;
+PadSnap snap_of(const Pad& p) {
+    PadSnap s{p.id, 0, 0, false, false};
+    for (int b = 0; b < SDL_GAMEPAD_BUTTON_COUNT && b < 64; b++)
+        if (SDL_GetGamepadButton(p.pad, static_cast<SDL_GamepadButton>(b))) s.buttons |= 1ull << b;
+    if (SDL_Joystick* j = SDL_GetGamepadJoystick(p.pad))
+        for (int i = 0; i < kComboPadRaws && i < SDL_GetNumJoystickButtons(j); i++)
+            if (SDL_GetJoystickButton(j, i)) s.raw |= 1ull << i;
+    s.zl = SDL_GetGamepadAxis(p.pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) > kTriggerHalf;
+    s.zr = SDL_GetGamepadAxis(p.pad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) > kTriggerHalf;
+    return s;
+}
+void pad_capture_poll() {
+    if (!g_pad_capture || g_pad_captured >= 0) return;
+    for (const Pad& p : g_pads) {
+        if (p.id == padmap_joystick()) continue;
+        const PadSnap now = snap_of(p);
+        auto was = std::find_if(g_snap.begin(), g_snap.end(), [&](const PadSnap& s) { return s.id == p.id; });
+        if (was == g_snap.end()) {  // (one connected meanwhile: what it holds now is no press)
+            g_snap.push_back(now);
+            continue;
+        }
+        const std::uint64_t fresh = now.buttons & ~was->buttons, fresh_raw = now.raw & ~was->raw;
+        int v = -1;
+        for (int i = 1; i < (int)std::size(COMBO_PAD) && v < 0; i++)
+            if (COMBO_PAD[i] != SDL_GAMEPAD_BUTTON_INVALID && (fresh >> COMBO_PAD[i] & 1)) v = i;
+        if (v < 0 && now.zl && !was->zl) v = COMBO_ZL;
+        if (v < 0 && now.zr && !was->zr) v = COMBO_ZR;
+        for (int i = 0; i < kComboPadRaws && v < 0; i++)
+            if ((fresh_raw >> i & 1) && !raw_bound(p.pad, i)) v = kComboPadRaw + i;
+        // (what was let go of is no longer held: pressed again, it counts)
+        was->buttons &= now.buttons, was->raw &= now.raw, was->zl = was->zl && now.zl, was->zr = was->zr && now.zr;
+        if (v >= 0) {
+            g_pad_captured = v;
+            std::fprintf(stderr, "[Info] Controls: %s: %s pressed for a combined button\n",
+                         SDL_GetGamepadName(p.pad) ? SDL_GetGamepadName(p.pad) : "?", controls_combo_pad_key(v).c_str());
+            return;
+        }
+    }
+}
+}  // namespace
+
 ControlsInput controls_input(std::uint32_t game_frame) {
+    pad_capture_poll();
     input_report();
     kbm_poll();
     read_settings();
@@ -987,12 +1290,35 @@ ControlsInput controls_input(std::uint32_t game_frame) {
     g_last_ms = now;
     Pad* p = find_pad(g_active);
     SDL_Gamepad* pad = p && p->id != padmap_joystick() ? p->pad : nullptr;
+#ifndef __ANDROID__
+    {  // (a menu, a window or a talk of the game's: the movement keys are the D-pad)
+        const Port::Hooks::GameState g = Port::Hooks::CurrentGameState();
+        const bool menu = g.menu == 1 && g.front_end != 1;
+        if (menu != g_keys_menu) std::fprintf(stderr, "[input] W A S D: %s\n", menu ? "the D-pad (a menu of the game's)" : "moving");
+        g_keys_menu = menu;
+    }
+    {  // (a mouse button on A: allowed now or not; held as it became allowed, a press from now - the weapon out)
+        const bool was = g_mouse_a;
+        g_mouse_a = mouse_a_ok();
+        if (g_mouse_a && !was)
+            for (int k = 0; k < kBindKeys; k++)
+                if (is_mouse_code(g_set.binds.keys[BIND_A][k]) && code_held(g_set.binds.keys[BIND_A][k])) pressed(mh4n::kPadA);
+    }
+#endif
     u32 held = (pad ? pad_held(pad) : 0) | keys_held();
     const u32 chord_bits = mh4n::kPadStart | mh4n::kPadSelect;
     if (g_chord && !(held & chord_bits)) g_chord = false;
     // the settings: nothing while they are open, and what is held as they close waits to be let go
-    const bool open = ui_settings_open() || padmap_active() || settings_panel_thanks_open();
-    mouse_capture(open);
+#ifndef __ANDROID__
+    // (and the HUD editor, the list of the controls: the mouse free, the game nothing)
+    const bool open = ui_menu_up() || padmap_active() || settings_panel_thanks_open() || touch_editing() || pc_help_open();
+    // (1.0.2: the Smithy's weapon tree too frees the mouse, its clicks the panel's fingers; the keys and the controller
+    // go on to it below. The chat window afloat: the game's input goes on, the mouse free for the window)
+    mouse_capture(open || ui_settings_open() || weapon_tree_is_open());
+#else
+    const bool open = ui_menu_up() || padmap_active() || settings_panel_thanks_open();  // (1.0.2: as on the PC)
+    mouse_capture(open || ui_settings_open());
+#endif
     if (g_was_open && !open) g_suppress = held;
     g_was_open = open;
     g_suppress &= held;
@@ -1013,11 +1339,12 @@ ControlsInput controls_input(std::uint32_t game_frame) {
     // the town's list and its panel's cursor have the controller: the game gets nothing, and what is held as they let it
     // go waits to be let go
     static bool town_had = false;
-    if (town_takes_pad()) {
+    if (town_takes_pad() || weapon_tree_takes_pad()) {  // (1.0.2: the Smithy's weapon tree has it the same way)
         g_mouse_dx = g_mouse_dy = 0;  // (the mouse's movement meanwhile is no turn of the camera later)
         Vec st = keys_stick(BIND_MOVE_UP, BIND_MOVE_DOWN, BIND_MOVE_LEFT, BIND_MOVE_RIGHT, false);
         if (pad) st = add(st, stick(pad, SDL_GAMEPAD_AXIS_LEFTX, SDL_GAMEPAD_AXIS_LEFTY));
-        town_pad(held, g_town_presses, st.x, st.y);
+        if (weapon_tree_takes_pad()) weapon_tree_pad(held, g_town_presses, st.x, st.y);
+        else town_pad(held, g_town_presses, st.x, st.y);
         g_town_presses = 0;
         town_had = true;
         script_input(game_frame, out);
@@ -1045,6 +1372,9 @@ ControlsInput controls_input(std::uint32_t game_frame) {
     // the sticks: the controller's and the keys', added
     const bool walk = bind_held(BIND_WALK);
     Vec left = keys_stick(BIND_MOVE_UP, BIND_MOVE_DOWN, BIND_MOVE_LEFT, BIND_MOVE_RIGHT, walk);
+#ifndef __ANDROID__
+    if (g_keys_menu) left = Vec{};  // (a menu's: the movement keys pressed the D-pad instead)
+#endif
     Vec right = keys_stick(BIND_CAM_UP, BIND_CAM_DOWN, BIND_CAM_LEFT, BIND_CAM_RIGHT, false);
     if (pad) {
         left = add(left, stick(pad, SDL_GAMEPAD_AXIS_LEFTX, SDL_GAMEPAD_AXIS_LEFTY));
@@ -1085,6 +1415,15 @@ bool controls_real_pad() {
     for (const Pad& p : g_pads)
         if (p.real) return true;
     return false;
+}
+
+std::string controls_real_pad_name() {
+    for (const Pad& p : g_pads)
+        if (p.real) {
+            const char* n = SDL_GetGamepadName(p.pad);
+            return n ? n : "?";
+        }
+    return "";
 }
 
 bool controls_gyro(bool aiming, float* right_deg, float* up_deg) {
@@ -1171,6 +1510,13 @@ Keybinds controls_default_binds() {
     set(BIND_DPAD_LEFT, {SDL_SCANCODE_LEFT}), set(BIND_DPAD_RIGHT, {SDL_SCANCODE_RIGHT});
     set(BIND_LSTICK, {SDL_SCANCODE_LCTRL, SDL_SCANCODE_RCTRL}), set(BIND_RSTICK, {SDL_SCANCODE_LALT, SDL_SCANCODE_RALT});
     set(BIND_ITEM_LEFT, {kKeyWheelUp}), set(BIND_ITEM_RIGHT, {kKeyWheelDown});
+#ifndef __ANDROID__
+    // (the PC's: F2 the controls' list, 1 to 4 the touch screen's item shortcuts, G the town's Gestures; the town's other
+    // actions on no key: SELECT's list has them)
+    set(BIND_HELP, {SDL_SCANCODE_F2});
+    for (int i = 0; i < 4; i++) set(BIND_SCREEN_ITEM1 + i, {SDL_SCANCODE_1 + i});
+    set(BIND_TOWN_GESTURES, {SDL_SCANCODE_G});
+#endif
     return b;
 }
 
@@ -1195,6 +1541,13 @@ Keybinds controls_read_binds() {
 
 bool controls_keyboard_mouse() { return g_kbm == 3; }
 
+#ifndef __ANDROID__
+bool controls_mouse_captured() { return g_mouse_captured; }
+int controls_last_device() { return g_last_device; }
+void controls_mouse_let_go(const char* why) { mouse_let_go(why); }
+void controls_shortcut_used() { mods_spend(); }
+#endif
+
 void controls_capture(bool on, bool mouse) {
     if (on && !g_capture) g_captured = -1;
     g_capture = on, g_capture_mouse = on && mouse;
@@ -1204,4 +1557,34 @@ int controls_take_key() {
     const int c = g_captured;
     g_captured = -1;
     return c;
+}
+
+int controls_combo_pad_value(const std::string& text) {
+    for (int i = 1; i < (int)std::size(kComboPadKeys); i++)
+        if (!SDL_strcasecmp(text.c_str(), kComboPadKeys[i])) return i;
+    if (!SDL_strncasecmp(text.c_str(), "Raw", 3) && text.size() > 3 && text.size() <= 5 &&
+        text.find_first_not_of("0123456789", 3) == std::string::npos) {
+        const int i = std::atoi(text.c_str() + 3);
+        if (i >= 0 && i < kComboPadRaws) return kComboPadRaw + i;
+    }
+    return 0;
+}
+std::string controls_combo_pad_key(int value) {
+    if (value >= kComboPadRaw && value < kComboPadRaw + kComboPadRaws) return "Raw" + std::to_string(value - kComboPadRaw);
+    return value > 0 && value < (int)std::size(kComboPadKeys) ? kComboPadKeys[value] : kComboPadKeys[0];
+}
+void controls_pad_capture(bool on) {
+    if (on == g_pad_capture) return;
+    g_pad_capture = on, g_pad_captured = -1, g_snap.clear();
+    if (on)
+        for (const Pad& p : g_pads) g_snap.push_back(snap_of(p));
+    else if (Pad* p = find_pad(g_active); p && any_button(p->pad))
+        g_remapped = p->id;  // (the button pressed for it, still held: not the menu's until let go)
+    imgui_pad();
+    std::fprintf(stderr, "[Info] Controls: a controller button for a combined button: %s\n", on ? "waiting" : "done");
+}
+int controls_take_pad() {
+    const int v = g_pad_captured;
+    g_pad_captured = -1;
+    return v;
 }

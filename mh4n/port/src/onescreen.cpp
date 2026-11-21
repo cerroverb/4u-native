@@ -393,6 +393,7 @@ void Cut(RCtx* ctx, u32 draw, bool cut) {
 }  // namespace
 
 std::string Frame(RCtx* ctx, bool on, bool wide) {
+    copies.clear();  // (a new frame's: ScaleObject makes them with the mode off too)
     if (!on) {
         if (was_on) {
             GiveAllBack(ctx);
@@ -563,24 +564,18 @@ void ObjectScissor(RCtx* ctx, u32 object, u32 draw, u32 screen) {
     Cut(ctx, draw, screen == 0 && cuts.count(object) != 0);
 }
 
-void ObjectConstants(RCtx* ctx, u32 object, u32 draw, u32 constants, u32 screen) {
-    (void)constants;
+namespace {
+
+/// `object` drawn with a copy of the pass's constants whose projection scales and moves it (`m`); false when there was
+/// no room for one (it is then drawn where the game puts it).
+bool Apply(RCtx* ctx, u32 object, u32 draw, const Move& m) {
     const u32 block = rd32(ctx, draw + CDRAW_VIEWPORT);
-    const auto it = screen == 0 ? moves.find(object) : moves.end();
-    if (it == moves.end()) {
-        if (swap.ours != 0 && swap.draw == draw && block == swap.ours) {  // the pass's own constants again
-            wr32(ctx, draw + CDRAW_VIEWPORT, swap.game);
-            wr32(ctx, draw + CDRAW_DIRTY, rd32(ctx, draw + CDRAW_DIRTY) | 1);
-        }
-        return;
-    }
     const u32 game = swap.draw == draw && swap.ours != 0 && block == swap.ours ? swap.game : block;
     const u32 shader = rd32(ctx, draw + CDRAW_SHADER);
     const u32 layout = shader ? rd32(ctx, shader + SHADER_VIEWPORT_LAYOUT) : 0;
     const u32 size = layout ? ((rd32(ctx, layout + 0x14) & 0xFFFF) * 4 + 15) & ~15u : 0;
     u32 at = rd32(ctx, draw + CDRAW_ROOM);
     u32 end = rd32(ctx, draw + CDRAW_ROOM_END);
-    const Move& m = it->second;
     const auto words_xor = [&](u32 from) {
         u32 x = 0;
         for (u32 i = 0; i < size; i += 4) x ^= rd32(ctx, from + i) * (i + 1);
@@ -594,7 +589,7 @@ void ObjectConstants(RCtx* ctx, u32 object, u32 draw, u32 constants, u32 screen)
             wr32(ctx, draw + CDRAW_VIEWPORT, c.at);
             wr32(ctx, draw + CDRAW_DIRTY, rd32(ctx, draw + CDRAW_DIRTY) | 1);
             swap = Swap{draw, game, c.at};
-            return;
+            return true;
         }
     }
     // (only where the library knows the function's address: a library of another version made before the port listed
@@ -622,7 +617,7 @@ void ObjectConstants(RCtx* ctx, u32 object, u32 draw, u32 constants, u32 screen)
             unmoved_line = fmt::format("one screen: group {:08X} drawn unmoved (constants {:08X}, size {:#x}, room "
                                        "{:08X}..{:08X})", rd32(ctx, object), game, size, at, end);
         }
-        return;
+        return false;
     }
     wr32(ctx, draw + CDRAW_ROOM, at + size);
     for (u32 i = 0; i < size; i += 4) wr32(ctx, at + i, rd32(ctx, game + i));
@@ -641,6 +636,32 @@ void ObjectConstants(RCtx* ctx, u32 object, u32 draw, u32 constants, u32 screen)
     wr32(ctx, draw + CDRAW_DIRTY, rd32(ctx, draw + CDRAW_DIRTY) | 1);
     swap = Swap{draw, game, at};
     if (copies.size() < 64) copies.push_back(Copy{draw, game, end, m.scale, m.tx, m.ty, at, words_xor(at)});
+    return true;
+}
+
+}  // namespace
+
+void ObjectConstants(RCtx* ctx, u32 object, u32 draw, u32 constants, u32 screen) {
+    (void)constants;
+    const u32 block = rd32(ctx, draw + CDRAW_VIEWPORT);
+    const auto it = screen == 0 ? moves.find(object) : moves.end();
+    if (it == moves.end()) {
+        if (swap.ours != 0 && swap.draw == draw && block == swap.ours) {  // the pass's own constants again
+            wr32(ctx, draw + CDRAW_VIEWPORT, swap.game);
+            wr32(ctx, draw + CDRAW_DIRTY, rd32(ctx, draw + CDRAW_DIRTY) | 1);
+        }
+        return;
+    }
+    Apply(ctx, object, draw, it->second);
+}
+
+bool Placed(u32 object) {
+    return moves.count(object) != 0;
+}
+
+bool ScaleObject(RCtx* ctx, u32 object, u32 draw, float scale, float tx, float ty) {
+    if (moves.count(object) != 0 || (scale == 1.0f && tx == 0 && ty == 0)) return false;
+    return Apply(ctx, object, draw, Move{scale, tx, ty});
 }
 
 }  // namespace Port::OneScreen

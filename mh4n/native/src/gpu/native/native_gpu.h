@@ -106,6 +106,10 @@ struct NativeOptions {
     // rasteriser's quaternion flip is lost); auto: vs on a Mali (whose geometry stage is slow) and on a device without
     // geometry stages, gs elsewhere.
     std::string lighting_fixup = "auto";
+    // The register writes kept for GpuDebug::TakeRegisterWrites (the capture player's checks). Off where the screens are
+    // shown (native-display: nothing takes them there, and a renderer kept up to a million of them, 8 MB, after each
+    // start, a write at a time on its thread)
+    bool register_write_log = true;
 };
 inline constexpr u32 kMaxScale = 10;
 
@@ -144,5 +148,17 @@ int Ps1Textures();
 // pipelines are built the first time they are drawn, as any new ones. Not with the lighting fix-up in a geometry stage.
 void SetPs1Geometry(bool on);
 bool Ps1Geometry();
+// (1.0.2, GU#243: the red words of the dialogues hard to read; the MHGU port has the same option) The app's [Graphics]
+// TextOutline: the game's letters drawn over a dark outline. Its draws are told by what they are (a texture of the font's
+// format, A4, a sheet 512 wide or more, blended over the picture without depth: a trace of the quest counter's panel), and
+// each is drawn 4 times more first, moved half a pixel of the 3DS's screen each way, only darkening what is under the letters.
+// Off as the app comes: nothing of this runs
+void SetTextOutline(bool on);
+
+// THE SYSTEM ASKED FOR MEMORY BACK (1.0.2, S9: the app's GameActivity.onTrimMemory while running, levels RUNNING_LOW and
+// RUNNING_CRITICAL, and from MODERATE on in the background; any thread): at its next screen picture the renderer halves its
+// texture budgets, never under 1.0.1's step for the device, for the rest of the session, and lets go of the least recently
+// used images past them (memory_budget.h). The log says so ("[mem] texture budget: ...").
+void MemoryLow();
 
 }  // namespace mh4n::gpu::native

@@ -201,6 +201,14 @@ DecodedCheckCounts GetDecodedCheckCounts();
 void SetDecodedInterpreterOff(bool off);
 // ... and its four lanes at once (on arm64; MH4N_PICA_DECODED=scalar, the MH4N_AB phase "decvec": one lane at a time).
 void SetDecodedVectorsOff(bool off);
+// What the decoded interpreter did since the last call (the renderer's frame counters pica_steps, pica_decodes): the
+// instructions it ran and those it had to decode first (the High Rank field on a Moto g06 at 2x: about 28,000 and 65 a
+// frame, so its time, a sixth of the renderer's thread there, is the instructions' own). Reading resets them.
+struct DecodedWork {
+    u64 steps = 0;
+    u64 decodes = 0;
+};
+DecodedWork TakeDecodedWork();
 
 // InterpreterEngine::Run
 class InterpreterEngine {

@@ -2,6 +2,195 @@
 
 [Español más abajo](#español)
 
+## 1.0.2
+
+Your code library stays valid: there's no need to build it again.
+
+1.0.2 brings MH4U for PC, fixes for what you reported since 1.0.1.1 and a big batch of your suggestions, most of them in both ports.
+
+**MH4U for PC.** The same game folder now plays on a Windows PC: `MH4U-PC-1.0.2.zip` on the release, with its
+SHA-256. The Android app's code library stays valid: there's no need to build it again for the phone.
+
+### MH4U for PC (new)
+
+- `MH4U.exe` runs your own copy natively on Windows 10 and 11 (64-bit, a graphics card with Vulkan), with the same
+  runtime, settings, saves, mods and multiplayer as the app. The zip has the program only, nothing of the game.
+- **The game code is built by the program itself** from your own game and update, on your PC: it downloads Python and
+  Zig the first time (about 90 MB, checked by their SHA-256), then takes 10 to 40 minutes, at low priority. **Cancel**,
+  **Go on** and **Start over** as on the phone; the code mods in your folder's `mods` go in, as in the app. Later:
+  **F1**, **System**, **Game code**, **Build the game code**.
+- **Keyboard and mouse:** WASD, the mouse turns the camera, left click attacks, F is A, a tap on Alt locks on, the right
+  click is A only with the weapon out; every key can be changed (up to three a button, mouse buttons too); **F2** lists
+  your controls over the game; **1** to **4** the touch screen's item shortcuts; **/** the chat. WASD moves the cursor
+  in the game's menus; the hunter's name and the chat are typed with the keyboard.
+- **The touch screen** beside the top one (the PC's default), under it, in a corner or in its own window, with the mouse
+  as your finger; single-screen mode as in the app.
+- **Window:** borderless full screen by default, any window or exclusive full screen (**F11** / **Alt+Enter**); the
+  picture follows the window's shape live, from 5:3 to ultra-wide; **HUD anchor** for wide screens.
+- **Frame rate:** limits up to 240 or **No limit**, VSync on or off; with no limit on the developer's PC (3440x1440,
+  6x), 293 to 315 fps in the village, 408 to 420 in the Gathering Hall, 305 to 310 in a quest; the limits hold steady.
+  **Starting the game...** shows until the first picture. **Show FPS and PC stats** (Basic, Full). **Upscale filter**
+  (Smooth, Sharp pixels, Nearest or FSR 1), **HDR output** (off by default), **GPU**.
+- **Controllers:** START and SELECT open the settings, the right stick's click locks on, **Button icons** in your
+  controller's style; **Aim with the gyro** reads a controller's gyroscope.
+- **Saves:** your save in `%APPDATA%\MH4U`; **Import save**, **Export save** and **Save folder** as in the app, with
+  copies in `save_backups`. **Import DLC and event quests** and **DLC in every save** as in the app.
+- **Discord Rich Presence**, and **Verify game files**. If the game closes because of an error, a window says what
+  happened and opens the log's folder.
+- **Pause in the background** stops the game while its window is minimized; **Check for updates** looks for a new
+  version on GitHub once a day at most and says so at the next start; **Button images** adds your own pictures for the
+  touch controls on a touchscreen PC.
+- **The F1 menu is the app's:** the same pages, sections and names, with the PC's own rows (window, VSync, keyboard and
+  mouse, HDR, GPU, Discord) in the places MHGU for PC has them.
+
+### Fixes
+
+- **The gear moved when a menu opened** and sat on other buttons: in single-screen mode it went to the screen's corner
+  (and with the touch screen's corner over its side, it moved with that side's buttons). It should now stay where it is,
+  or where you put it in **Customize controls and HUD**.
+- **Quick items: the piece turned into a small copy of the top screen** after a few seconds, until you touched it, and
+  the touch screen's corner flashed the top screen as it opened. Both are gone.
+- **The menu pad didn't come up in the delivery box's window**
+  ([#73](https://github.com/khorne-hub/4u-native/issues/73)): at **Deliver**, with the quantity, the hunting controls
+  stayed. It comes up there now, as at the supply box.
+- **The Area map moved in Customize controls and HUD left the whole map behind**
+  ([#72](https://github.com/khorne-hub/4u-native/issues/72), [#75](https://github.com/khorne-hub/4u-native/issues/75),
+  [#76](https://github.com/khorne-hub/4u-native/issues/76)): when the main screen shows the hunting ground's whole map,
+  it now goes with the part, so the hunter's arrow no longer ends up outside it.
+- **Phones whose GPU driver needs a lot of memory for very large shaders** (an Exynos 2200 closed a few seconds after
+  starting): the large backup shaders are no longer built ahead of time, never two at once, and not again right after a
+  session that was cut while building one. That should stop those closes (not tried on that phone).
+- **A saved shader list that grew for weeks** (on an Adreno 610 it broke textures and brought the "slower path" notice):
+  the list keeps its 16,384 most used shaders, and the start stops building them ahead near the phone's limit of memory
+  maps. It should be gone.
+- **The phone build paused "for heat" with a cool phone** (battery at 35 °C): some phones report a high thermal state
+  while cool; under 40 °C of battery that reading should no longer pause the build.
+- **The first loads after a long time in the background** could take much longer than usual: coming back after a minute
+  or more, the app now asks Android for the game's memory back at once, so they should be as quick as usual.
+- **Control profiles: profile 1 came back as the default layout** after going to another profile without saving. Leaving
+  a profile should never empty it now, and the editor should ask before **Load** or **New** drop changes you haven't
+  saved.
+- **Insect Glaive: firing the kinsect needed a slide from R to X and back:** a single slide from R onto X should fire it
+  now.
+- **Gyro aim with Bow Controls Type 2** stopped in the aiming mode: it should keep turning the aim while the bow draws
+  and charges.
+- **Emulator-style layout:** the **Buttons on the screen** rows should now show or hide its own buttons too.
+- **The touch controls vanished mid-game:** when something the phone calls a controller hides them, tapping the game a
+  few times should now say which device it is and how to show them anyway.
+- **The game's pictures and a texture pack's pictures showed in the phone's gallery:** a `.nomedia` in the game folder
+  keeps them out.
+- **Performance:** the picture conversion the game asks for every few seconds is several times faster, and the renderer
+  no longer keeps a log nobody read right after each load. On weak phones the first seconds after a load should be
+  smoother.
+- **A phone that joined a PC's hub left the Gathering Hall after a few minutes** (the PC hosting): the game's connection
+  carries everything in order, so one packet lost on the way to a far hub server held the rest back for about a second,
+  and the game took that for a player who had left. On a slow link (a round trip of 150 ms or more) each packet now goes
+  twice, 40 ms apart, so a single loss no longer holds the game back, and the connection no longer narrows itself on
+  such links (it sometimes waited a whole round trip to send). In our tests, with a hub server made as slow and lossy as
+  a far one, the phone stayed in the PC's hall; between two phones it should help too. Such a link takes about twice the
+  data (some 10 to 20 KB/s each way). Everyone in the hub needs 1.0.2 for the whole fix; older versions still play with
+  you as before.
+- **Phones wait for a late host, as the PC does:** in a Gathering Hall, when the host has sent nothing for half a second
+  (a slow hub, or a PC host that stalls for a moment), the game waits for it instead of taking it for gone and leaving
+  the hall.
+
+### New, from your suggestions
+
+- **HUD size** (gear, **Graphics & Audio**, **Screen and HUD**): the whole HUD smaller, 60 to 100 %, changing as you
+  move the value, with the quests' talk and yes / no windows.
+- **Each part of the HUD can be made smaller or larger** (- / + or a pinch) **and hidden** in **Customize controls and
+  HUD**.
+- **Map button:** a button at the left edge shows and hides the map during a hunt (**Controls**, **Buttons on the
+  screen**, **Map button**). The help also says how to have the map on the main screen: take the Map off your panels in
+  Customize Panels (quest menu).
+- **Weapon tree at the Smithy:** while the Smithy shows a weapon (Forge or Upgrade), a new round button (or the right
+  stick's click) opens that weapon's tree, which should look like the series' trees: each weapon is its class's icon,
+  read from your own copy of the game and in its rarity's colour, with its name; the ones you have (box or equipped),
+  the ones before them, and the next step from each as "?". Beside the tree, the selected weapon's attack, element or
+  status, affinity, defense, slots, rarity and sharpness, and what forging or upgrading it takes (materials and zenny).
+  Read-only: forging stays in the Smithy. Names in the game's language. It should show in every Smithy screen with a
+  weapon: tell us if it misses one. **Controls**, **Buttons on the screen**, **Weapon tree button** takes the button
+  away.
+- **Supply Box without the wait:** in a quest each item goes to the pouch at once, and you can take the next one right
+  away (it was half a second each). The game's rules stay (room in the pouch, each item's limit), and online the host
+  still hands out each item, so playing with others should work the same. Thanks to Alfonso Matador for the idea.
+- **Combined buttons on any controller button:** A, B, X, Y (by their place), L, R, ZL and ZR (pressed past half way),
+  START, SELECT, the D-pad, the stick clicks, Guide, the paddles and the touchpad. **Press a controller button** takes
+  even one the controller's map doesn't name, as some paddles on Android. That button should then press the combined
+  button instead of its own.
+- **Up to 15 combined buttons, each control profile with its own:** your current ones should stay in your existing
+  profiles.
+- **Export and import a control profile** as a .zip (**Controls**, **Control profiles**, a profile): it should carry its
+  button pictures and combined buttons, and a picture whose name is taken should come in renamed.
+- **Camera on the right half only** (**Controls**, **Touch controls**, off by default): dragging should turn the camera
+  only on the right half of the screen.
+- **Touch editor:** a tap on the stick's centre or on the menu pad's SELECT should pick it for a picture of its own.
+- **Colour presets** (**Graphics & Audio**, **Colour**, **Preset 1** to **3**): keep a colour setting and go back to it
+  with **Use**; negative values are kept too.
+- **FSR 1** in the **Upscale filter** (**Graphics & Audio**, off by default): the top screen scaled up with sharper
+  edges where it is shown larger than its picture, with its own **FSR 1 sharpness**.
+- **Your own GPU driver on any GPU** (**Graphics & Audio**, **Advanced**, **GPU driver**), at your own risk: if a driver
+  doesn't start, the app should go back to the system's by itself. The log and the error screen name the driver in use.
+- **HD texture packs:** their memory budget now follows the memory the phone has free (with a safety margin and a 3 GB
+  ceiling), and goes down when Android asks for memory. Packs can bring **.ktx2** textures (Basis Universal ETC1S or
+  UASTC, or RGBA8 / BC7) beside or instead of their .png files; on phones they take the same memory as a PNG for now.
+- **Damage numbers** should also show on small monsters, and a new **Damage number style** (**Graphics & Audio**,
+  **Screen and HUD**) offers **Classic**, **Outlined**, **Compact** and **Burst** (a run of hits should add up in one
+  number). MHGU's **By hit** colour (weak points, hard parts, critical hits, the element) needs a change in MH4U that
+  would make everyone build their code library again, so it is left for a later version.
+- **Text outline** (**Graphics & Audio**, **Screen and HUD**, off by default): it should draw a thin dark outline around
+  the game's letters, for text that is hard to read.
+- **Sound in screen recordings** (**Graphics & Audio**, **Picture and sound**, off): for phones whose screen recorder
+  records no sound of the game. It should record it from the next start.
+- **Multiplayer › Wait for a player who stalls** (off by default): when another player's game stalls for a moment (a
+  slow phone, the app in the background), yours waits for it instead of running ahead, so the game should be less likely
+  to drop that player. Only between players of this app who turn it on; the whole room may pause for a moment. Older
+  versions and emulators play with you as before.
+- **The chat in a window of its own:** the chat page (gear, **Multiplayer**, **Chat**, or the chat button) opens as a
+  smaller see-through window over the game with the chat alone: its header has a tab for each chat there is now, the
+  gear opens the chat's options and X closes it; under it the text to say and **Send**, and the lines, the newest first,
+  each on a dark strip so it reads over grass or snow. The switches, **Friends** and the other options are on the chat's
+  options page. Drag its top to move it and its bottom right corner to size it; it stays where you leave it. While your
+  phone's keyboard is up, the window should go to the top of the screen and be as tall as the keyboard leaves, so the
+  text, **Send** and the last lines stay in sight.
+- **The chat window floats over the game:** played with your fingers, and on PC with the mouse, the game goes on under
+  it and the touch controls work round it. Only the window's own controls take a finger or a click (its header and tabs,
+  the text and **Send**, the corner's grip); a tap on its blank part moves the stick or turns the camera. While you
+  type, a tap or a click away from it closes it, and the phone's keyboard with it. A menu of the game's opening hides it
+  until that menu closes, the settings button (**F1** on PC) goes to the menu, and the chat button closes it. On a phone
+  with a controller in hand it stays a menu its buttons work, as before.
+- **Tabs in the chat window:** Room, General, Global and Friends, only the ones there are now, each with the lines you
+  haven't read (up to 99); under **Friends**, arrows go from friend to friend.
+- **How see-through the chat window is:** in the chat's options, **Window background**, **Message background** and
+  **Typing field background**, from 0 to 100 % in steps of 5, with - and + or a bar; the text always stays solid.
+- **The lines beside the chat button:** 8 seconds, up to four, each chat in its colour (the room light blue, General
+  green, Global gold, a friend pink) and each player's name in a colour of its own, in the chat window too; not yours,
+  and they go when a menu opens.
+- **Credits:** Credits & Licenses and the README list who contributed to the port, by name.
+- **The chat button in Customize controls and HUD:** moved and sized like any other button, and kept with the control
+  profile (the chat's options: **Move the chat button**).
+- **The chat button in Customize controls and HUD:** moved and sized like any other button, and kept with the control
+  profile (the chat's options: **Move the chat button**).
+- **The menu pad, on or off:** the pad that comes up in the game's menus can be turned off under gear, **Controls**,
+  **Buttons on the screen**, **Menu pad** (on as it comes); its help now says what moves the cursor without it.
+- **Devices with two screens** (AYN Thor, Retroid Pocket Duo): **Graphics & Audio**, **Screen and HUD**, **Layout**,
+  **On the second screen** puts the touch screen on the second display, touched there; if that display goes away your
+  previous layout comes back. Off by default, and it only shows when there is a second display. Not tried on such a
+  device yet: it should work, tell us how it goes.
+- **Side by side**, the touch screen should keep clear of a punch hole or notch at the screen's edge.
+- **Settings:** a value too long for its row should now slide along in the row you pick or touch, so it can be read
+  whole.
+- **Fast scaling (more FPS)** (gear, **Graphics & Audio**, off by default): scales the game's picture in a simpler way
+  when the 3D resolution is not the size your screen shows it at (for example 2x on a 720-line screen): weak phones get
+  many more frames a second (a Moto g06 in Normal mode at 2x: town 47 → 56 FPS, the hall 45 → 57, the field 40 → 50).
+  Some colours may change very slightly.
+- **The settings menu is laid out as MHGU's:** the same pages, sections, order and names in both apps. In **Screen and
+  HUD**: **Field of view**, **HUD at the screen's edges**, **HUD size**, **FPS counter**, **Text outline**, then the
+  **Hunting aids** section (with **Monster health bars**). **PS1 filter** comes before **Shadows**; in **Touch
+  controls**, **Long press hides the controls** comes after **Floating stick**; in **Advanced**, **Frame generation**
+  comes after **Clear shader cache** and the **GPU driver** section goes last; **Licenses** is under **Show the
+  credits**. Two rows have MHGU's names: **Add a mod** (the .zip) and **Add cheats**. Your settings stay as they are.
+
 ## 1.0.1.1
 
 Your code library stays valid: there's no need to build it again.
@@ -540,6 +729,213 @@ MH4U for Android is free. Only the links khorne-hub gives are official: if you g
 came with ads, it isn't the official one. Check the APK's SHA-256 against the release's `.sha256` file.
 
 ## Español
+
+## 1.0.2
+
+Tu librería de código sigue sirviendo: no hace falta crearla de nuevo.
+
+La 1.0.2 trae MH4U para PC, arreglos de lo que reportaron desde la 1.0.1.1 y una buena tanda de sus sugerencias, casi
+todas en los dos ports.
+
+**MH4U para PC.** La misma carpeta del juego ahora se juega en una PC con Windows: `MH4U-PC-1.0.2.zip` en la versión
+publicada, con su SHA-256. La librería de código de la app de Android sigue sirviendo: no hace falta volver a armarla
+para el teléfono.
+
+### MH4U para PC (nuevo)
+
+- `MH4U.exe` corre tu propia copia de forma nativa en Windows 10 y 11 (64 bits, una tarjeta gráfica con Vulkan), con el
+  mismo runtime, los mismos ajustes, partidas, mods y multijugador que la app. El zip trae solo el programa, nada del juego.
+- **El código del juego lo crea el mismo programa** con tu propio juego y su actualización, en tu PC: la primera vez
+  descarga Python y Zig (unos 90 MB, verificados con su SHA-256), y después tarda de 10 a 40 minutos, con prioridad baja.
+  **Cancelar**, **Seguir** y **Empezar de cero** como en el teléfono; los mods de código de la carpeta `mods` entran, como
+  en la app. Más adelante: **F1**, **Sistema**, **Código del juego**, **Crear el código del juego**.
+- **Teclado y ratón:** WASD, el ratón gira la cámara, el clic izquierdo ataca, F es A, un toque de Alt fija la cámara, el
+  clic derecho es A solo con el arma afuera; cada tecla se puede cambiar (hasta tres por botón, también botones del
+  ratón); **F2** lista tus controles sobre el juego; **1** a **4** los atajos de objetos de la pantalla táctil; **/** el chat.
+  WASD mueve el cursor en los menús del juego; el nombre del cazador y el chat se escriben con el teclado.
+- **La pantalla táctil** al lado de la de arriba (lo de fábrica en PC), debajo, en una esquina o en su propia ventana, con
+  el ratón como tu dedo; el modo de pantalla única como en la app.
+- **Ventana:** pantalla completa sin bordes de fábrica, cualquier ventana o pantalla completa exclusiva (**F11** /
+  **Alt+Enter**); la imagen sigue la forma de la ventana en vivo, de 5:3 a ultra ancha; **Anclaje del HUD** para
+  pantallas anchas.
+- **Cuadros por segundo:** límites de hasta 240 o **Sin límite**, VSync encendido o apagado; sin límite en la PC del
+  desarrollador (3440x1440, 6x), de 293 a 315 en la aldea, de 408 a 420 en el salón y de 305 a 310 en una misión; los
+  límites se mantienen firmes. **Iniciando el juego...** se ve hasta la primera imagen. **Mostrar FPS y datos de la PC**
+  (Básico, Completo). **Filtro de escalado** (Suave,
+  Píxeles nítidos, Vecino más cercano o FSR 1), **Salida HDR** (apagada de fábrica), **GPU**.
+- **Mandos:** START y SELECT abren los ajustes, el clic del stick derecho fija la cámara, **Íconos de los botones** al
+  estilo de tu mando; **Apuntar con giroscopio** lee el giroscopio de un mando.
+- **Partidas:** tu partida en `%APPDATA%\MH4U`; **Importar partida**, **Exportar partida** y **Carpeta de partidas** como
+  en la app, con copias en `save_backups`. **Importar DLC y misiones de evento** y **DLC en todas las partidas** como en
+  la app.
+- **Discord Rich Presence**, y **Verificar archivos del juego**. Si el juego se cierra por un error, una ventana dice qué
+  pasó y abre la carpeta del registro.
+- **Pausar en segundo plano** detiene el juego mientras su ventana está minimizada; **Buscar actualizaciones** busca una
+  versión nueva en GitHub como mucho una vez al día y avisa al arrancar la próxima vez; **Imágenes de los botones**
+  agrega tus propias imágenes para los controles táctiles en una PC con pantalla táctil.
+- **El menú F1 es el de la app:** las mismas páginas, secciones y nombres, con las filas propias de la PC (ventana,
+  VSync, teclado y ratón, HDR, GPU, Discord) en los lugares donde las tiene el MHGU para PC.
+
+### Arreglos
+
+- **El engranaje se movía al abrirse un menú** y quedaba encima de otros botones: en el modo de pantalla única se iba a
+  la esquina de la pantalla (y con la esquina de la pantalla táctil sobre su lado, se corría con los botones de ese
+  lado). Ahora debería quedar donde está, o donde lo pusiste en **Personalizar controles y HUD**.
+- **Objetos rápidos: la pieza se volvía una copia chica de la pantalla de arriba** a los pocos segundos, hasta que la
+  tocabas, y la esquina de la pantalla táctil mostraba un destello de la pantalla de arriba al abrirse. Las dos cosas se
+  fueron.
+- **La cruceta de menú no aparecía en la ventana de Entregas**
+  ([#73](https://github.com/khorne-hub/4u-native/issues/73)): en **Entregar**, con la cantidad, quedaban los controles
+  de caza. Ahora aparece ahí, como en la caja de suministros.
+- **El Mapa de la zona movido en Personalizar controles y HUD dejaba atrás el mapa completo**
+  ([#72](https://github.com/khorne-hub/4u-native/issues/72), [#75](https://github.com/khorne-hub/4u-native/issues/75),
+  [#76](https://github.com/khorne-hub/4u-native/issues/76)): cuando la pantalla principal muestra el mapa completo del
+  coto, ahora va con la pieza, así la flecha del cazador ya no queda fuera del mapa.
+- **Teléfonos cuyo driver necesita mucha memoria para shaders muy grandes** (un Exynos 2200 se cerraba a los pocos
+  segundos de abrir): los shaders de respaldo grandes ya no se arman de antemano, nunca dos a la vez, ni justo después
+  de una sesión que se cortó armando uno. Debería dejar de cerrarse (no probado en ese teléfono).
+- **Una lista de shaders guardada que crecía durante semanas** (en una Adreno 610 rompía texturas y sacaba el aviso del
+  "camino más lento"): la lista guarda los 16.384 shaders más usados, y el arranque deja de armarlos de antemano cerca
+  del límite de mapas de memoria del teléfono. Debería desaparecer.
+- **La creación en el teléfono se pausaba "por calor" con el teléfono frío** (batería a 35 °C): algunos teléfonos dicen
+  estar calientes sin estarlo; con la batería por debajo de 40 °C esa lectura ya no debería pausar la creación.
+- **Las primeras cargas después de mucho tiempo en segundo plano** podían tardar mucho más que lo normal: al volver
+  después de un minuto o más, la app le pide enseguida a Android la memoria del juego, así que deberían tardar lo de
+  siempre.
+- **Perfiles de controles: el perfil 1 volvía al diseño de fábrica** al pasar a otro perfil sin guardar. Dejar un perfil
+  ya no debería vaciarlo, y el editor debería preguntar antes de que **Cargar** o **Nuevo** descarten cambios sin
+  guardar.
+- **Glaive insecto: para lanzar el kinsecto hacía falta deslizar de R a X y volver:** un solo deslizamiento de R a X
+  debería lanzarlo ahora.
+- **El giroscopio con los controles de arco Tipo 2** se cortaba en el modo de apuntar: debería seguir girando la mira
+  mientras el arco se tensa y carga.
+- **Diseño de emulador:** las filas de **Botones en la pantalla** ahora también deberían mostrar u ocultar sus propios
+  botones.
+- **Los controles táctiles desaparecían en plena partida:** si algo que el teléfono toma por un mando los oculta, tocar
+  el juego unas veces debería decir qué dispositivo es y cómo verlos igual.
+- **Las imágenes del juego y las de un pack de texturas aparecían en la galería del teléfono:** un `.nomedia` en la
+  carpeta del juego las deja afuera.
+- **Rendimiento:** la conversión de imágenes que el juego pide cada pocos segundos es varias veces más rápida, y el
+  renderer ya no guarda un registro que nadie leía justo después de cada carga. En teléfonos modestos los primeros
+  segundos después de una carga deberían ir más parejos.
+- **Un teléfono que entraba al hub de una PC salía del Salón a los pocos minutos** (con la PC de anfitrión): la conexión
+  del juego lleva todo en orden, así que un paquete perdido camino a un servidor de hubs lejano frenaba el resto cerca
+  de un segundo, y el juego lo tomaba como un jugador que se había ido. En un enlace lento (150 ms o más de ida y
+  vuelta) cada paquete ahora va dos veces, a 40 ms, así que una pérdida sola ya no frena el juego, y la conexión ya no
+  se angosta en esos enlaces (a veces esperaba una ida y vuelta entera para mandar). En nuestras pruebas, con un
+  servidor de hubs tan lento y con tantas pérdidas como uno lejano, el teléfono se quedó en el Salón de la PC; entre dos
+  teléfonos también debería ayudar. Ese enlace usa más o menos el doble de datos (unos 10 a 20 KB/s por sentido). Para
+  el arreglo completo todos en el hub necesitan la 1.0.2; las versiones anteriores siguen jugando contigo como antes.
+- **Los teléfonos esperan a un anfitrión que se atrasa, como la PC:** en un Salón, cuando el anfitrión no mandó nada por
+  medio segundo (un hub lento, o una PC anfitriona que se traba un momento), el juego lo espera en vez de darlo por ido
+  y salir del Salón.
+
+### Lo nuevo, por sus sugerencias
+
+- **Tamaño del HUD** (engranaje, **Gráficos y audio**, **Pantalla y HUD**): todo el HUD más chico, de 60 a 100 %, que
+  cambia al mover el valor, con las ventanas de diálogo y de sí o no de las misiones.
+- **Cada parte del HUD se puede achicar o agrandar** (- / + o pellizcando) **y ocultar** en **Personalizar controles y
+  HUD**.
+- **Botón del mapa:** un botón en el borde izquierdo muestra u oculta el mapa durante la cacería (**Controles**,
+  **Botones en la pantalla**, **Botón del mapa**). La ayuda también dice cómo ver el mapa en la pantalla principal:
+  quita el Mapa de tus paneles en Personalizar paneles (menú de misión).
+- **Árbol de armas en la herrería:** cuando la herrería muestra un arma (Forjar o Mejorar), un botón redondo nuevo (o el
+  clic de la palanca derecha) abre el árbol de esa arma, que debería verse como los árboles de la serie: cada arma es el
+  ícono de su clase, leído de tu propia copia del juego y con el color de su rareza, con su nombre; las que tienes (en
+  la caja o equipada), las anteriores y el paso siguiente de cada una como "?". Al lado, del arma elegida: ataque,
+  elemento o estado, afinidad, defensa, ranuras, rareza y filo, y lo que hace falta para forjarla o mejorarla
+  (materiales y zenny). Solo consulta: se forja en la herrería. Los nombres, en el idioma del juego. Debería salir en
+  todas las pantallas de la herrería con un arma: avísennos si falta en alguna. **Controles**, **Botones en la
+  pantalla**, **Botón del árbol de armas** saca el botón.
+- **Caja de suministros sin espera:** en una misión cada objeto pasa a la bolsa al instante y se puede sacar el
+  siguiente enseguida (antes era medio segundo cada uno). Las reglas del juego no cambian (el lugar en la bolsa, el
+  máximo por objeto), y en línea el anfitrión sigue repartiendo cada objeto, así que con otros debería funcionar igual.
+  Gracias a Alfonso Matador por la idea.
+- **Botones combinados en cualquier botón del mando:** A, B, X, Y (por su lugar), L, R, ZL y ZR (pasada la mitad),
+  START, SELECT, la cruceta, los clics de las palancas, Guide, las paletas y el panel táctil. **Apretar un botón del
+  mando** toma también uno que el mapa del mando no nombra, como algunas paletas en Android. Ese botón debería apretar
+  entonces el combinado en vez del suyo.
+- **Hasta 15 botones combinados, cada perfil de controles con los suyos:** los que ya tenías deberían quedar en tus
+  perfiles.
+- **Exportar e importar un perfil de controles** en un .zip (**Controles**, **Perfiles de controles**, un perfil):
+  debería llevar sus imágenes y sus botones combinados, y si ya hay una imagen con ese nombre, la nueva debería entrar
+  con otro nombre.
+- **Cámara solo en la mitad derecha** (**Controles**, **Controles táctiles**, apagado de fábrica): arrastrar debería
+  girar la cámara solo en la mitad derecha de la pantalla.
+- **Editor táctil:** un toque en el centro de la palanca o en el SELECT de la cruceta de menú debería elegirlo para una
+  imagen propia.
+- **Presets de color** (**Gráficos y audio**, **Color**, **Preset 1** a **3**): guardan un ajuste de color y se vuelve a
+  él con **Usar**; también guardan los valores negativos.
+- **FSR 1** en el **Filtro de escalado** (**Gráficos y audio**, apagado de fábrica): la pantalla de arriba agrandada con
+  bordes más nítidos cuando se muestra más grande que su imagen, con su propia **Nitidez de FSR 1**.
+- **Driver de GPU propio en cualquier GPU** (**Gráficos y audio**, **Avanzado**, **Driver de GPU**), bajo tu
+  responsabilidad: si un driver no arranca, la app debería volver sola al del sistema. El registro y la pantalla de
+  error dicen qué driver se usa.
+- **Packs de texturas HD:** su presupuesto de memoria ahora sigue a la memoria libre del teléfono (con un margen y un
+  techo de 3 GB), y baja cuando Android pide memoria. Los packs pueden traer texturas **.ktx2** (ETC1S o UASTC de Basis
+  Universal, o RGBA8 / BC7) junto a sus .png o en su lugar; en el teléfono, por ahora, ocupan la misma memoria que un
+  PNG.
+- **Los números de daño** también deberían salir en los monstruos chicos, y hay un nuevo **Estilo de los números de
+  daño** (**Gráficos y audio**, **Pantalla y HUD**): **Clásico**, **Con contorno**, **Compacto** y **Ráfaga** (una
+  seguidilla de golpes debería sumarse en un solo número). El color **Por golpe** del MHGU (punto débil, partes duras,
+  críticos, el elemento) necesita en el MH4U un cambio que obligaría a todos a volver a crear la librería de código, así
+  que queda para una versión más adelante.
+- **Contorno del texto** (**Gráficos y audio**, **Pantalla y HUD**, apagado de fábrica): debería dibujar un contorno
+  oscuro fino alrededor de las letras del juego, para el texto que cuesta leer.
+- **Sonido en las grabaciones de pantalla** (**Gráficos y audio**, **Imagen y sonido**, apagado): para los teléfonos
+  cuya grabación de pantalla no graba el sonido del juego. Debería grabarlo desde el próximo inicio.
+- **Multijugador › Esperar al jugador que se traba** (apagado de fábrica): cuando el juego de otro jugador se traba un
+  momento (un teléfono lento, la app en segundo plano), el tuyo lo espera en vez de adelantarse, así debería ser menos
+  probable que el juego lo eche. Solo entre jugadores de esta app que lo activen; toda la sala puede detenerse un
+  momento. Las versiones anteriores y los emuladores juegan contigo como antes.
+- **El chat en una ventana propia:** la página del chat (engranaje, **Multijugador**, **Chat**, o el botón del chat) se
+  abre como una ventana más chica sobre el juego, que deja ver lo de atrás, solo con el chat: su encabezado tiene una
+  pestaña por cada chat que hay ahora, el engranaje abre las opciones del chat y la X la cierra; debajo, el texto para
+  escribir y **Enviar**, y las líneas, la más nueva primero, cada una sobre una tira oscura para que se lea sobre pasto
+  o nieve. Los interruptores, **Amigos** y las demás opciones están en la página de opciones del chat. Arrastra su parte
+  de arriba para moverla y su esquina de abajo a la derecha para cambiar su tamaño; queda donde la dejes. Mientras el
+  teclado del teléfono está abierto, la ventana debería subir arriba de todo de la pantalla y usar el alto que deja el
+  teclado, así el texto, **Enviar** y las últimas líneas quedan a la vista.
+- **La ventana del chat flota sobre el juego:** jugando con el dedo, y en PC con el ratón, el juego sigue debajo y los
+  controles táctiles funcionan alrededor. Solo los controles de la ventana toman el dedo o el clic (su encabezado y
+  pestañas, el texto y **Enviar**, el tirador de la esquina); tocar su parte vacía mueve la palanca o la cámara.
+  Mientras escribes, tocar o hacer clic fuera de ella la cierra, y con ella el teclado del teléfono. Un menú del juego
+  que se abre la esconde hasta que ese menú se cierra, el botón de ajustes (**F1** en PC) va al menú y el botón del chat
+  la cierra. En un teléfono con un mando en la mano sigue siendo un menú que se maneja con sus botones, como antes.
+- **Pestañas en la ventana del chat:** Sala, General, Global y Amigos, solo las que hay ahora, cada una con las líneas
+  que no leíste (hasta 99); en **Amigos**, las flechas pasan de un amigo a otro.
+- **Qué tan transparente es la ventana del chat:** en las opciones del chat, **Fondo de la ventana**, **Fondo de los
+  mensajes** y **Fondo del campo de escribir**, de 0 a 100 % de a 5, con - y + o una barra; el texto queda siempre
+  sólido.
+- **Las líneas junto al botón del chat:** 8 segundos, hasta cuatro, cada chat con su color (la sala celeste, General
+  verde, Global dorado, un amigo rosa) y el nombre de cada jugador con un color propio, también en la ventana del chat;
+  las tuyas no, y se van al abrirse un menú.
+- **Créditos:** Créditos y licencias y el README nombran a quienes aportaron al desarrollo del port.
+- **El botón del chat en Personalizar controles y HUD:** se mueve y se cambia de tamaño como cualquier botón, y queda
+  guardado con el perfil de controles (opciones del chat: **Mover el botón del chat**).
+- **El botón del chat en Personalizar controles y HUD:** se mueve y se cambia de tamaño como cualquier botón, y queda
+  guardado con el perfil de controles (opciones del chat: **Mover el botón del chat**).
+- **El pad de menú, prendido o apagado:** el pad que aparece en los menús del juego se apaga en engranaje,
+  **Controles**, **Botones en la pantalla**, **Pad de menú** (prendido de fábrica); su ayuda ahora dice qué mueve el
+  cursor sin él.
+- **Aparatos con dos pantallas** (AYN Thor, Retroid Pocket Duo): **Gráficos y audio**, **Pantalla y HUD**,
+  **Disposición**, **En la segunda pantalla** pone la pantalla táctil en la segunda pantalla, y se toca ahí; si esa
+  pantalla se va, vuelve la disposición que tenías. Apagado de fábrica, y solo aparece si hay una segunda pantalla.
+  Todavía no se probó en uno de esos aparatos: debería funcionar, cuéntennos cómo anda.
+- **En lado a lado**, la pantalla táctil debería quedar fuera del agujero de la cámara o la muesca del borde.
+- **Ajustes:** un valor demasiado largo para su fila ahora debería deslizarse despacio en la fila elegida o tocada, para
+  poder leerlo entero.
+- **Escalado rápido (más FPS)** (engranaje, **Gráficos y audio**, apagado de fábrica): agranda la imagen del juego de
+  forma más simple cuando la resolución 3D no es el tamaño con que la muestra tu pantalla (por ejemplo 2x en una
+  pantalla de 720 líneas): los teléfonos débiles ganan muchos cuadros por segundo (un Moto g06 en modo Normal a 2x:
+  pueblo 47 → 56 FPS, Salón 45 → 57, campo 40 → 50). Algunos colores pueden variar apenas.
+- **El menú de ajustes, ordenado como el del MHGU:** las mismas páginas, secciones, orden y nombres en las dos apps. En
+  **Pantalla y HUD**: **Campo de visión**, **HUD en los bordes**, **Tamaño del HUD**, **Contador de FPS**, **Contorno
+  del texto** y después la sección **Ayudas de caza**. **Filtro PS1** va antes de **Sombras**; en **Controles
+  táctiles**, **Pulsación larga oculta los controles** va después de **Palanca flotante**; en **Avanzado**, **Generación
+  de cuadros** va después de **Borrar la caché de shaders** y la sección **Driver de GPU** queda al final; **Licencias**
+  está debajo de **Mostrar los créditos**. Dos filas tienen los nombres del MHGU: **Agregar un mod** (el .zip) y
+  **Agregar trucos**. Tus ajustes quedan como están.
 
 ## 1.0.1.1
 

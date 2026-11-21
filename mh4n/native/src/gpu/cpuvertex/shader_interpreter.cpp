@@ -501,6 +501,7 @@ inline void VStore(f24* dest, const DecodedOp& d, float32x4_t r) {
 #endif
 
 std::atomic<bool> g_decoded_off{false};
+std::atomic<u64> g_work_steps{0}, g_work_decodes{0};  // TakeDecodedWork
 std::atomic<bool> g_decoded_scalar{false};  // MH4N_PICA_DECODED=scalar, or the MH4N_AB phase "decvec": no lanes at once
 std::atomic<u64> g_decoded_runs{0};
 std::atomic<u64> g_decoded_differences{0};
@@ -569,6 +570,10 @@ void SetDecodedInterpreterOff(bool off) {
 
 void SetDecodedVectorsOff(bool off) {
     g_decoded_scalar.store(off, std::memory_order_relaxed);
+}
+
+DecodedWork TakeDecodedWork() {
+    return {g_work_steps.exchange(0, std::memory_order_relaxed), g_work_decodes.exchange(0, std::memory_order_relaxed)};
 }
 
 bool InterpreterEngine::InterpretDecoded(const ShaderSetup& setup, ShaderUnit& state, RunError& error) const {
@@ -642,6 +647,15 @@ bool InterpreterEngine::InterpretDecoded(const ShaderSetup& setup, ShaderUnit& s
     static const DecodedOp kEnd = Decode(static_cast<u32>(Opcode::END) << 26, kDecodedNoSwizzles);
 
     u32 iteration = 0;
+    // (the work counted once a run: TakeDecodedWork)
+    struct Work {
+        const u32& steps;
+        u32 decodes = 0;
+        ~Work() {
+            g_work_steps.fetch_add(steps, std::memory_order_relaxed);
+            if (decodes != 0) g_work_decodes.fetch_add(decodes, std::memory_order_relaxed);
+        }
+    } work{iteration};
     bool should_stop = false;
     while (!should_stop) {
         bool is_break = false;
@@ -659,6 +673,7 @@ bool InterpreterEngine::InterpretDecoded(const ShaderSetup& setup, ShaderUnit& s
             DecodedOp& d = ops[program_counter];
             if (!d.valid || d.hex != hex || swizzle_data[d.desc] != d.swz) [[unlikely]] {
                 d = Decode(hex, swizzle_data);
+                ++work.decodes;
             }
             op = &d;
         } else {

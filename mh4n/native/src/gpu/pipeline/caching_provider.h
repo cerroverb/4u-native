@@ -19,6 +19,13 @@
 //     by the renderer thread). At start the list is compiled on the workers: the fallbacks first, then the specialised
 //     pipelines by decreasing use count. The sources of the translated vertex stages the keys name go into a file of
 //     their own (the key holds only the program's id).
+//   - (1.0.2) Caps. The workers build one fallback at a time (the ubershader: an Exynos 2200's driver took over 20 s and
+//     more than a gigabyte for each, and two at a time closed the game). Fallbacks are built ahead only when draws are
+//     drawn with them (--pipeline-wait, --deterministic, MH4N_PIPELINE_FALLBACK, --force-ubershader); otherwise only for
+//     a key whose own pipeline failed, when it is asked for. A start after a session that ended inside a fallback's
+//     build (the file `ubershader-building`) builds none ahead. The list compiled at start keeps the `list_max` most
+//     used keys (16384; the rest let go), and on Linux its compile stops past `map_entries_percent` (60) of the system's
+//     memory map entries (an Adreno 610 holds two for every pipeline: 25,000 keys took 50,000 and the device was lost).
 //   - The driver's blob (N2-28's SavePipelineCache, LoadPipelineCache: refused when the vendor, the device or the
 //     pipelineCacheUUID differ) in a file named after the device; loaded before any pipeline is made.
 //   - The SPIR-V store: the builder's glslang output by the hash of the GLSL text (vertex and fragment stages), so the
@@ -82,6 +89,11 @@ struct CachingOptions {
     u32 fallback_per_window = 0;  // 0: no limit
     bool warm = false;
     bool force_ubershader = false;
+    // (1.0.2) The list compiled at start: at most list_max keys, the most used (0: all); and where the process's memory map
+    // entries can be counted (Linux), its compile stops past map_entries_percent of the system's most (0: never).
+    // MH4N_PIPELINE_LIST_MAX and MH4N_PIPELINE_MAP_PERCENT set them (measurement aids).
+    u32 list_max = 16384;
+    u32 map_entries_percent = 60;
     u32 workers = 0;  // 0: from the core count
     u32 save_seconds = 20;
 };

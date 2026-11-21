@@ -94,7 +94,14 @@ struct QueueConfig {
     // The safety cap: a VBlank(0) that finds this many frames queued blocks until one is rendered.
     // At least max_frames_in_flight + 1.
     u32 max_frames_queued = 4;
+    // A VBlank(0) ends a frame only when the top screen's buffer was swapped since the last frame end (or after
+    // kIdleVBlanksPerFrame VBlanks without one), so the frames counted are the game's own pictures, not the VBlanks.
+    // Off (every VBlank(0) a frame end) unless set: the PC app's "No limit" runs the emulated VBlank at 1000 Hz, where
+    // two VBlanks queued (2 ms) blocked the game's thread behind the renderer at almost every frame.
+    bool frames_are_swaps = false;
 };
+// (frames_are_swaps: VBlanks without a swap that still count as one frame end, so the queue stays bounded)
+inline constexpr u32 kIdleVBlanksPerFrame = 16;
 
 // The Host a wrapped GPU is built with when its writes into guest memory are to be run by
 // InvalidateRegion: everything is forwarded to the real host, except that Post keeps a list of the
@@ -236,6 +243,8 @@ private:
     u64 enqueued_ = 0;
     u64 completed_ = 0;
     u32 frames_in_flight_ = 0;
+    bool swapped_ = false;   // (frames_are_swaps, the scheduler thread's) a top-screen swap since the last frame end
+    u32 idle_vblanks_ = 0;   // (frames_are_swaps) VBlank(0)s since the last frame end
     u32 blocked_ = 0;
     bool stopping_ = false;
     bool started_ = false;

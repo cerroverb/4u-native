@@ -29,6 +29,12 @@ in this version of the tools (code_library_id), which the app compares with its 
 starts the game, so that a library made with another version is found before it crashes.
 --print-id prints that id and does nothing else (the app's build puts it in the APK).
 
+--pc builds the library for the port's PC app (MH4U.exe, Windows x64) instead, for the native runtime (it implies
+--native), in <out>/recomp/pc/: mh4u_code_native.dll (_native_det with --deterministic), with its id beside it
+(mh4u_code_native.id). The PC app's id is its own (code_library_id with pc: PC_TARGET hashed in), so the Android app's
+never changes for it; --print-id --pc prints it (MH4U.exe's build puts it in the program). Copy both files into the game
+folder, beside the game and its update.
+
 --romfs gives the base game's dump (.3ds/.cci) or a game folder's romfs.bin (repeatable; a .3ds/.cci --dump is looked
 in too): the game's geometry shader programs in it (system/ltshader/LtShaderPackage.lfx) are compiled into the library
 (tools/pica_native.py), which the native runtime's CPU vertex path then runs instead of interpreting them. Without it the
@@ -83,16 +89,30 @@ ID_FILES = ["tools/recompile.py", "tools/build_function_table.py", "tools/recomp
             "config/extra_entries.txt", "config/hooks.txt", "config/tunables.txt"]
 
 
-def code_library_id(native: bool = True, deterministic: bool = False, root: str = ROOT) -> str:
+def code_library_id(native: bool = True, deterministic: bool = False, root: str = ROOT, pc: bool = False) -> str:
     """16 hex digits: the hash of ID_FILES (their bytes, without carriage returns, so a checkout's line endings don't
-    matter) and of the build mode. The same tools give the same id on every machine."""
+    matter) and of the build mode. The same tools give the same id on every machine. `pc`: the id of the PC app's
+    library (--pc), which hashes PC_TARGET too; the Android app's (pc False) is hashed exactly as before there was one."""
     h = hashlib.sha256()
     for name in ID_FILES:
         h.update(name.encode() + b"\0")
         with open(os.path.join(root, name), "rb") as f:
             h.update(f.read().replace(b"\r", b""))
     h.update(" ".join(rbuild.native_defines(native, deterministic) or ["RC_PAGED"]).encode())
+    if pc:
+        h.update(b"\0" + PC_TARGET.encode())
     return h.hexdigest()[:16]
+
+
+# The PC app's library (--pc, MH4U.exe on Windows x64): what it is built for, hashed into its id (a change here makes every
+# player build theirs again, as a change to ID_FILES does), and its name, the one MH4U.exe looks for in the game folder.
+PC_TARGET = "windows-x86_64"
+PC_LIBRARY = "mh4u_code_native"
+
+
+def pc_library_name(deterministic: bool = False) -> str:
+    """The PC app's library: mh4u_code_native.dll (mh4u_code_native_det.dll with --deterministic)."""
+    return PC_LIBRARY + ("_det" if deterministic else "") + ".dll"
 
 
 def id_path(library: str) -> str:
@@ -362,15 +382,19 @@ def compile_library(args, out: str, program_id: int, modes: list[str]) -> tuple[
         cc = find_android_compiler(args.cc, toolchain_dir, args.fetch_compiler)
     else:
         cc = find_compiler(args.cc, toolchain_dir, args.fetch_compiler)
-    name = (android_library_name if args.android else library_name)(program_id, args.native, args.deterministic)
-    print(f"compiling with {cc} -{args.opt}{' for Android' if args.android else ''} ({args.jobs} jobs; "
-          "-O1 takes a while)")
-    lib = rbuild.build(out, args.jobs, args.opt, modes or ["RC_PAGED"], os.path.join("android", name) if args.android
-                       else name, [rbuild.DLL_GLUE], cc=cc, extra_flags=["-fvisibility=hidden"], android=args.android)
+    if args.pc:
+        name = pc_library_name(args.deterministic)
+    else:
+        name = (android_library_name if args.android else library_name)(program_id, args.native, args.deterministic)
+    print(f"compiling with {cc} -{args.opt}{' for Android' if args.android else ' for the PC app' if args.pc else ''} "
+          f"({args.jobs} jobs; -O1 takes a while)")
+    lib = rbuild.build(out, args.jobs, args.opt, modes or ["RC_PAGED"],
+                       os.path.join("android", name) if args.android else os.path.join("pc", name) if args.pc else name,
+                       [rbuild.DLL_GLUE], cc=cc, extra_flags=["-fvisibility=hidden"], android=args.android)
     print(f"code library: {lib}")
-    if args.android and args.native:  # (the native app checks it: GameFolderActivity)
+    if (args.android or args.pc) and args.native:  # (the native app checks it: GameFolderActivity, MH4U.exe)
         with open(id_path(lib), "w", encoding="ascii") as f:
-            f.write(code_library_id(True, args.deterministic) + "\n")
+            f.write(code_library_id(True, args.deterministic, pc=args.pc) + "\n")
         print(f"its id, for the app: {id_path(lib)}")
     return lib, name
 
@@ -401,6 +425,9 @@ def main(argv=None) -> int:
     ap.add_argument("--android", action="store_true",
                     help="build the library for the port's Android app (arm64) instead of this PC; with "
                          "--native, for the native app (libmh4u_code_native.so)")
+    ap.add_argument("--pc", action="store_true",
+                    help="build the library for the port's PC app (MH4U.exe, Windows x64; implies --native): "
+                         "mh4u_code_native.dll and its .id, in <out>/recomp/pc/; with --print-id, print the PC app's id")
     ap.add_argument("--any-version", action="store_true", help="don't insist on a known code.bin")
     ap.add_argument("--mods", metavar="AZAHAR_USER_DIR",
                     help="apply the code mods in AZAHAR_USER_DIR/load/mods/<program id>/ (default: the "
@@ -427,11 +454,21 @@ def main(argv=None) -> int:
     # compile and the link are done, from the objects that are still missing)
     ap.add_argument("--compile-only", action="store_true", help=argparse.SUPPRESS)
     args = ap.parse_args(argv)
+    if args.pc and args.android:
+        ap.error("--pc and --android are two different apps' libraries: one at a time")
     if args.print_id:
-        print(code_library_id(True, args.deterministic))
+        print(code_library_id(True, args.deterministic, pc=args.pc))
         return 0
     if not args.dump:
         ap.error("--dump is required")
+    if args.pc:
+        args.native = True   # (the PC app runs the native runtime only)
+        if args.install:
+            raise SystemExit(f"with --pc, --install has no folder to go to: copy {pc_library_name(args.deterministic)} "
+                             "and its .id into your game folder, beside the game and its update")
+        if not sys.platform.startswith("win") and not args.cc:
+            raise SystemExit("--pc builds a Windows library: run it on Windows (or give --cc a MinGW clang, such as "
+                             f"llvm-mingw's {MINGW_CLANG})")
     modes = rbuild.native_defines(args.native, args.deterministic)   # exits on --deterministic alone
     if args.android and args.install and args.native:
         raise SystemExit("with --native --android, --install has no folder to go to: copy "
@@ -590,7 +627,7 @@ def main(argv=None) -> int:
     ext = game_version.extension_crc(code, header.text.address, mod_code.extension if mod_code else None)
     with open(os.path.join(out, "src", game_version.SOURCE_NAME), "w", encoding="ascii", newline=chr(10)) as f:
         f.write(game_version.version_source((version or {}).get("key", "unknown"),
-                                            code_library_id(args.native, args.deterministic), table, ext))
+                                            code_library_id(args.native, args.deterministic, pc=args.pc), table, ext))
     if table:
         print(f"game version {version.get('key')}: {len(table)} of the port's addresses moved to it")
 
@@ -619,6 +656,9 @@ def main(argv=None) -> int:
     if args.android and not args.install:
         print(f"next: copy it to your device, into the native app's folder as {name}" if args.native else
               f"next: copy it to your device, into Azahar's user folder as recomp/{name}")
+    if args.pc:
+        print(f"next: copy {name} and {os.path.basename(id_path(name))} into your game folder, beside the game and its "
+              "update (MH4U.exe looks for them there)")
     if args.install:
         dest_dir = os.path.join(args.install, "recomp")
         os.makedirs(dest_dir, exist_ok=True)

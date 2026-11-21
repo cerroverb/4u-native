@@ -67,6 +67,7 @@
 #include "gpu/native/compose.h"
 #include "gpu/native/hd_textures.h"
 #include "gpu/native/pipeline_builder.h"
+#include "gpu/native/memory_budget.h"
 #include "gpu/native/process_memory.h"
 #include "gpu/native/scaled_screens.h"
 #include "gpu/native/provider_select.h"
@@ -90,6 +91,7 @@ constexpr const char* kLog = "NativeGpu";
 std::atomic<bool> g_shadows{true};  // SetShadows
 std::atomic<int> g_ps1_textures{0};  // SetPs1Textures (0 to 4)
 std::atomic<bool> g_ps1_geometry{false};  // SetPs1Geometry
+std::atomic<bool> g_text_outline{false};  // SetTextOutline
 
 constexpr u32 kVaddrLcd = 0x1ED02000;
 constexpr u32 kLcdRegs = 0x400;
@@ -113,36 +115,31 @@ constexpr u64 kVertexRingBytes = 16ull << 20;
 constexpr u64 kVsUniformRingBytes = 8ull << 20;
 constexpr u64 kFragmentUniformRingBytes = 8ull << 20;
 constexpr u64 kStagingRingBytes = 8ull << 20;
-// The decoded textures kept as images (a texture is level 0 only until N2-15); past this the least recently used ones the
-// current recording does not use are released, down to three quarters of it. 768 MB everywhere before: an area's textures
-// are 30-45 MB of images (the High Rank steppe, the village), so only a long session could reach it, and a 3-4 GB phone
-// could run out of memory first (each image's pixels were kept in the cache as well). By the device's memory: up to 3 GB
-// 192 MB, up to 4.5 GB 256 MB, up to 6.5 GB 384 MB, more 768 MB; MH4N_TEXTURE_BUDGET_MB=<n> another.
-u64 TextureBudgetBytes() {
-    static const u64 budget = [] {
-        if (const char* v = std::getenv("MH4N_TEXTURE_BUDGET_MB"); v != nullptr && std::atoi(v) > 0) {
-            return static_cast<u64>(std::atoi(v)) << 20;
-        }
-        const u64 mb = DeviceMemoryMb();
-        const u64 budget_mb = mb == 0 ? 768 : mb <= 3200 ? 192 : mb <= 4600 ? 256 : mb <= 6600 ? 384 : 768;
-        return budget_mb << 20;
-    }();
-    return budget;
+// The decoded textures kept as images (a texture is level 0 only until N2-15); past the budget the least recently used ones
+// the current recording does not use are released, down to three quarters of it. 768 MB everywhere before 1.0.1: an
+// area's textures are 30-45 MB of images (the High Rank steppe, the village), so only a long session could reach it, and a
+// 3-4 GB phone could run out of memory first (each image's pixels were kept in the cache as well). 1.0.1: by the device's
+// memory, up to 3 GB 192 MB, up to 4.5 GB 256 MB, up to 6.5 GB 384 MB, more 768 MB, five eighths of it the HD packs'
+// share (4u-native #56). 1.0.2 (S9, 4u-native #67): with an HD pack, by the memory available when the renderer starts,
+// and halved when the system asks for memory back (memory_budget.h: ChooseMemoryBudgets, set by the renderer once the
+// packs are read; MemoryLow). MH4N_TEXTURE_BUDGET_MB=<n> and MH4N_HD_BUDGET_MB=<n> still decide.
+std::atomic<u64> g_texture_budget{0}, g_hd_budget{0};  // (bytes; 0: not chosen yet, 1.0.1's step)
+std::atomic<int> g_memory_low{0};                         // MemoryLow's calls (the renderer takes them at its housekeeping)
+long EnvMb(const char* name) {
+    const char* v = std::getenv(name);
+    return v != nullptr && std::atoi(v) > 0 ? std::atoi(v) : 0;
 }
-// The HD pack's share of the texture budget (1.0.1, 4u-native #56): five eighths of it (120 MB up to 3 GB, 160 up to
-// 4.5 GB, 240 up to 6.5 GB, 480 more), MH4N_HD_BUDGET_MB=<n> another. A new HD image is made only while the pack's images
-// fit in it (TextureImage); past it the texture stays the game's own until room is made (HdHousekeeping). Before, the
-// images counted only in the whole budget, and a 4x pack's area on a 4 GB phone (256 MB) went past it: the budget's
-// LRU let go of images the next frames drew again, and each was read and decoded from its file again (a Moto g06 in
-// the village: 1444 decodes of 380 files, 82 frames over 33 ms in a minute). The game's own textures keep the rest.
+u64 TextureBudgetBytes() {
+    if (const u64 b = g_texture_budget.load(std::memory_order_relaxed)) return b;
+    const MemoryBudgets b = ChooseMemoryBudgets(DeviceMemoryMb(), -1, false, EnvMb("MH4N_TEXTURE_BUDGET_MB"),
+                                                EnvMb("MH4N_HD_BUDGET_MB"));
+    return b.texture_mb << 20;
+}
 u64 HdBudgetBytes() {
-    static const u64 budget = [] {
-        if (const char* v = std::getenv("MH4N_HD_BUDGET_MB"); v != nullptr && std::atoi(v) > 0) {
-            return static_cast<u64>(std::atoi(v)) << 20;
-        }
-        return TextureBudgetBytes() / 8 * 5;
-    }();
-    return budget;
+    if (const u64 b = g_hd_budget.load(std::memory_order_relaxed)) return b;
+    const MemoryBudgets b = ChooseMemoryBudgets(DeviceMemoryMb(), -1, false, EnvMb("MH4N_TEXTURE_BUDGET_MB"),
+                                                EnvMb("MH4N_HD_BUDGET_MB"));
+    return b.hd_mb << 20;
 }
 // An HD image not bound in this many screen pictures (two a game frame: 30 s at 60 FPS, a minute at 30) is long idle: it
 // goes once the pack's images pass half their share (an area left behind)
@@ -852,7 +849,7 @@ public:
     Impl(Host& host, const NativeOptions& options)
         : host_(host), options_(options), gx_(host), processor_(host, *this), registry_(&fragment::FeatureRegistry::Global()),
           scale_(std::clamp<u32>(options.scale, 1, kMaxScale)), async_(options.async_screens) {
-        processor_.SetRegisterWriteLog(true);
+        processor_.SetRegisterWriteLog(options.register_write_log);
         if (scale_ > 1) {
             MH4N_LOG(Info, kLog, "internal resolution {}x", scale_);
         }
@@ -880,8 +877,11 @@ public:
         if ((command.words[0] & 0xFF) == 1) {  // SubmitCmdList
             const u32 vaddr = command.words[1];
             const u32 paddr = vaddr == 0 ? 0 : host_.VirtualToPhysical(vaddr).value_or(vaddr);
+            pacing::Mark(pacing::kRenderListIn, command.words[2] / 4);
+            const u64 draws_before = frame_.draws;
             processor_.SubmitGxCmdList(paddr, command.words[2]);
             FlushRecording();
+            pacing::Mark(pacing::kRenderListOut, static_cast<u32>(frame_.draws - draws_before));
             return;
         }
         if ((command.words[0] & 0xFF) == static_cast<u32>(gx::CommandId::CacheFlush)) {
@@ -906,7 +906,20 @@ public:
         if (renderer_ready_ && (command.words[0] & 0xFF) == static_cast<u32>(gx::CommandId::DisplayTransfer)) {
             ++ab_transfers_;
             if (texture_cache_) {
-                texture_cache_->NextFrame();  // (a screen's picture is done: each texture's spot check once a picture)
+                // (a screen's picture is done: each texture's spot check once a picture). MH4N_SPOT_CHECK_MIN_US=<us>:
+                // once in that time at most, however many pictures ("No limit" makes 250 and more a second; at 60 a
+                // second and an interval under 16 ms nothing changes)
+                static const u64 min_ns = [] {
+                    const char* v = std::getenv("MH4N_SPOT_CHECK_MIN_US");
+                    return v != nullptr ? static_cast<u64>(std::max(0LL, std::atoll(v))) * 1000 : u64{0};
+                }();
+                const u64 now_ns = min_ns != 0 ? static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                                     std::chrono::steady_clock::now().time_since_epoch()).count())
+                                               : 0;
+                if (min_ns == 0 || now_ns - spot_check_ns_ >= min_ns) {
+                    spot_check_ns_ = now_ns;
+                    texture_cache_->NextFrame();
+                }
                 MemoryHousekeeping();
                 hd_upload_bytes_ = 0;  // (and the HD pack's uploads start again: TextureImage)
                 hd_.Tick();
@@ -1249,6 +1262,10 @@ public:
 
     void SetSharedScreens(bool on) override { shared_wanted_ = on; }
 
+    bool ScreenLeftOut(u32 paddr) const override {
+        return std::find(touch_left_out_.begin(), touch_left_out_.end(), paddr) != touch_left_out_.end();
+    }
+
     void SetTouchScreenShown(bool shown) override {
         if (touch_shown_.exchange(shown, std::memory_order_relaxed) != shown) {
             const bool skip = touch_skip_enabled_.load(std::memory_order_relaxed);
@@ -1275,6 +1292,7 @@ public:
         if (!touch) ++top_transfers_;  // (MH4N_TOUCH_DUTY's frames)
         transfer_alternations_ = touch != last_transfer_touch_ ? std::min<u32>(transfer_alternations_ + 1, 1000) : 0;
         last_transfer_touch_ = touch;
+        const u32 left_source = touch_phase_ ? touch_source_ : 0;  // (the turn that ends here left its draws out there)
         if (touch) {
             const u32 input = regs.InputAddress();
             touch_source_ = 0;
@@ -1285,8 +1303,30 @@ public:
                 }
             }
         }
+        // (1.0.2) A touch screen's transfer that reads the target whose draws its turn left out writes the top screen's
+        // picture to that framebuffer (the target still held it), not the touch screen's: the display shows nothing of
+        // it (ScreenLeftOut), and the transfer draws no picture of it (DrawScaledScreen, with the turn's own decision:
+        // the sink may ask for the touch screen again at a VBlank inside the turn). Any other transfer there writes it
+        // again. Before, the quick items' piece and the touch screen's corner showed the top screen in small for the
+        // first 3 or 4 frames the touch screen was drawn again (MH4N_SHOTS_TOUCH_DUTY's _r1 to _r4 on the PC).
+        {
+            const u32 output = regs.OutputAddress();
+            const auto at = std::find(touch_left_out_.begin(), touch_left_out_.end(), output);
+            const bool left_out = touch && left_source != 0 && left_source == touch_source_;
+            if (left_out && at == touch_left_out_.end()) {
+                touch_left_out_.push_back(output);
+            } else if (!left_out && at != touch_left_out_.end()) {
+                touch_left_out_.erase(at);
+            }
+            if (left_out && !touch_left_out_told_) {
+                touch_left_out_told_ = true;
+                MH4N_LOG(Info, kLog, "the touch screen's framebuffer {:08x} holds a turn whose draws were left out: not shown",
+                         output);
+            }
+        }
         const bool hidden = touch_forced_hidden_ || TouchDutyHidden() ||
                             (touch_skip_enabled_.load(std::memory_order_relaxed) && !touch_shown_.load(std::memory_order_relaxed));
+        if (!touch) touch_turn_hidden_ = hidden;  // (the touch screen's transfer that ends the turn goes by it)
         touch_phase_ = hidden && !touch && transfer_alternations_ >= 4 && touch_source_ != 0;
         if (touch_phase_ && !touch_phase_told_) {
             touch_phase_told_ = true;
@@ -1503,6 +1543,11 @@ public:
         add("cpu_refused", frame_.cpu_refused);
         add("cpu_untranslated", frame_.cpu_untranslated);
         add("cpu_vertices", frame_.cpu_vertices);
+        {
+            const cpuvertex::DecodedWork work = cpuvertex::TakeDecodedWork();  // (the interpreter's, since the last frame)
+            add("pica_steps", work.steps);
+            add("pica_decodes", work.decodes);
+        }
         add("cpu_us", frame_.cpu_us);
         add("draw_us", frame_.draw_us);
         add("prep_us", frame_.prep_us);
@@ -1928,7 +1973,22 @@ private:
             } else if (std::optional<std::string> user = options_.options.Get("--user")) {
                 packs = *user + "/load/textures";
             }
-            hd_.Load(packs, options_.options.Has("--deterministic"));
+            hd_.Load(packs, options_.options.Has("--deterministic"), backend_->Caps().bc7);  // (BC7: a KTX2's, 1.0.2)
+        }
+        {  // the texture budgets (memory_budget.h): with a pack, by the memory available now (1.0.2, S9)
+            u64 device_mb = DeviceMemoryMb();
+            long available_mb = AvailableMemoryKb() / 1024;
+            if (const char* t = std::getenv("MH4N_BUDGET_MEMORY_MB")) {  // (a test aid: "<device>:<available>" MB)
+                unsigned long long d = 0, a = 0;
+                if (std::sscanf(t, "%llu:%llu", &d, &a) == 2) device_mb = d, available_mb = static_cast<long>(a);
+            }
+            budgets_ = ChooseMemoryBudgets(device_mb, available_mb, hd_.active(), EnvMb("MH4N_TEXTURE_BUDGET_MB"),
+                                           EnvMb("MH4N_HD_BUDGET_MB"));
+            g_texture_budget.store(budgets_.texture_mb << 20, std::memory_order_relaxed);
+            g_hd_budget.store(budgets_.hd_mb << 20, std::memory_order_relaxed);
+            g_memory_low.store(0, std::memory_order_relaxed);
+            MH4N_LOG(Info, "Memory", "[mem] texture budget: {} MB for the textures' images, {} MB of them for the HD packs ({})",
+                     budgets_.texture_mb, budgets_.hd_mb, budgets_.why);
         }
 
         vertex::VertexCaps vertex_caps;
@@ -4250,8 +4310,9 @@ private:
         // The hidden touch screen's picture is not drawn: nobody shows it (DisplayMemGpu does not build that screen while
         // hidden) and its draws were left out (touch_phase_). Its snapshot is still taken, for its framebuffer's memory.
         // (A 960x720 picture a frame on the Anbernic at 3x: 0.8-0.9 ms of its GPU.)
-        const bool hidden = touch_forced_hidden_ || TouchDutyHidden() ||
-                            (touch_skip_enabled_.load(std::memory_order_relaxed) && !touch_shown_.load(std::memory_order_relaxed));
+        // (1.0.2: hidden or not as the turn was decided at the top screen's transfer, NoteScreenTransfer; a turn whose
+        // draws were left out is never drawn as a picture, even when the touch screen is asked for again inside it)
+        const bool hidden = touch_turn_hidden_;
         const bool picture = !(hidden && width == 240 && height == 320 && transfer_alternations_ >= 4);
         // A screen target's image may owe pixels (gpu3: handed over at the top screen's transfer, or a VBlank, before
         // this one): the hidden touch screen's snapshot, its only read then, is of the published picture (all of it),
@@ -4653,6 +4714,10 @@ private:
             texture_cache_->Sweep(36000, 600);
         }
         Ps1Housekeeping(frame);
+        if (const int low = g_memory_low.load(std::memory_order_relaxed); low != memory_low_taken_) {
+            memory_low_taken_ = low;
+            LowerBudgets("the system asked for memory back");
+        }
         HdHousekeeping(frame);
 #if !defined(_WIN32)
         if (frame % 120 == 0 && LowMemoryKb() > 0) {
@@ -4732,9 +4797,28 @@ private:
         }
     }
 
+    // The system asked for memory back (MemoryLow: Android's onTrimMemory while running; or little available, TrimForMemory):
+    // the budgets halved, never under 1.0.1's step (memory_budget.h), and the least recently used images not bound now
+    // down to three quarters of them (an HD pack's first). One a fixed budget or one at its step keeps.
+    void LowerBudgets(const char* why) {
+        const MemoryBudgets lower = LowerMemoryBudgets(budgets_);
+        if (lower.texture_mb == budgets_.texture_mb && lower.hd_mb == budgets_.hd_mb) {
+            return;
+        }
+        MH4N_LOG(Info, "Memory", "[mem] texture budget: {} -> {} MB, the HD packs' {} -> {} MB ({})", budgets_.texture_mb,
+                 lower.texture_mb, budgets_.hd_mb, lower.hd_mb, why);
+        budgets_ = lower;
+        g_texture_budget.store(budgets_.texture_mb << 20, std::memory_order_relaxed);
+        g_hd_budget.store(budgets_.hd_mb << 20, std::memory_order_relaxed);
+        if (binding_textures_) return;  // (the next housekeeping's usual passes bring them down)
+        if (hd_.active()) ReleaseHd(HdBudgetBytes() / 4 * 3, 0, "over the lowered budget");
+        if (texture_bytes_ > TextureBudgetBytes()) ReleaseTextures(TextureBudgetBytes() / 4 * 3, ~u64{0});
+    }
+
     // Little of the system's memory left: the images and the cache entries not used in the last 120 pictures (one or two
     // seconds) go.
     void TrimForMemory(long available_kb) {
+        if (!memory_short_told_) LowerBudgets("little memory available");  // (once an episode)
         const u64 frame = TextureFrame();
         const u64 before = texture_bytes_, pixels = texture_cache_->pixel_bytes();
         const size_t entries = texture_cache_->size();
@@ -4854,6 +4938,32 @@ private:
         return true;
     }
 
+    // A KTX2's BC7 blocks (ktx2.h: rows of blocks bottom-up, the image's order) into its image, in bands of at most 4 MB as
+    // UploadHd's, in order (1.0.2, S9b)
+    bool UploadHdBlocks(rhi::Image& image, u32 width, u32 height, const std::vector<u8>& blocks) {
+        constexpr u64 kBand = 4u << 20;
+        const u64 row = static_cast<u64>((width + 3) / 4) * 16;
+        const u32 block_rows = (height + 3) / 4, rows = static_cast<u32>(std::max<u64>(1, kBand / row));
+        for (u32 first = 0; first < block_rows; first += rows) {
+            const u32 count = std::min(rows, block_rows - first);
+            EnsureRecording();
+            composer_->EndPass(*rec_);
+            rhi::Result<void> r = fragment::sampling::UploadBlockRows(*rec_, *staging_ring_, image, 0, 0, width, height, first, count, blocks);
+            if (!r.ok()) {
+                FlushRecording();
+                EnsureRecording();
+                r = fragment::sampling::UploadBlockRows(*rec_, *staging_ring_, image, 0, 0, width, height, first, count, blocks);
+            }
+            if (!r.ok()) {
+                MH4N_LOG(Error, kLog, "HD texture upload {}x{} BC7 (block rows {} to {}): {}", width, height, first, first + count,
+                         r.error());
+                return false;
+            }
+        }
+        ++frame_.texture_uploads;
+        return true;
+    }
+
     // The image of a texture (one 2D face or the six of a cube), decoded by the cache and uploaded when new or changed.
     // Null when the memory cannot be read or decoded.
     rhi::Image* TextureImage(const std::vector<const texture::TextureRef*>& faces) {
@@ -4948,7 +5058,7 @@ private:
             const auto held = texture_images_.find(key);
             const bool holds_it = held != texture_images_.end() && held->second.hd == static_cast<int>(hd->file) &&
                                   held->second.hd_ready;
-            const u64 hd_bytes = u64{hd->width} * hd->height * 4;
+            const u64 hd_bytes = hd->bytes();  // (a KTX2's BC7 image a quarter of RGBA8's: ktx2.h)
             if (!holds_it && !hd_.sync() && hd_.image_bytes() + hd_bytes > HdBudgetBytes()) {
                 // (past the pack's share of the budget: the game's own texture, its file not even read, until
                 // HdHousekeeping makes room; HdBudgetBytes)
@@ -4990,7 +5100,7 @@ private:
         }
         if (it == texture_images_.end()) {
             rhi::ImageDesc desc;
-            desc.format = rhi::Format::Rgba8Unorm;
+            desc.format = hd != nullptr && hd->format == HdFormat::Bc7 ? rhi::Format::Bc7Unorm : rhi::Format::Rgba8Unorm;
             desc.width = image_w;
             desc.height = image_h;
             desc.cube = key.cube;
@@ -5021,7 +5131,7 @@ private:
             entry.image = *image;
             entry.hd = hd_file;
             entry.width = image_w, entry.height = image_h;
-            entry.bytes = static_cast<u64>(image_w) * image_h * 4 * faces.size();
+            entry.bytes = hd != nullptr ? hd->bytes() : static_cast<u64>(image_w) * image_h * 4 * faces.size();
             texture_bytes_ += entry.bytes;
             if (hd_file >= 0) {
                 hd_.Made(entry.bytes);
@@ -5060,8 +5170,10 @@ private:
             const u64 upload_start = NowUs();
             bool uploaded;
             if (entry.hd >= 0) {  // (an HD pack's texture: its file's pixels from the loader, let go once uploaded)
-                uploaded = hd_pixels_ready && UploadHd(*entry.image, entry.width, entry.height, hd_pixels,
-                                                       unread_here && entry.stamp == recording_serial_);
+                uploaded = hd_pixels_ready &&
+                           (hd->format == HdFormat::Bc7
+                                ? UploadHdBlocks(*entry.image, entry.width, entry.height, hd_pixels)
+                                : UploadHd(*entry.image, entry.width, entry.height, hd_pixels, unread_here && entry.stamp == recording_serial_));
                 if (uploaded) {
                     entry.hd_ready = true;
                     hd_pixels_ready = false;
@@ -6707,6 +6819,16 @@ private:
             desc.scissor->height = std::min<u32>(desc.scissor->height, 8);
         }
 
+        // (1.0.2, GU#243) TextOutline (SetTextOutline): a draw of the game's letters - texture 0 on, of the font's format
+        // (A4, 11) and 512 or more wide, blended as text is (source alpha over), without depth - gets its outline first
+        // (DrawTextOutline), here or, held back, when FlushHeldCpuDraw draws it (the draws that join it share its state)
+        static const bool outline_env = std::getenv("MH4N_TEXT_OUTLINE") != nullptr;  // (tests: the runner, without the app)
+        const bool outline = (outline_env || g_text_outline.load(std::memory_order_relaxed)) && !shadow_write &&
+                             desc.viewport && ff.blend_enabled && ff.src_color == rhi::BlendFactor::SrcAlpha &&
+                             ff.dst_color == rhi::BlendFactor::OneMinusSrcAlpha && !ff.depth_test &&
+                             (regs[texture::kMainConfig] & 1) != 0 && (regs[texture::kTexture0Format] & 0xF) == 11 &&
+                             pica::BitsOf(regs[texture::kTexture0 + 1], 16, 11) >= 512;
+
         EnsureRecording();
         if (KeyStatsEvery() > 0) {
             NoteKeyStats(state, key, ff, desc, pull_draw, use_cpu);
@@ -6720,6 +6842,7 @@ private:
             held_.active = true;
             held_.desc = desc;
             held_.key = key;
+            held_.outline = outline;
             std::swap(held_.batch, batch_);
             ++frame_.cpu_held;
             return DrawResult{};
@@ -6761,14 +6884,15 @@ private:
             if (std::getenv("MH4N_DRAW_LOG") != nullptr) {  // (a measurement aid: each draw of the traced window)
                 const rhi::Rect& sc = *desc.scissor;
                 MH4N_LOG(Info, kLog, "DRAW c {:08x} d {:08x} n {} cpu {} scissor {},{} {}x{} area {},{} {}x{} blend {} {}/{} mask {:x} at {} "
-                         "self {} depth {}{} cmp {} stencil {} cull {} units {:x} t0 {:08x} vp {},{} {}x{}",
+                         "self {} depth {}{} cmp {} stencil {} cull {} units {:x} t0 {:08x} fmt {} {}x{} vp {},{} {}x{}",
                          color != nullptr ? color->paddr : 0, depth != nullptr ? depth->paddr : 0, count, use_cpu, sc.x, sc.y,
                          sc.width, sc.height, desc.target.area.x, desc.target.area.y, desc.target.area.width,
                          desc.target.area.height, ff.blend_enabled, static_cast<int>(ff.src_color), static_cast<int>(ff.dst_color),
                          ff.color_write_mask, static_cast<int>(key.framebuffer.alpha_test_func()), self_sampled_, ff.depth_test,
                          ff.depth_write, static_cast<int>(ff.depth_compare), ff.stencil_test, static_cast<int>(ff.cull),
                          regs[texture::kMainConfig] & 7, pica::BitsOf(regs[texture::kTexture0 + 4], 0, 28) * 8,
-                         geometry.viewport.x, geometry.viewport.y, geometry.viewport.width, geometry.viewport.height);
+                         regs[texture::kTexture0Format] & 0xF, pica::BitsOf(regs[texture::kTexture0 + 1], 16, 11),
+                         pica::BitsOf(regs[texture::kTexture0 + 1], 0, 11), geometry.viewport.x, geometry.viewport.y, geometry.viewport.width, geometry.viewport.height);
                 if (ff.stencil_test) {
                     const fbops::DynamicState dyn = fbops::MakeDynamicState(state);
                     MH4N_LOG(Info, kLog, "DRAW   stencil front {}/{}/{} cmp {} back {}/{}/{} cmp {} ref {:x} cmask {:x} wmask {:x}",
@@ -6790,6 +6914,9 @@ private:
                     MH4N_LOG(Info, kLog, "DRAW   key {:016x} vertices{}", fragment::HashKey(key), v);
                 }
             }
+        }
+        if (outline) {
+            DrawTextOutline(desc);
         }
         FragStatsTag(key, color, depth);
         rhi::Result<DrawResult> result = composer_->Draw(*rec_, desc);
@@ -7076,6 +7203,31 @@ private:
         return true;
     }
 
+    // (1.0.2, GU#243) TextOutline: a draw of the game's letters drawn 4 times more, before it, its viewport moved half a
+    // pixel of the 3DS's screen (one at least) left, right, up and down, through blending that only darkens: colour zero x
+    // source + (1 - source alpha) x destination, alpha kept. A thin dark outline; the letters' own colours drawn over it as
+    // always (8 ways, a whole pixel: the 3DS's letters, a pixel apart, ran into one dark blot on the quest counter's panel)
+    void DrawTextOutline(const DrawDesc& desc) {
+        DrawDesc o = desc;
+        o.state.blend_enabled = true;
+        o.state.src_color = rhi::BlendFactor::Zero, o.state.dst_color = rhi::BlendFactor::OneMinusSrcAlpha;
+        o.state.src_alpha = rhi::BlendFactor::Zero, o.state.dst_alpha = rhi::BlendFactor::One;
+        o.state.color_op = o.state.alpha_op = rhi::BlendOp::Add;
+        const rhi::Viewport v = *desc.viewport;
+        const float px = std::max(1.0f, std::round(std::min(v.width, v.height) / 480.0f));
+        static constexpr int kDirs[4][2] = {{-1, 0}, {1, 0}, {0, -1}, {0, 1}};
+        for (const auto& d : kDirs) {
+            rhi::Viewport moved = v;
+            moved.x += d[0] * px, moved.y += d[1] * px;
+            o.viewport = moved;
+            (void)composer_->Draw(*rec_, o);
+        }
+        if (!text_outline_told_) {
+            MH4N_LOG(Info, kLog, "text outline: the game's letters outlined ({} px)", px);
+            text_outline_told_ = true;
+        }
+    }
+
     // The held CPU-path draw, recorded now with every triangle that joined it.
     void FlushHeldCpuDraw() {
         if (!held_.active) {
@@ -7095,6 +7247,9 @@ private:
         held_.desc.vertex_buffers = held_buffers_;
         held_.desc.count = streamed->vertex_count;
         held_.desc.fragment = &held_.key;
+        if (held_.outline) {
+            DrawTextOutline(held_.desc);
+        }
         FragStatsTag(held_.key, nullptr, nullptr);
         rhi::Result<DrawResult> result = composer_->Draw(*rec_, held_.desc);
         FragStatsTag();
@@ -7856,6 +8011,7 @@ private:
 
     Host& host_;
     NativeOptions options_;
+    u64 spot_check_ns_ = 0;  // the texture cache's last NextFrame (MH4N_SPOT_CHECK_MIN_US)
     gx::GxEngine gx_;
     pica::CommandProcessor processor_;
     const fragment::FeatureRegistry* registry_;
@@ -7918,6 +8074,7 @@ private:
     // logged, the smaller copies, those replaced and waiting to go, their bytes, a scratch buffer, the kinds logged
     int ps1_level_ = 0, ps1_told_ = 0;
     bool ps1_geometry_told_ = false;
+    bool text_outline_told_ = false;  // (SetTextOutline's line, once)
     std::map<TexImageKey, Ps1Image> ps1_images_;
     std::vector<std::pair<std::shared_ptr<rhi::Image>, u64>> ps1_old_;
     u64 ps1_bytes_ = 0;
@@ -7935,6 +8092,8 @@ private:
     u32 texture_create_failures_ = 0;
     u32 texture_memory_short_told_ = 0;  // "texture memory ran out" lines written (TrimTextures)
     bool memory_short_told_ = false;
+    MemoryBudgets budgets_;       // the texture budgets chosen at the start, lowered by LowerBudgets (memory_budget.h)
+    int memory_low_taken_ = 0;    // MemoryLow's calls taken (g_memory_low)
     u64 next_memory_line_us_ = 0;
     long first_resident_kb_ = -1;
     u64 recording_serial_ = 0;
@@ -8032,6 +8191,9 @@ private:
     u32 touch_source_ = 0;              // the colour target the touch screen's last transfer read (its address)
     bool touch_phase_ = false;          // the draws until the next transfer are the hidden touch screen's: left out
     bool touch_phase_told_ = false;
+    bool touch_turn_hidden_ = false;    // (1.0.2) the touch screen was hidden at the last top screen's transfer
+    std::vector<u32> touch_left_out_;   // (1.0.2) the framebuffers a turn that left its draws out wrote last (ScreenLeftOut)
+    bool touch_left_out_told_ = false;
 
     // the recording
     std::optional<rhi::Recorder> rec_;
@@ -8072,6 +8234,7 @@ private:
     bool flip_pass_failed_ = false;
     struct HeldCpuDraw {
         bool active = false;
+        bool outline = false;  // (TextOutline: its outline drawn first)
         DrawDesc desc;
         fragment::FragmentKey key;
         cpuvertex::TriangleBatch batch;
@@ -8206,8 +8369,16 @@ int Ps1Textures() {
     return g_ps1_textures.load(std::memory_order_relaxed);
 }
 
+void MemoryLow() {
+    g_memory_low.fetch_add(1, std::memory_order_relaxed);
+}
+
 void SetPs1Geometry(bool on) {
     g_ps1_geometry.store(on, std::memory_order_relaxed);
+}
+
+void SetTextOutline(bool on) {
+    g_text_outline.store(on, std::memory_order_relaxed);
 }
 
 bool Ps1Geometry() {
@@ -8291,6 +8462,7 @@ MH4N_REGISTER(GpuFactory, "native", [](Host& host, const Options& options) -> st
         MH4N_LOG(Error, kLog, "--async-screens {}: on or off; off is used", async_screens);
     }
     native.options = options;
+    native.register_write_log = options.GetString("--gpu", "") != "native-display";
     native.force_ubershader = options.Has("--force-ubershader");
     const std::string target_textures = options.GetString("--target-textures", "on");
     if (target_textures == "off" || target_textures == "0" || target_textures == "false" || target_textures == "no") {

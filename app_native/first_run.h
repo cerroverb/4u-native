@@ -29,7 +29,12 @@ bool first_run_fast_cores();
 
 // One screen (S45, mh4n port/src/onescreen.cpp): the touch screen's menus on the top screen. mh4u.ini's single_screen as
 // the app comes: settings_panel.cpp's default, first_run_write's and the one first_run_fill adds to a file that lacks it.
+// Off on the PC: its window has room for both screens.
+#ifdef _WIN32
+constexpr const char* kSingleScreenDefault = "off";
+#else
 constexpr const char* kSingleScreenDefault = "on";
+#endif
 
 // Writes the first start's mh4u.ini (the port's options) into `ini_path`, and the app's own (mh4u-app.ini, through
 // app_settings) for a weak phone: Low-end mode as the settings set it. Logs what it chose and why.

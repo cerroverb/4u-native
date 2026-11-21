@@ -328,6 +328,80 @@ void main() {
 }
 )";
 
+// ---- FastTopScreen: the top screen's colours cut once a picture, then scaled by the GPU's filter ----
+// With its depths cut (MH4U's framebuffer is RGB565, so always) kTargetFragment takes up to four texels a window pixel,
+// each turned and cut on its own, and filters them itself: where the window does not show the upright picture one texel
+// a pixel (2x on a 720-line screen: 480 rows in 720), that is four reads, four cuts and the filter's arithmetic for every
+// pixel of the window, 5.6 ms of a Moto g06's GPU a frame (the window's whole GL time 6.8 ms, MH4U_GL_TIMER=1). With
+// FastTopScreen on, a first pass (an offscreen picture of the upright size) holds each upright texel once, turned and cut
+// by the same code (Texel), and the window draws that picture with the GPU's own bilinear filter, one sample a pixel, as
+// SDL drew the upright copy before 1.0 (gpu3): the window's GL time 2.9 ms. The GPU rounds its filter's weights, so where a
+// pixel falls between texels its colour can be off from kTargetFragment's (the Moto at 2x: 13 % of the pixels, by 2 at
+// most; MH4U_TOP_FAST=check): a setting, off as the app comes. A cheaper exact way was tried: the same four reads and the same arithmetic from the cut picture
+// cost more than kTargetFragment alone (8.1 ms) and still differed in 0.006 % of the pixels (the GPU's compiler).
+// The pass is made before SDL's queue runs (the window's own pass is not split for it on a tiler) with every GL state it
+// touches put back.
+// (%s: the sampler's extension line, its type)
+constexpr const char* kPrecutFragment = R"(%s
+#ifdef GL_FRAGMENT_PRECISION_HIGH
+precision highp float;
+#else
+precision mediump float;
+#endif
+uniform %s u_tex;
+uniform vec2 u_inv;
+uniform vec4 u_map;
+uniform float u_flip;
+uniform vec2 u_cut;
+uniform vec3 u_in_shift, u_in_inv, u_in_low;
+uniform vec3 u_out_shift, u_out_inv, u_out_low;
+vec3 Depths(vec3 c) {
+    if (u_cut.y < 0.5 && u_cut.x < 0.5) return c;
+    vec3 v = floor(c * 255.0 + 0.5);
+    if (u_cut.x > 0.5) {
+        vec3 q = floor(v * u_in_inv);
+        v = q * u_in_shift + floor(q * u_in_low);
+    }
+    vec3 q = floor(v * u_out_inv);
+    return (q * u_out_shift + floor(q * u_out_low)) * (1.0 / 255.0);
+}
+vec3 Texel(vec2 o) {
+    float n = u_map.x, w = u_map.y, h = u_map.z;
+    float k = o.y < n ? 1.0 : 0.0;
+    float fy = o.x + k;
+    float fx = w + n - 1.0 - o.y - k * w;
+    if (fy >= h) return vec3(0.0);
+    float row = u_flip > 0.5 ? h - 1.0 - fy : fy;
+    return Depths(texture2D(u_tex, vec2(fx + 0.5, u_map.w - row + 0.5) * u_inv).rgb);
+}
+void main() {
+    // the whole value (0-255) a quarter up, so that a store that rounds and one that truncates both keep it
+    vec3 k = floor(Texel(floor(gl_FragCoord.xy)) * 255.0 + 0.5);
+    gl_FragColor = vec4((k + 0.25) * (1.0 / 255.0), 1.0);
+}
+)";
+// The cut picture into the window: one sample of the GPU's bilinear filter at the texel coordinates kTargetFragment
+// takes (as SDL draws the upright copy)
+constexpr const char* kPrecutLinearFragment = R"(
+#ifdef GL_FRAGMENT_PRECISION_HIGH
+precision highp float;
+#else
+precision mediump float;
+#endif
+uniform sampler2D u_tex;  // the cut picture, filtered
+uniform vec4 u_affine;
+uniform vec2 u_yfix;
+uniform vec4 u_size;
+uniform vec2 u_inv;
+uniform float u_alpha;
+void main() {
+    float y = gl_FragCoord.y * u_yfix.x + u_yfix.y;
+    float u = clamp(gl_FragCoord.x * u_affine.x + u_affine.y, 0.5, u_size.x - 0.5);
+    float v = clamp(y * u_affine.z + u_affine.w, 0.5, u_size.y - 0.5);
+    gl_FragColor = vec4(texture2D(u_tex, vec2(u, v) * u_inv).rgb, u_alpha);
+}
+)";
+
 GLuint CompileShader(GLenum kind, const char* text) {
     GLuint shader = glCreateShader(kind);
     glShaderSource(shader, 1, &text, nullptr);
@@ -1099,51 +1173,15 @@ void shared_screens_show_pixels(SharedScreenView& view, const std::shared_ptr<co
 
 namespace {
 
-// A render target's picture into `dst` of what is bound now (the window, `out_w` x `out_h`, or with `into_texture` an SDL
-// render target of that size, whose rows SDL keeps the other way up), in SDL's order: its queue goes to GL first, and
-// SDL sets its own state again afterwards (SDL_FlushRenderer forgets what it had set); the vertex arrays SDL keeps
-// enabled are left as they were.
-// colour: with the colour filter (its variant of the program; the program of always where that one couldn't be made)
-void DrawTarget(const SharedScreenView& view, const SDL_FRect& dst, int out_w, int out_h, bool into_texture, Uint8 alpha,
-                bool no_cut = false, bool colour = false, int ps1 = 0, float phase = 0.0f) {
-    if (!EnsureTargetPrograms() || view.gl_name == 0 || dst.w <= 0 || dst.h <= 0 || out_w <= 0 || out_h <= 0) return;
-    const int kind = view.gl_target == GL_TEXTURE_EXTERNAL_OES ? 1 : 0;
-    colour = colour && EnsureFilterPrograms() && g_filter_target_programs[kind].program != 0;
-    if (ps1 != 0 && !(EnsurePs1Programs() && g_ps1_target_programs[ps1 - 1][colour ? 1 : 0][kind].program != 0)) ps1 = 0;
-    const TargetProgram& p = ps1 != 0 ? g_ps1_target_programs[ps1 - 1][colour ? 1 : 0][kind]
-                             : colour ? g_filter_target_programs[kind]
-                                      : g_target_programs[kind];
-    if (p.program == 0) return;
-    SDL_FlushRenderer(g_renderer);
-    glUseProgram(p.program);
-    glViewport(0, 0, out_w, out_h);
-    glDisable(GL_SCISSOR_TEST);
-    if (alpha < 255) {
-        glEnable(GL_BLEND);
-        glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
-        glBlendEquation(GL_FUNC_ADD);
-    } else {
-        glDisable(GL_BLEND);
-    }
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(view.gl_target, view.gl_name);
-    glUniform1i(p.u_tex, 0);
-    // the destination in clip space, as SDL's projection puts it (the window: y down; an SDL render target: y up)
-    const float x0 = 2.0f * dst.x / out_w - 1.0f, x1 = 2.0f * (dst.x + dst.w) / out_w - 1.0f;
-    const float y0 = into_texture ? 2.0f * dst.y / out_h - 1.0f : 1.0f - 2.0f * dst.y / out_h;
-    const float y1 = into_texture ? 2.0f * (dst.y + dst.h) / out_h - 1.0f : 1.0f - 2.0f * (dst.y + dst.h) / out_h;
-    glUniform4f(p.u_rect, x0, y0, x1, y1);
-    // the upright picture's texel coordinates of a fragment's centre, as SDL interpolates them over the quad
-    const float ax = view.source.w / dst.w, ay = view.source.h / dst.h;
-    glUniform4f(p.u_affine, ax, view.source.x - dst.x * ax, ay, view.source.y - dst.y * ay);
-    glUniform2f(p.u_yfix, into_texture ? 1.0f : -1.0f, into_texture ? 0.0f : static_cast<float>(out_h));
+// The layout's and the colour depths' uniforms of a target program (kTargetFragment's, or kPrecutFragment's: a name the
+// program lacks is -1, which GL ignores).
+void SetLayoutUniforms(const TargetProgram& p, const SharedScreenView& view, bool no_cut) {
     const mh4n::present::TargetLayout& l = view.target_layout;
     glUniform4f(p.u_size, static_cast<float>(l.UprightWidth()), static_cast<float>(l.UprightHeight()),
                 static_cast<float>(view.buffer_width), static_cast<float>(view.buffer_height));
     glUniform4f(p.u_map, static_cast<float>(l.scale), static_cast<float>(l.row_pixels), static_cast<float>(l.rows),
                 static_cast<float>(l.first));
     glUniform1f(p.u_flip, l.flip ? 1.0f : 0.0f);
-    glUniform1f(p.u_alpha, alpha / 255.0f);
     glUniform2f(p.u_inv, 1.0f / static_cast<float>(view.buffer_width), 1.0f / static_cast<float>(view.buffer_height));
     // the colour depths: 2^(8 - b), 2^(b - 8) and 2^(8 - 2b) for each (all exact; 8 bits: nothing cut)
     bool cut_in = false, cut_out = false;
@@ -1167,6 +1205,270 @@ void DrawTarget(const SharedScreenView& view, const SDL_FRect& dst, int out_w, i
     glUniform3fv(p.u_out_shift, 1, out_shift);
     glUniform3fv(p.u_out_inv, 1, out_inv);
     glUniform3fv(p.u_out_low, 1, out_low);
+}
+
+// ---- the cut picture's way ----
+// The setting FastTopScreen (shared_screens_set_fast_top), unless MH4U_TOP_FAST (a measurement aid) says: 0 off (as
+// 1.0.1.1), 1 on; check: on, and every 30th picture drawn both ways and compared (PrecutCheck, the log); ab: on and off by
+// turns, 300 window frames each, the turn marked in the pacing trace (kind 53, ab_phase: 1 on, 2 off).
+enum : int { kTopOld = 0, kTopFast = 2 };
+struct PrecutModes {
+    bool from_env = false;
+    int way = kTopOld;
+    bool check = false, ab = false;
+};
+bool g_fast_top_setting = false;
+const PrecutModes& PrecutEnv() {
+    static const PrecutModes modes = [] {
+        PrecutModes m;
+        const char* v = std::getenv("MH4U_TOP_FAST");
+        if (v == nullptr || *v == '\0') return m;
+        const std::string s = v;
+        m.from_env = true;
+        m.way = s == "0" ? kTopOld : kTopFast;
+        m.check = s == "check";
+        m.ab = s == "ab";
+        return m;
+    }();
+    return modes;
+}
+int PrecutWay() { return PrecutEnv().from_env ? PrecutEnv().way : g_fast_top_setting ? kTopFast : kTopOld; }
+bool PrecutAbOff() {
+    if (!PrecutEnv().ab) return false;
+    static std::uint64_t marked = ~0ull;
+    const std::uint64_t phase = (g_frame / 300) % 2;
+    if (phase != marked) {
+        marked = phase;
+        mh4n::pacing::Mark(mh4n::pacing::kRenderAbPhase, static_cast<std::uint32_t>(phase + 1));
+    }
+    return phase == 1;
+}
+TargetProgram g_precut_pass[2];  // [0] GL_TEXTURE_2D, [1] GL_TEXTURE_EXTERNAL_OES (its u_tex: the target)
+TargetProgram g_precut_linear;   // (its u_tex: the cut picture; u_inv: 1 / its size)
+bool g_precut_tried = false;
+struct PrecutPicture {
+    GLuint fbo = 0, texture = 0;
+    int width = 0, height = 0;
+};
+PrecutPicture g_precut[2];  // [0] the top screen's, [1] the touch screen's (a frame draws both without waiting)
+bool g_precut_failed = false;
+
+TargetProgram LinkTargetLike(const char* fragment, const char* what) {
+    TargetProgram p;
+    p.program = LinkProgram(kTargetVertex, fragment, what);
+    if (p.program == 0) return p;
+    const auto at = [&](const char* a, const char* b = nullptr) {
+        const GLint l = glGetUniformLocation(p.program, a);
+        return l >= 0 || b == nullptr ? l : glGetUniformLocation(p.program, b);
+    };
+    p.u_tex = at("u_tex", "u_pre");
+    p.u_rect = at("u_rect");
+    p.u_affine = at("u_affine");
+    p.u_yfix = at("u_yfix");
+    p.u_size = at("u_size");
+    p.u_map = at("u_map");
+    p.u_flip = at("u_flip");
+    p.u_alpha = at("u_alpha");
+    p.u_inv = at("u_inv", "u_pinv");
+    p.u_cut = at("u_cut");
+    p.u_in_shift = at("u_in_shift");
+    p.u_in_inv = at("u_in_inv");
+    p.u_in_low = at("u_in_low");
+    p.u_out_shift = at("u_out_shift");
+    p.u_out_inv = at("u_out_inv");
+    p.u_out_low = at("u_out_low");
+    return p;
+}
+
+// The programs, made once (no GL binding is changed: SDL's queue may not have run yet)
+bool EnsurePrecutPrograms(int kind) {
+    if (!g_precut_tried) {
+        g_precut_tried = true;
+        char fragment[4096];
+        std::snprintf(fragment, sizeof(fragment), kPrecutFragment, "", "sampler2D");
+        g_precut_pass[0] = LinkTargetLike(fragment, "the top screen's cut");
+        const char* gl = reinterpret_cast<const char*>(glGetString(GL_EXTENSIONS));
+        if (HasExtension(gl, "GL_OES_EGL_image_external")) {
+            std::snprintf(fragment, sizeof(fragment), kPrecutFragment, "#extension GL_OES_EGL_image_external : require",
+                          "samplerExternalOES");
+            g_precut_pass[1] = LinkTargetLike(fragment, "the top screen's cut (external)");
+        }
+        g_precut_linear = LinkTargetLike(kPrecutLinearFragment, "the top screen's cut picture");
+        std::fprintf(stderr, "[Info] App: the top screen cut once a picture (FastTopScreen%s): programs %s/%s, %s\n",
+                     PrecutEnv().from_env ? ", MH4U_TOP_FAST" : "", g_precut_pass[0].program != 0 ? "yes" : "no",
+                     g_precut_pass[1].program != 0 ? "yes" : "no", g_precut_linear.program != 0 ? "yes" : "no");
+    }
+    return g_precut_pass[kind].program != 0 && g_precut_linear.program != 0 && g_corners != 0;
+}
+
+// Every GL state the cut's pass changes, as it was, put back afterwards (SDL's cache of them stays true)
+struct SavedGl {
+    GLint fbo = 0, viewport[4] = {}, program = 0, active = 0, tex_2d = 0, tex_ext = 0, array_buffer = 0;
+    GLboolean scissor = GL_FALSE, blend = GL_FALSE;
+    GLfloat clear[4] = {};
+    GLint enabled[3] = {}, a0_buffer = 0, a0_size = 4, a0_type = GL_FLOAT, a0_norm = 0, a0_stride = 0;
+    void* a0_pointer = nullptr;
+    bool external = false;
+    void Save(bool ext) {
+        external = ext;
+        glGetIntegerv(GL_FRAMEBUFFER_BINDING, &fbo);
+        glGetIntegerv(GL_VIEWPORT, viewport);
+        glGetIntegerv(GL_CURRENT_PROGRAM, &program);
+        glGetIntegerv(GL_ACTIVE_TEXTURE, &active);
+        glActiveTexture(GL_TEXTURE0);
+        glGetIntegerv(GL_TEXTURE_BINDING_2D, &tex_2d);
+        if (external) glGetIntegerv(GL_TEXTURE_BINDING_EXTERNAL_OES, &tex_ext);
+        glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &array_buffer);
+        scissor = glIsEnabled(GL_SCISSOR_TEST);
+        blend = glIsEnabled(GL_BLEND);
+        glGetFloatv(GL_COLOR_CLEAR_VALUE, clear);
+        for (GLuint i = 0; i < 3; ++i) glGetVertexAttribiv(i, GL_VERTEX_ATTRIB_ARRAY_ENABLED, &enabled[i]);
+        glGetVertexAttribiv(0, GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING, &a0_buffer);
+        glGetVertexAttribiv(0, GL_VERTEX_ATTRIB_ARRAY_SIZE, &a0_size);
+        glGetVertexAttribiv(0, GL_VERTEX_ATTRIB_ARRAY_TYPE, &a0_type);
+        glGetVertexAttribiv(0, GL_VERTEX_ATTRIB_ARRAY_NORMALIZED, &a0_norm);
+        glGetVertexAttribiv(0, GL_VERTEX_ATTRIB_ARRAY_STRIDE, &a0_stride);
+        glGetVertexAttribPointerv(0, GL_VERTEX_ATTRIB_ARRAY_POINTER, &a0_pointer);
+    }
+    void Restore() const {
+        glBindFramebuffer(GL_FRAMEBUFFER, static_cast<GLuint>(fbo));
+        glViewport(viewport[0], viewport[1], viewport[2], viewport[3]);
+        glUseProgram(static_cast<GLuint>(program));
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(tex_2d));
+        if (external) glBindTexture(GL_TEXTURE_EXTERNAL_OES, static_cast<GLuint>(tex_ext));
+        glActiveTexture(static_cast<GLenum>(active));
+        glBindBuffer(GL_ARRAY_BUFFER, static_cast<GLuint>(a0_buffer));
+        glVertexAttribPointer(0, a0_size, static_cast<GLenum>(a0_type), a0_norm ? GL_TRUE : GL_FALSE, a0_stride, a0_pointer);
+        glBindBuffer(GL_ARRAY_BUFFER, static_cast<GLuint>(array_buffer));
+        for (GLuint i = 0; i < 3; ++i) {
+            if (enabled[i]) glEnableVertexAttribArray(i);
+            else glDisableVertexAttribArray(i);
+        }
+        if (scissor) glEnable(GL_SCISSOR_TEST);
+        else glDisable(GL_SCISSOR_TEST);
+        if (blend) glEnable(GL_BLEND);
+        else glDisable(GL_BLEND);
+        glClearColor(clear[0], clear[1], clear[2], clear[3]);
+    }
+};
+
+// The cut picture of `view` (its upright size, each texel turned and cut once: kPrecutFragment) into g_precut[slot].
+// False: not made (the caller draws the target as before).
+bool PrecutPass(const SharedScreenView& view, int slot) {
+    const int kind = view.gl_target == GL_TEXTURE_EXTERNAL_OES ? 1 : 0;
+    if (g_precut_failed || !EnsurePrecutPrograms(kind)) return false;
+    const mh4n::present::TargetLayout& l = view.target_layout;
+    const int w = static_cast<int>(l.UprightWidth()), h = static_cast<int>(l.UprightHeight());
+    if (w <= 0 || h <= 0 || view.buffer_width <= 0 || view.buffer_height <= 0) return false;
+    SavedGl saved;
+    saved.Save(kind == 1);
+    PrecutPicture& pic = g_precut[slot];
+    bool ok = true;
+    if (pic.texture == 0 || pic.width != w || pic.height != h) {
+        if (pic.texture == 0) glGenTextures(1, &pic.texture);
+        if (pic.fbo == 0) glGenFramebuffers(1, &pic.fbo);
+        glBindTexture(GL_TEXTURE_2D, pic.texture);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glBindFramebuffer(GL_FRAMEBUFFER, pic.fbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, pic.texture, 0);
+        ok = glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+        pic.width = w;
+        pic.height = h;
+        std::fprintf(stderr, "[Info] App: the top screen's cut picture %dx%d: %s\n", w, h, ok ? "made" : "refused, not used again");
+        if (!ok) g_precut_failed = true;
+    }
+    if (ok) {
+        const TargetProgram& p = g_precut_pass[kind];
+        glBindFramebuffer(GL_FRAMEBUFFER, pic.fbo);
+        glViewport(0, 0, w, h);
+        glDisable(GL_SCISSOR_TEST);
+        glDisable(GL_BLEND);
+        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);  // (all of it is drawn: nothing to load on a tiler)
+        glUseProgram(p.program);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(view.gl_target, view.gl_name);
+        glUniform1i(p.u_tex, 0);
+        glUniform4f(p.u_rect, -1.0f, -1.0f, 1.0f, 1.0f);
+        SetLayoutUniforms(p, view, false);
+        glBindBuffer(GL_ARRAY_BUFFER, g_corners);
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
+        glEnableVertexAttribArray(0);
+        glDisableVertexAttribArray(1);
+        glDisableVertexAttribArray(2);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        glBindTexture(view.gl_target, 0);
+    }
+    saved.Restore();
+    return ok;
+}
+
+// Whether `view` drawn into `dst` takes the cut picture: FastTopScreen on, its colours cut, not one upright texel a pixel
+// (kTargetFragment reads one texel a pixel then already, the same colours), and none of the variants (the colour filter,
+// PS1 style).
+// `any_size`: whatever the sizes (the check's).
+bool PrecutWanted(const SharedScreenView& view, const SDL_FRect& dst, bool no_cut, bool colour, int ps1, bool any_size = false) {
+    if (PrecutWay() == kTopOld || no_cut || colour || ps1 != 0 || g_precut_failed || (!any_size && PrecutAbOff())) return false;
+    const mh4n::present::TargetLayout& l = view.target_layout;
+    bool cut = false;
+    for (int c = 0; c < 3; ++c) cut |= l.bits_in[c] < 8 || l.bits_out[c] < 8;
+    return cut && (any_size || !(view.source.w == dst.w && view.source.h == dst.h));
+}
+
+// A render target's picture into `dst` of what is bound now (the window, `out_w` x `out_h`, or with `into_texture` an SDL
+// render target of that size, whose rows SDL keeps the other way up), in SDL's order: its queue goes to GL first, and
+// SDL sets its own state again afterwards (SDL_FlushRenderer forgets what it had set); the vertex arrays SDL keeps
+// enabled are left as they were.
+// colour: with the colour filter (its variant of the program; the program of always where that one couldn't be made)
+// precut: -1 as PrecutWanted says, 0 never, 1 whatever the sizes (MH4U_TOP_FAST=check's check).
+void DrawTarget(const SharedScreenView& view, const SDL_FRect& dst, int out_w, int out_h, bool into_texture, Uint8 alpha,
+                bool no_cut = false, bool colour = false, int ps1 = 0, float phase = 0.0f, int precut = -1) {
+    if (!EnsureTargetPrograms() || view.gl_name == 0 || dst.w <= 0 || dst.h <= 0 || out_w <= 0 || out_h <= 0) return;
+    const int kind = view.gl_target == GL_TEXTURE_EXTERNAL_OES ? 1 : 0;
+    colour = colour && EnsureFilterPrograms() && g_filter_target_programs[kind].program != 0;
+    if (ps1 != 0 && !(EnsurePs1Programs() && g_ps1_target_programs[ps1 - 1][colour ? 1 : 0][kind].program != 0)) ps1 = 0;
+    // the cut picture (FastTopScreen), made before SDL's queue runs: the window's own pass is not split for it
+    const int slot = view.top ? 0 : 1;
+    const bool cut_picture = precut != 0 && PrecutWanted(view, dst, no_cut, colour, ps1, precut == 1) && PrecutPass(view, slot);
+    const TargetProgram& p = cut_picture ? g_precut_linear
+                             : ps1 != 0  ? g_ps1_target_programs[ps1 - 1][colour ? 1 : 0][kind]
+                             : colour    ? g_filter_target_programs[kind]
+                                         : g_target_programs[kind];
+    if (p.program == 0) return;
+    SDL_FlushRenderer(g_renderer);
+    glUseProgram(p.program);
+    glViewport(0, 0, out_w, out_h);
+    glDisable(GL_SCISSOR_TEST);
+    if (alpha < 255) {
+        glEnable(GL_BLEND);
+        glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+        glBlendEquation(GL_FUNC_ADD);
+    } else {
+        glDisable(GL_BLEND);
+    }
+    glActiveTexture(GL_TEXTURE0);
+    const GLenum texture_target = cut_picture ? GL_TEXTURE_2D : view.gl_target;
+    glBindTexture(texture_target, cut_picture ? g_precut[slot].texture : view.gl_name);
+    glUniform1i(p.u_tex, 0);
+    // the destination in clip space, as SDL's projection puts it (the window: y down; an SDL render target: y up)
+    const float x0 = 2.0f * dst.x / out_w - 1.0f, x1 = 2.0f * (dst.x + dst.w) / out_w - 1.0f;
+    const float y0 = into_texture ? 2.0f * dst.y / out_h - 1.0f : 1.0f - 2.0f * dst.y / out_h;
+    const float y1 = into_texture ? 2.0f * (dst.y + dst.h) / out_h - 1.0f : 1.0f - 2.0f * (dst.y + dst.h) / out_h;
+    glUniform4f(p.u_rect, x0, y0, x1, y1);
+    // the upright picture's texel coordinates of a fragment's centre, as SDL interpolates them over the quad
+    const float ax = view.source.w / dst.w, ay = view.source.h / dst.h;
+    glUniform4f(p.u_affine, ax, view.source.x - dst.x * ax, ay, view.source.y - dst.y * ay);
+    glUniform2f(p.u_yfix, into_texture ? 1.0f : -1.0f, into_texture ? 0.0f : static_cast<float>(out_h));
+    glUniform1f(p.u_alpha, alpha / 255.0f);
+    SetLayoutUniforms(p, view, no_cut);
+    if (cut_picture) {  // (the cut picture's texels: its own size, the upright one)
+        glUniform2f(p.u_inv, 1.0f / static_cast<float>(g_precut[slot].width), 1.0f / static_cast<float>(g_precut[slot].height));
+    }
     if (colour) SetFilterUniforms(p.u_f0, p.u_f1, p.u_f2, p.u_fg);
     if (ps1 == 2) glUniform1f(p.u_ps1f, phase);
     // (SDL keeps its colour and texture coordinate arrays enabled: off for this draw, the colour one on again after)
@@ -1178,7 +1480,7 @@ void DrawTarget(const SharedScreenView& view, const SDL_FRect& dst, int out_w, i
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     glBindBuffer(GL_ARRAY_BUFFER, 0);
     glEnableVertexAttribArray(1);
-    glBindTexture(view.gl_target, 0);
+    glBindTexture(texture_target, 0);
 }
 
 // A screen SDL would draw (view.texture: a buffer imported as SDL's texture, or the CPU form's), with the colour filter: its
@@ -1186,8 +1488,9 @@ void DrawTarget(const SharedScreenView& view, const SDL_FRect& dst, int out_w, i
 // edge as SDL sets it, its blend mode and alpha mod), in SDL's order as DrawTarget does. False: not drawn (no program, or
 // SDL doesn't say the texture's name): the caller draws it with SDL, without the filter.
 bool DrawTexturePs1(const SharedScreenView& view, const SDL_FRect& dst, int out_w, int out_h, Uint8 alpha, int mode, float phase);
+// into_texture: `dst` of an SDL render target of out_w x out_h (rows the other way up, as DrawTarget's), not the window
 bool DrawTextureFiltered(const SharedScreenView& view, const SDL_FRect& dst, int out_w, int out_h, Uint8 alpha, int ps1 = 0,
-                         float phase = 0.0f) {
+                         float phase = 0.0f, bool into_texture = false) {
     if (ps1 != 0) return DrawTexturePs1(view, dst, out_w, out_h, alpha, ps1, phase);
     if (!EnsureFilterPrograms() || dst.w <= 0 || dst.h <= 0 || out_w <= 0 || out_h <= 0) return false;
     const SDL_PropertiesID props = SDL_GetTextureProperties(view.texture);
@@ -1219,7 +1522,8 @@ bool DrawTextureFiltered(const SharedScreenView& view, const SDL_FRect& dst, int
     glTexParameteri(target, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glUniform1i(p.u_tex, 0);
     const float x0 = 2.0f * dst.x / out_w - 1.0f, x1 = 2.0f * (dst.x + dst.w) / out_w - 1.0f;  // (the window: y down)
-    const float y0 = 1.0f - 2.0f * dst.y / out_h, y1 = 1.0f - 2.0f * (dst.y + dst.h) / out_h;
+    const float y0 = into_texture ? 2.0f * dst.y / out_h - 1.0f : 1.0f - 2.0f * dst.y / out_h;
+    const float y1 = into_texture ? 2.0f * (dst.y + dst.h) / out_h - 1.0f : 1.0f - 2.0f * (dst.y + dst.h) / out_h;
     glUniform4f(p.u_rect, x0, y0, x1, y1);
     glUniform4f(p.u_uv, view.source.x / tw, view.source.y / th, (view.source.x + view.source.w) / tw,
                 (view.source.y + view.source.h) / th);
@@ -1325,6 +1629,12 @@ void shared_screens_draw_part(SharedScreenView& view, const SDL_FRect& part, con
     view.source = whole;
 }
 
+void shared_screens_set_fast_top(bool on) {
+    if (on != g_fast_top_setting)
+        std::fprintf(stderr, "[Info] App: the top screen's scaling %s\n", on ? "fast (FastTopScreen)" : "as before");
+    g_fast_top_setting = on;
+}
+
 void shared_screens_set_ps1(bool filter, bool sharp) {
     const int mode = filter ? 2 : sharp ? 1 : 0;
     if (mode != g_ps1_mode)
@@ -1350,7 +1660,84 @@ void shared_screens_draw_upright(SharedScreenView& view, int w, int h) {
     }
 }
 
+void shared_screens_draw_into(SharedScreenView& view, const SDL_FRect& dst, int w, int h) {
+    if (view.target) {
+        DrawTarget(view, dst, w, h, /*into_texture=*/true, 255, /*no_cut=*/false, /*colour=*/g_colour_on);
+    } else if (view.texture != nullptr) {
+        if (g_colour_on && DrawTextureFiltered(view, dst, w, h, 255, 0, 0.0f, /*into_texture=*/true)) return;
+        SDL_SetTextureAlphaMod(view.texture, 255);
+        SDL_RenderTexture(g_renderer, view.texture, &view.source, &dst);
+    }
+}
+namespace {
+// MH4U_TOP_FAST=check: every 30th picture the top screen drawn both ways into a picture of the window's size (as 1.0.1.1,
+// each texel turned and cut in the window's draw, and from the cut picture), read back and compared pixel by pixel; the
+// first that differ and the totals logged (each check, and every 10th line the totals alone)
+struct PrecutCheckState {
+    SDL_Texture* texture = nullptr;
+    int width = 0, height = 0;
+    unsigned seen = 0, runs = 0;
+    std::uint64_t pixels = 0, differ = 0;
+    int max_diff = 0;
+} g_precut_check;
+
+void PrecutCheck(SharedScreenView& view, const SDL_FRect& dst, int win_w, int win_h) {
+    PrecutCheckState& k = g_precut_check;
+    if (k.seen++ % 30 != 0 || view.picture == nullptr || !view.picture->WaitReady(500'000'000)) return;
+    if (k.texture == nullptr || k.width != win_w || k.height != win_h) {
+        if (k.texture != nullptr) SDL_DestroyTexture(k.texture);
+        k.texture = SDL_CreateTexture(g_renderer, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_TARGET, win_w, win_h);
+        k.width = win_w;
+        k.height = win_h;
+        if (k.texture == nullptr) return;
+    }
+    SDL_Texture* before = SDL_GetRenderTarget(g_renderer);
+    SDL_SetRenderTarget(g_renderer, k.texture);
+    SDL_SetRenderDrawColor(g_renderer, 0, 0, 0, 255);
+    SDL_RenderClear(g_renderer);
+    DrawTarget(view, dst, win_w, win_h, /*into_texture=*/true, 255, false, false, 0, 0.0f, /*precut=*/0);
+    SDL_Surface* a = SDL_RenderReadPixels(g_renderer, nullptr);
+    SDL_RenderClear(g_renderer);
+    DrawTarget(view, dst, win_w, win_h, /*into_texture=*/true, 255, false, false, 0, 0.0f, /*precut=*/1);
+    SDL_Surface* b = SDL_RenderReadPixels(g_renderer, nullptr);
+    SDL_SetRenderTarget(g_renderer, before);
+    SDL_Surface* ra = a != nullptr ? SDL_ConvertSurface(a, SDL_PIXELFORMAT_RGBA32) : nullptr;
+    SDL_Surface* rb = b != nullptr ? SDL_ConvertSurface(b, SDL_PIXELFORMAT_RGBA32) : nullptr;
+    if (ra != nullptr && rb != nullptr && ra->w == rb->w && ra->h == rb->h) {
+        ++k.runs;
+        std::uint64_t pixels = 0, differ = 0;
+        int max_diff = 0, first_x = -1, first_y = -1;
+        for (int y = 0; y < ra->h; ++y) {
+            const auto* pa = static_cast<const std::uint8_t*>(ra->pixels) + static_cast<size_t>(y) * ra->pitch;
+            const auto* pb = static_cast<const std::uint8_t*>(rb->pixels) + static_cast<size_t>(y) * rb->pitch;
+            for (int x = 0; x < ra->w; ++x) {
+                int d = 0;
+                for (int c = 0; c < 3; ++c) d = std::max(d, std::abs(pa[4 * x + c] - pb[4 * x + c]));
+                ++pixels;
+                if (d > 0 && differ++ == 0) first_x = x, first_y = y;
+                max_diff = std::max(max_diff, d);
+            }
+        }
+        k.pixels += pixels;
+        k.differ += differ;
+        k.max_diff = std::max(k.max_diff, max_diff);
+        std::fprintf(stderr,
+                     "[Info] App: precut check %u: the top screen %.0fx%.0f at %.0f,%.0f (upright %ux%u, scale %u, flip %d): "
+                     "%llu of %llu px differ (max %d, first at %d,%d); all checks: %llu of %llu, max %d\n",
+                     k.runs, dst.w, dst.h, dst.x, dst.y, view.target_layout.UprightWidth(), view.target_layout.UprightHeight(),
+                     view.target_layout.scale, view.target_layout.flip ? 1 : 0, static_cast<unsigned long long>(differ),
+                     static_cast<unsigned long long>(pixels), max_diff, first_x, first_y,
+                     static_cast<unsigned long long>(k.differ), static_cast<unsigned long long>(k.pixels), k.max_diff);
+    }
+    if (ra != nullptr) SDL_DestroySurface(ra);
+    if (rb != nullptr) SDL_DestroySurface(rb);
+    if (a != nullptr) SDL_DestroySurface(a);
+    if (b != nullptr) SDL_DestroySurface(b);
+}
+}  // namespace
+
 void shared_screens_check(SharedScreenView& view, const SDL_FRect& dst, int win_w, int win_h, const char* dir) {
+    if (PrecutEnv().check && view.target && win_w > 0 && win_h > 0) PrecutCheck(view, dst, win_w, win_h);
     if (!view.target || view.picture == nullptr || win_w <= 0 || win_h <= 0) return;
     const std::shared_ptr<const SharedPicture> reference = view.picture->Reference();
     if (reference == nullptr || g_check.seen++ % 30 != 0) return;  // (one picture in 30)

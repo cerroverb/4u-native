@@ -22,12 +22,22 @@
 // while the player says it hears it (so a network that passes UDP one way only stays on TCP). The host tells the server
 // where it is (an empty relayed datagram) every second until a hello comes. Without UDP, or 6 s after the last datagram
 // (three hellos missed), everything goes through the TCP link.
+//
+// A room datagram by UDP (1.0.2) carries a number (bytes 10-11, flag kUdpNumbered in byte 9), and on a slow link (a
+// round trip of kCopyRttMs or more by the link's own ping) goes twice: again kCopyDelayMs later, flagged kUdpCopy. ENet
+// sends every frame reliably and in order, so one lost datagram holds every later one back until ENet sends it again, a
+// round trip and more later (a second and more through a server far away); the game, which takes a peer it has not
+// heard from for about a second for gone, then drops the player. With the copy, a datagram is held back only when both
+// are lost. The receiver passes the first that comes and drops the other (an end of 1.0.1, which reads neither byte,
+// passes both: ENet keeps one), and counts the datagrams that never came for the link's line a minute.
 #include "mh4n/hubs.h"
 
 #include <algorithm>
 #include <atomic>
+#include <bitset>
 #include <chrono>
 #include <cstring>
+#include <deque>
 #include <functional>
 #include <map>
 #include <memory>
@@ -80,6 +90,9 @@ constexpr int kLinkPingMs = 5000;
 constexpr int kLinkSilenceMs = 30000;
 constexpr int kUdpSilenceMs = 6000;
 constexpr int kMaxLinks = 15;
+constexpr int kCopyRttMs = 150;
+constexpr int kCopyDelayMs = 40;
+constexpr u8 kUdpNumbered = 1, kUdpCopy = 2;  // a data datagram's byte 9
 
 // ---- the listing (0x480 bytes) ----
 constexpr char kListingMagic[4] = {'M', '4', 'H', 'B'};
@@ -435,6 +448,10 @@ struct LinkStats {
     std::atomic<u32> n[4]{};
     std::atomic<u32> max[4]{};
     std::atomic<s32> rtt{-1};
+    // numbered datagrams received (1.0.2): numbers skipped and not filled later (lost both times, as far as the minute
+    // tells), datagrams that came only as the copy (the first was lost), and copies sent
+    std::atomic<s32> missing{0};
+    std::atomic<u32> saved{0}, copies{0};
     s64 since = NowMs();
     void Count(int k, std::size_t size) {
         n[k].fetch_add(1, std::memory_order_relaxed);
@@ -455,13 +472,18 @@ struct LinkStats {
             c[k] = n[k].exchange(0, std::memory_order_relaxed);
             m[k] = max[k].exchange(0, std::memory_order_relaxed);
         }
+        const s32 miss = std::max<s32>(missing.exchange(0, std::memory_order_relaxed), 0);
+        const u32 save = saved.exchange(0, std::memory_order_relaxed);
+        const u32 copy = copies.exchange(0, std::memory_order_relaxed);
         if ((c[0] | c[1] | c[2] | c[3]) == 0) {
             return;
         }
         MH4N_LOG(Info, kLog,
                  "{}, room datagrams the last minute: by UDP {} sent (largest {} bytes), {} received (largest {}); by "
-                 "TCP {} sent (largest {}), {} received (largest {}); round trip {} ms",
-                 who, c[UdpOut], m[UdpOut], c[UdpIn], m[UdpIn], c[TcpOut], m[TcpOut], c[TcpIn], m[TcpIn], rtt.load());
+                 "TCP {} sent (largest {}), {} received (largest {}); round trip {} ms; by UDP {} copies sent, {} "
+                 "received only as the copy (the first was lost), {} lost both times",
+                 who, c[UdpOut], m[UdpOut], c[UdpIn], m[UdpIn], c[TcpOut], m[TcpOut], c[TcpIn], m[TcpIn], rtt.load(),
+                 copy, save, miss);
     }
 };
 
@@ -492,7 +514,8 @@ bool DropForTest() {
 
 // The relay's prefix and the tunnel's header, then `data`
 // (`flag`: a hello's "I hear you by UDP")
-std::size_t BuildUdp(u8* out, u32 pair, u64 secret, u32 token, u8 kind, const u8* data, std::size_t size, u8 flag = 0) {
+std::size_t BuildUdp(u8* out, u32 pair, u64 secret, u32 token, u8 kind, const u8* data, std::size_t size, u8 flag = 0,
+                     u16 number = 0) {
     std::memcpy(out, kRelayMagic, 4);
     Put32(out + 4, pair);
     Put64(out + 8, secret);
@@ -501,12 +524,117 @@ std::size_t BuildUdp(u8* out, u32 pair, u64 secret, u32 token, u8 kind, const u8
     Put32(h + 4, token);
     h[8] = kind;
     h[9] = flag;
-    h[10] = h[11] = 0;
+    Put16(h + 10, number);
     if (size > 0) {
         std::memcpy(h + kUdpHeader, data, size);
     }
     return kRelayPrefix + kUdpHeader + size;
 }
+
+// Testing: MH4N_HUB_COPY=0 sends no copies (MH4N_HUB_COPY=1: on every link, slow or not)
+int CopyMode() {
+    static const int mode = [] {
+        const char* e = std::getenv("MH4N_HUB_COPY");
+        const int m = e == nullptr ? 2 : std::strcmp(e, "0") == 0 ? 0 : std::strcmp(e, "1") == 0 ? 1 : 2;
+        if (m != 2) {
+            MH4N_LOG(Info, kLog, "MH4N_HUB_COPY={}: {}", m,
+                     m == 0 ? "no copies of the room datagrams" : "every room datagram by UDP goes twice");
+        }
+        return m;
+    }();
+    return mode;
+}
+
+// A link's room datagrams by UDP, numbered, each sent again kCopyDelayMs later while the link is slow
+class UdpSender {
+public:
+    // `built`: BuildUdp's kUdpData datagram (its flag and number are set here)
+    void Send(ENetSocket socket, const ENetAddress& to, u8* built, std::size_t total, s32 rtt, LinkStats& stats) {
+        u8* h = built + kRelayPrefix;
+        h[9] = kUdpNumbered;
+        Put16(h + 10, next_++);
+        SendDatagram(socket, to, built, total);
+        const int mode = CopyMode();
+        if (mode == 1 || (mode == 2 && rtt >= kCopyRttMs)) {
+            h[9] = kUdpNumbered | kUdpCopy;
+            copies_.push_back({NowMs() + kCopyDelayMs, std::vector<u8>(built, built + total)});
+            stats.copies.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+    // the copies that are due
+    void Flush(ENetSocket socket, const ENetAddress& to, s64 now) {
+        while (!copies_.empty() && copies_.front().due <= now) {
+            SendDatagram(socket, to, copies_.front().bytes.data(), copies_.front().bytes.size());
+            copies_.pop_front();
+        }
+    }
+    // how long the link's loop may wait (until the next copy)
+    int WaitMs(int most, s64 now) const {
+        return copies_.empty() ? most : static_cast<int>(std::clamp<s64>(copies_.front().due - now, 0, most));
+    }
+
+private:
+    struct Copy {
+        s64 due;
+        std::vector<u8> bytes;
+    };
+    u16 next_ = 0;
+    std::deque<Copy> copies_;
+};
+
+// The numbers of a link's datagrams received: false for the second of a pair (or one seen already)
+class UdpReceiver {
+public:
+    bool Accept(const u8* h, LinkStats& stats) {
+        if ((h[9] & kUdpNumbered) == 0) {
+            return true;  // (an end of 1.0.1: no numbers)
+        }
+        const u16 number = Get16(h + 10);
+        if (!any_) {
+            any_ = true;
+            high_ = number;
+            seen_.reset();
+            seen_.set(number % kWindow);
+            return true;
+        }
+        const u16 ahead = static_cast<u16>(number - high_);
+        if (ahead != 0 && ahead < 0x8000) {
+            if (ahead >= kWindow) {
+                seen_.reset();
+            } else {
+                for (u16 k = 1; k < ahead; ++k) {
+                    seen_.reset(static_cast<u16>(high_ + k) % kWindow);
+                }
+            }
+            stats.missing.fetch_add(static_cast<s32>(ahead) - 1, std::memory_order_relaxed);
+            high_ = number;
+            seen_.set(number % kWindow);
+            if ((h[9] & kUdpCopy) != 0) {
+                stats.saved.fetch_add(1, std::memory_order_relaxed);  // (a copy is sent after its first)
+            }
+            return true;
+        }
+        const u16 behind = static_cast<u16>(high_ - number);
+        if (behind >= kWindow) {
+            return true;  // (too old to tell: ENet keeps one)
+        }
+        if (seen_.test(number % kWindow)) {
+            return false;
+        }
+        seen_.set(number % kWindow);
+        stats.missing.fetch_sub(1, std::memory_order_relaxed);  // (a skipped number came after all)
+        if ((h[9] & kUdpCopy) != 0) {
+            stats.saved.fetch_add(1, std::memory_order_relaxed);
+        }
+        return true;
+    }
+
+private:
+    static constexpr u16 kWindow = 1024;
+    bool any_ = false;
+    u16 high_ = 0;
+    std::bitset<kWindow> seen_;
+};
 
 std::atomic<u64> g_game_program{0};
 std::atomic<int> g_threads{0};  // this module's threads that still run (tests wait for none)
@@ -745,6 +873,8 @@ struct Endpoint {
     std::atomic<bool> udp_up{false};
     std::atomic<s64> udp_rx{0};
     LinkStats stats;
+    UdpSender sender;      // (the player's thread)
+    UdpReceiver receiver;  // (the relay's thread)
     std::string who;
 };
 
@@ -955,7 +1085,8 @@ void PlayerThread(std::shared_ptr<HostSession> s, u64 ticket) {
             break;
         }
         e->stats.Log(e->who + " (the player)");
-        const u32 ready = WaitReadable({tcp.Get(), e->local.Get()}, 100);
+        e->sender.Flush(s->relay.Get(), server, NowMs());
+        const u32 ready = WaitReadable({tcp.Get(), e->local.Get()}, e->sender.WaitMs(100, NowMs()));
         if (ready & 1) {
             if (!reader.Fill(tcp.Get())) {
                 break;
@@ -995,7 +1126,7 @@ void PlayerThread(std::shared_ptr<HostSession> s, u64 ticket) {
                 if (e->udp_up.load() && kRelayPrefix + kUdpHeader + size <= kMaxUdpPayload) {
                     const std::size_t total =
                         BuildUdp(udp.data(), e->pair, e->secret, e->token, kUdpData, datagram.data(), size);
-                    SendDatagram(s->relay.Get(), server, udp.data(), total);
+                    e->sender.Send(s->relay.Get(), server, udp.data(), total, e->stats.rtt.load(), e->stats);
                     e->stats.Count(LinkStats::UdpOut, size);
                 } else {
                     if (!SendFrame(tcp.Get(), kDatagram, datagram.data(), size)) {
@@ -1066,6 +1197,9 @@ void RelayThread(std::shared_ptr<HostSession> s) {
                     continue;
                 }
                 e->udp_rx = NowMs();
+                if (!e->receiver.Accept(buf.data(), e->stats)) {
+                    continue;  // (the other of a pair)
+                }
                 e->stats.Count(LinkStats::UdpIn, size - kUdpHeader);
                 SendToRoom(*s, *e, buf.data() + kUdpHeader, size - kUdpHeader);
             }
@@ -1415,6 +1549,8 @@ void TunnelThread(std::shared_ptr<JoinSession> s) {
     }
 
     LinkStats stats;
+    UdpSender sender;
+    UdpReceiver receiver;
     const std::string who = "hub link to the host";
     ENetAddress client_address{};
     bool have_client = false;
@@ -1462,8 +1598,12 @@ void TunnelThread(std::shared_ptr<JoinSession> s) {
             break;
         }
         stats.Log(who);
-        const u32 ready = relay ? WaitReadable({tcp.Get(), proxy.Get(), relay.Get()}, 100)
-                                : WaitReadable({tcp.Get(), proxy.Get()}, 100);
+        if (relay) {
+            sender.Flush(relay.Get(), server, NowMs());
+        }
+        const int wait = sender.WaitMs(100, NowMs());
+        const u32 ready = relay ? WaitReadable({tcp.Get(), proxy.Get(), relay.Get()}, wait)
+                                : WaitReadable({tcp.Get(), proxy.Get()}, wait);
         if (ready & 1) {
             if (!reader.Fill(tcp.Get())) {
                 lost = true;
@@ -1506,7 +1646,7 @@ void TunnelThread(std::shared_ptr<JoinSession> s) {
                 const std::size_t size = static_cast<std::size_t>(n);
                 if (udp_up && kRelayPrefix + kUdpHeader + size <= kMaxUdpPayload) {
                     const std::size_t total = BuildUdp(udp.data(), pair, secret, token, kUdpData, buf.data(), size);
-                    SendDatagram(relay.Get(), server, udp.data(), total);
+                    sender.Send(relay.Get(), server, udp.data(), total, stats.rtt.load(), stats);
                     stats.Count(LinkStats::UdpOut, size);
                 } else {
                     if (!SendFrame(tcp.Get(), kDatagram, buf.data(), size)) {
@@ -1548,6 +1688,9 @@ void TunnelThread(std::shared_ptr<JoinSession> s) {
                         continue;
                     }
                     udp_rx = NowMs();
+                    if (!receiver.Accept(buf.data(), stats)) {
+                        continue;  // (the other of a pair)
+                    }
                     stats.Count(LinkStats::UdpIn, size - kUdpHeader);
                     SendDatagram(proxy.Get(), client_address, buf.data() + kUdpHeader, size - kUdpHeader);
                 }

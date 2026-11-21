@@ -1,5 +1,6 @@
 // The app's own options, mh4u-app.ini (app_settings.h).
 #include "app_settings.h"
+#include "app_version.h"
 #include "diag.h"
 #include "colour_filter.h"
 #include "first_run.h"
@@ -43,8 +44,12 @@ void read_locked() {
     g_lines.clear();
     g_loaded = true;
     if (g_path.empty()) {
+#ifdef __ANDROID__
         const char* ext = SDL_GetAndroidExternalStoragePath();  // (none: the internal folder, as android_main.cpp's)
         if (ext == nullptr) ext = SDL_GetAndroidInternalStoragePath();
+#else
+        const char* ext = nullptr;  // (the PC's main gives the program's home first: pc_main.cpp)
+#endif
         g_path = std::string(ext ? ext : ".") + "/mh4u-app.ini";
     }
     std::ifstream in(g_path);
@@ -117,6 +122,71 @@ void app_colour(ColourAdjust* out) {
     out->gamma = get("Gamma", COLOUR_MAX);
 }
 
+namespace {
+const char* preset_key(int n) {
+    static const char* const keys[kColourPresets] = {"Preset1", "Preset2", "Preset3"};
+    return keys[std::clamp(n, 1, kColourPresets) - 1];
+}
+}  // namespace
+
+bool app_colour_preset(int n, ColourAdjust* out) {
+    if (n < 1 || n > kColourPresets) return false;
+    const std::string v = app_setting("Colour", preset_key(n));
+    if (v.empty()) return false;
+    int x[7], count = 0;
+    const char* p = v.c_str();
+    bool ok = true;
+    for (;;) {
+        char* end = nullptr;
+        const long a = std::strtol(p, &end, 10);
+        if (end == p || count == 7) {
+            ok = false;
+            break;
+        }
+        x[count++] = static_cast<int>(std::clamp<long>(a, -1000, 1000));
+        while (*end == ' ' || *end == '\t') ++end;
+        if (!*end) break;
+        if (*end != ',') {
+            ok = false;
+            break;
+        }
+        p = end + 1;
+    }
+    if (!ok || count != 7) {
+        static std::string said[kColourPresets];  // (once for each text: the menu reads the slots every frame)
+        if (said[n - 1] != v) {
+            said[n - 1] = v;
+            std::fprintf(stderr, "[Info] App: mh4u-app.ini [Colour] %s = \"%s\" is not seven numbers: the slot shows empty\n",
+                         preset_key(n), v.c_str());
+        }
+        return false;
+    }
+    out->hue = std::clamp(x[0], -COLOUR_HUE_MAX, COLOUR_HUE_MAX);
+    out->temperature = std::clamp(x[1], -COLOUR_MAX, COLOUR_MAX);
+    out->tint = std::clamp(x[2], -COLOUR_MAX, COLOUR_MAX);
+    out->brightness = std::clamp(x[3], -COLOUR_MAX, COLOUR_MAX);
+    out->contrast = std::clamp(x[4], -COLOUR_MAX, COLOUR_MAX);
+    out->saturation = std::clamp(x[5], -COLOUR_MAX, COLOUR_MAX);
+    out->gamma = std::clamp(x[6], -COLOUR_MAX, COLOUR_MAX);
+    return true;
+}
+
+bool app_colour_preset_store(int n, const ColourAdjust* a) {
+    if (n < 1 || n > kColourPresets) return false;
+    if (!a) {
+        app_setting_remove("Colour", preset_key(n));
+    } else {
+        char text[96];
+        std::snprintf(text, sizeof text, "%d,%d,%d,%d,%d,%d,%d", a->hue, a->temperature, a->tint, a->brightness, a->contrast,
+                      a->saturation, a->gamma);
+        app_setting_set("Colour", preset_key(n), text);
+    }
+    std::string error;
+    if (app_settings_save(&error)) return true;
+    std::fprintf(stderr, "[Info] App: mh4u-app.ini: %s\n", error.c_str());
+    return false;
+}
+
 int app_setting_int(const char* section, const char* key, int fallback) {
     const std::string v = app_setting(section, key);
     char* end = nullptr;
@@ -154,7 +224,7 @@ void app_setting_set(const char* section, const char* key, const std::string& va
     }
     if (g_lines.empty()) {
         Line note;
-        note.text = "# MH4U for Android: the app's own options (its settings menu writes them; the game's are in mh4u.ini)";
+        note.text = "# " MH4U_APP_NAME ": the app's own options (its settings menu writes them; the game's are in mh4u.ini)";
         g_lines.push_back(note);
     }
     if (!trim(g_lines.back().text).empty()) g_lines.push_back(Line{});
@@ -192,7 +262,11 @@ bool app_settings_save(std::string* error) {
             return false;
         }
     }
+#ifdef _WIN32  // (Windows' rename never replaces a file: pc/compat/pc_compat.h)
+    if (!pc_replace_file(tmp.c_str(), g_path.c_str())) {
+#else
     if (std::rename(tmp.c_str(), g_path.c_str()) != 0) {
+#endif
         if (error) *error = "Could not write " + g_path;
         std::remove(tmp.c_str());
         return false;

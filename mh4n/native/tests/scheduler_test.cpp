@@ -202,6 +202,63 @@ TEST_CASE("the game clock follows the host, minus pauses and holds") {
     clock.ReleaseHold();
 }
 
+TEST_CASE("the guards stop the game clock apart from the pause, each other and a hold") {
+    ManualTimeSource source(0);
+    GameClock clock(source);
+    int changes = 0;
+    clock.SetChangeCallback([&] { ++changes; });
+    source.Advance(1000000000);
+    clock.Halt(GameClock::kHaltStall);
+    CHECK(clock.Halted() == GameClock::kHaltStall);
+    CHECK_FALSE(clock.Paused());
+    source.Advance(2000000000);  // the stall is not counted
+    CHECK(clock.Now() == 268111856);
+    CHECK_FALSE(clock.HostNsFor(268111857).has_value());
+    // The player pauses during the stall: the stall's end leaves the clock paused.
+    clock.Pause();
+    clock.Unhalt(GameClock::kHaltStall);
+    CHECK(clock.Halted() == 0);
+    CHECK(clock.Paused());
+    source.Advance(1000000000);
+    CHECK(clock.Now() == 268111856);
+    clock.Resume();
+    source.Advance(1000000000);
+    CHECK(clock.Now() == 2 * 268111856ull);
+    // And the other way round: a resume during a stall leaves the clock stopped until the stall ends.
+    clock.Halt(GameClock::kHaltStall);
+    clock.Pause();
+    clock.Resume();
+    source.Advance(1000000000);
+    CHECK(clock.Now() == 2 * 268111856ull);
+    clock.Unhalt(GameClock::kHaltStall);
+    clock.Unhalt(GameClock::kHaltStall);  // does not nest
+    source.Advance(1000000000);
+    CHECK(clock.Now() == 3 * 268111856ull);
+    CHECK(changes == 8);
+    // Two guards: the clock goes on when both have let go.
+    clock.Halt(GameClock::kHaltStall);
+    clock.Halt(GameClock::kHaltLink);
+    clock.Unhalt(GameClock::kHaltStall);
+    source.Advance(1000000000);
+    CHECK(clock.Now() == 3 * 268111856ull);
+    clock.Unhalt(GameClock::kHaltLink);
+    source.Advance(1000000000);
+    CHECK(clock.Now() == 4 * 268111856ull);
+    // Net sync's hold and a guard: letting go of the hold leaves the guard's stop, and the other way round.
+    clock.Halt(GameClock::kHaltLink);
+    clock.Hold(clock.Now());
+    clock.ReleaseHold();
+    source.Advance(1000000000);
+    CHECK(clock.Now() == 4 * 268111856ull);
+    clock.Hold(clock.Now());
+    clock.Unhalt(GameClock::kHaltLink);
+    source.Advance(1000000000);
+    CHECK(clock.Now() == 4 * 268111856ull);
+    clock.ReleaseHold();
+    source.Advance(1000000000);
+    CHECK(clock.Now() == 5 * 268111856ull);
+}
+
 TEST_CASE("the game clock tells the host time of a tick") {
     ManualTimeSource source(0);
     GameClock clock(source);

@@ -352,6 +352,12 @@ void draw_panel(ImDrawList* dl, float u) {
     const float w_text = f->CalcTextSizeA(size, FLT_MAX, 0, shown.c_str()).x, w_comp = f->CalcTextSizeA(size, FLT_MAX, 0, comp.c_str()).x;
     const float shift = std::max(0.f, w_text + w_comp + 6 * u - (tx1 - tx0));  // (a long text: its end shows)
     dl->PushClipRect(ImVec2(tx0 - 2 * u, field.Min.y), ImVec2(tx1, field.Max.y), true);
+#ifndef __ANDROID__
+    if (shown.empty() && comp.empty())  // (the PC: its own keyboard types)
+        dl->AddText(f, size * .72f, ImVec2(tx0, field.GetCenter().y - size * .36f), fade(DIM, .55f),
+                    say("Type with your keyboard", "Escribe con tu teclado"));
+    else
+#endif
     if (shown.empty() && comp.empty())
         dl->AddText(f, size * .72f, ImVec2(tx0, field.GetCenter().y - size * .36f), fade(DIM, .55f),
                     say("Type with the phone's keyboard", "Escribe con el teclado del teléfono"));

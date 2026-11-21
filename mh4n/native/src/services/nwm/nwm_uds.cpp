@@ -76,6 +76,9 @@
 //    structure is zero (Azahar leaves it uninitialised).
 #include <algorithm>
 #include <array>
+#include <mutex>
+#include <condition_variable>
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdio>
@@ -95,6 +98,7 @@
 #include "../../kernel/deterministic.h"  // kernel_detail::ScheduleThreadSafe (the runtime module reaches it the same way)
 #include "mh4n/cfg.h"
 #include "mh4n/clock.h"
+#include "mh4n/host_thread_name.h"
 #include "mh4n/hubs.h"
 #include "mh4n/ipc.h"
 #include "mh4n/kernel.h"
@@ -226,6 +230,105 @@ struct Node {
     u16 node_id = 0;
 };
 
+// The link hold (the runner's --link-hold MS, off unless asked for). In a hall, NEX on a client takes a host it has
+// not heard from for about a second for gone: the client leaves and hosts a hall of its own. A room carries every frame
+// reliably and in order (ENet), so one datagram lost on a slow link (a hub: some 800 ms of round trip through a server
+// far away) holds every later frame back until it is sent again, and the host goes silent for about a second. With the
+// hold, when the host has said nothing (no game data for this console) for MS milliseconds, the game clock stops
+// (GameClock::Halt, kHaltLink: apart from net sync's Hold) until it speaks again, so the client's game does not count the wait; past kMaxMs it is let go and the
+// game decides, as without it. The host keeps a silent client longer (it kept one through a 2-second stall here).
+class LinkHold {
+public:
+    static constexpr s64 kMaxMs = 5000;
+
+    LinkHold(GameClock& clock, s64 after_ms) : clock_(clock), after_ms_(after_ms) {
+        thread_ = std::thread([this] { Loop(); });
+    }
+    ~LinkHold() {
+        {
+            std::lock_guard lock(mutex_);
+            stop_ = true;
+        }
+        cv_.notify_all();
+        thread_.join();
+        Release(nullptr);
+    }
+    // The scheduler thread: this console is a client of a hall now, or no longer is.
+    void SetClient(bool client, s64 now_ms) {
+        last_ms_.store(now_ms);
+        client_.store(client);
+        if (!client) {
+            Release("the client left the network");
+        }
+    }
+    // The scheduler thread: game data from the host has reached the game.
+    void Heard(s64 now_ms) {
+        last_ms_.store(now_ms);
+        if (held_.load()) {
+            Release(nullptr);
+        }
+    }
+
+private:
+    void Loop() {
+        SetHostThreadName("mh4n-linkhold");
+        std::unique_lock lock(mutex_);
+        while (!stop_) {
+            cv_.wait_for(lock, std::chrono::milliseconds(25), [this] { return stop_; });
+            if (stop_ || !client_.load()) {
+                continue;
+            }
+            const s64 silent = HostMsNow() - last_ms_.load();
+            if (held_.load()) {
+                if (silent >= kMaxMs) {
+                    ReleaseLocked("the host stays silent: the game decides");
+                }
+                continue;
+            }
+            if (silent >= after_ms_ && silent < kMaxMs) {
+                clock_.Halt(GameClock::kHaltLink);
+                held_.store(true);
+                held_at_ms_ = HostMsNow();
+                silent_at_hold_ = silent;
+            }
+        }
+    }
+    void Release(const char* why) {
+        std::lock_guard lock(mutex_);
+        ReleaseLocked(why);
+    }
+    void ReleaseLocked(const char* why) {
+        if (!held_.load()) {
+            return;
+        }
+        clock_.Unhalt(GameClock::kHaltLink);
+        held_.store(false);
+        ++count_;
+        const s64 held_ms = HostMsNow() - held_at_ms_;
+        MH4N_LOG(Info, "Service.NWM",
+                 "the host was silent for {} ms: the game clock was held for {} ms meanwhile{}{} ({} holds so far)",
+                 silent_at_hold_ + held_ms, held_ms, why ? ": " : "", why ? why : "", count_);
+    }
+    static s64 HostMsNow() {
+        return std::chrono::duration_cast<std::chrono::milliseconds>(
+                   std::chrono::steady_clock::now().time_since_epoch())
+            .count();
+    }
+
+    GameClock& clock_;
+    const s64 after_ms_;
+    std::atomic<s64> last_ms_{0};
+    std::atomic<bool> client_{false};
+    std::atomic<bool> held_{false};
+    std::mutex mutex_;
+    std::condition_variable cv_;
+    bool stop_ = false;
+    s64 held_at_ms_ = 0;
+    s64 silent_at_hold_ = 0;
+    u64 count_ = 0;
+    std::thread thread_;
+};
+
 struct UdsState {
     ServiceContext* context = nullptr;  // set by the first session and by StartNwm (the state lives in it)
     bool initialized = false;
@@ -248,7 +351,29 @@ struct UdsState {
     std::shared_ptr<Request> connect_request;
     u64 connect_timeout = 0;
     bool connect_timeout_set = false;
+    // When the game data of each node (by node id) last reached this console, in host and in game time: the lines
+    // that say how long a peer was silent (the game drops one it has not heard from for about a second).
+    struct Heard {
+        s64 host_ms = 0;
+        u64 ticks = 0;
+    };
+    std::map<u16, Heard> heard;
+    s64 gap_line_ms = 0;  // the last such line (one a second at most)
+    std::shared_ptr<LinkHold> link_hold;  // --link-hold (StartNwm)
 };
+
+s64 HostMs() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
+
+double TicksToMs(u64 ticks) {
+    return static_cast<double>(ticks) / 268111.856;
+}
+
+u64 GameTicks(const UdsState& s) {
+    return s.context != nullptr ? s.context->GetKernel().NowTicks() : 0;
+}
 
 bool Is(const UdsState& s, NetworkStatus status) {
     return s.connection_status.status == static_cast<u32>(status);
@@ -576,6 +701,10 @@ void HandleEapolPacket(const std::shared_ptr<UdsState>& state, const rooms::Wifi
         MH4N_LOG(Info, kLog, "connected to the network of {:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X} as node {}",
                  packet.transmitter[0], packet.transmitter[1], packet.transmitter[2], packet.transmitter[3],
                  packet.transmitter[4], packet.transmitter[5], logoff->assigned_node_id);
+        s.heard.clear();
+        if (s.link_hold) {
+            s.link_hold->SetClient(Is(s, NetworkStatus::ConnectedAsClient), HostMs());
+        }
         return;
     }
     if (Is(s, NetworkStatus::ConnectedAsClient) || Is(s, NetworkStatus::ConnectedAsSpectator)) {
@@ -647,6 +776,23 @@ void HandleSecureDataPacket(const std::shared_ptr<UdsState>& state, const rooms:
     }
     channel_info->second.received_packets.push_back(packet.data);
     Signal(state, channel_info->second.event);
+    // How long this node was silent (game data for this console, at the moment it is handed to the game)
+    const s64 now_ms = HostMs();
+    const u64 now_ticks = GameTicks(s);
+    UdsState::Heard& heard = s.heard[secure_data->src_node_id];
+    if (heard.host_ms != 0) {
+        const s64 gap_ms = now_ms - heard.host_ms;
+        if (gap_ms >= 700 && now_ms - s.gap_line_ms >= 1000) {
+            s.gap_line_ms = now_ms;
+            MH4N_LOG(Info, kLog, "game data from node {} after {} ms of silence ({:.0f} ms of game time)",
+                     secure_data->src_node_id, gap_ms, TicksToMs(now_ticks - heard.ticks));
+        }
+    }
+    heard.host_ms = now_ms;
+    heard.ticks = now_ticks;
+    if (s.link_hold && secure_data->src_node_id == kHostDestNodeId && Is(s, NetworkStatus::ConnectedAsClient)) {
+        s.link_hold->Heard(now_ms);
+    }
 }
 
 void SendAssociationResponseFrame(UdsState& s, const MacAddress& address) {
@@ -888,6 +1034,9 @@ private:
         s.channel_data.clear();
         s.node_map.clear();
         s.recv_buffer_memory.reset();
+        if (s.link_hold) {
+            s.link_hold->SetClient(false, HostMs());
+        }
         request.MakeReply(1, 0).Push(kResultSuccess);
         MH4N_LOG(Debug, kLog, "Shutdown");
     }
@@ -1232,6 +1381,22 @@ private:
             MH4N_LOG(Debug, kLog, "called as a host");
             request.MakeReply(1, 0).Push(kErrWrongStatus);
             return;
+        }
+        {
+            const auto host = s.heard.find(kHostDestNodeId);
+            if (host != s.heard.end()) {
+                MH4N_LOG(Info, kLog, "the game leaves the network (node {}): the host's last game data came {} ms ago "
+                                     "({:.0f} ms of game time)",
+                         s.connection_status.network_node_id, HostMs() - host->second.host_ms,
+                         TicksToMs(GameTicks(s) - host->second.ticks));
+            } else {
+                MH4N_LOG(Info, kLog, "the game leaves the network (node {}): no game data from the host so far",
+                         s.connection_status.network_node_id);
+            }
+            s.heard.clear();
+            if (s.link_hold) {
+                s.link_hold->SetClient(false, HostMs());
+            }
         }
         const u16 node_id = s.connection_status.network_node_id;
         s.connection_status = {};
@@ -1582,6 +1747,10 @@ MH4N_OPTION("runner", "--hub-join", "SERVER",
 MH4N_OPTION("runner", "--hub-name", "NAME", "the hub's name (--hub-host), or the hub to join (--hub-join)");
 MH4N_OPTION("runner", "--hub-key", "TEXT", "the hubs' matchmaking key (--hub-host, --hub-join; default: public)");
 MH4N_OPTION("runner", "--hub-room-port", "PORT", "the UDP port of the room a hub hosts on the loopback (default 24872)");
+MH4N_OPTION("runner", "--link-hold", "MS",
+            "the link hold: a client of a hall whose host has sent nothing for MS milliseconds holds its game clock until "
+            "the host speaks again (5 s at most), so that a late frame (one sent again on a slow link) does not make the "
+            "game take the host for gone, which it does after about a second (default 0: off)");
 
 // What ties the runtime's local-wireless service to the process's room client: the listener that hands each frame to
 // the scheduler thread, and the frame callback that gives the shared page the room's MAC address. Owned by the runtime
@@ -1837,6 +2006,11 @@ void StartNwm(Runtime& rt) {
     ServiceContext& context = manager->Context();
     const std::shared_ptr<UdsState> state = context.State<UdsState>("nwm::UDS");
     state->context = &context;
+    if (const u64 hold_ms = std::min<u64>(rt.GetOptions().GetUInt("--link-hold", 0), 900); hold_ms > 0) {
+        state->link_hold = std::make_shared<LinkHold>(rt.GetKernel().Clock(), static_cast<s64>(hold_ms));
+        MH4N_LOG(Info, kLog, "the link hold: a client holds its game clock while the host is silent for {} ms or more",
+                 hold_ms);
+    }
 
     rooms::Client& client = rooms::Default();
     const std::string console_id_hash = rooms::ConsoleIdHash(cfg::GetConsoleUniqueId(context));

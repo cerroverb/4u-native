@@ -104,6 +104,8 @@ struct FakeHost {
     std::set<u64> failing;         // fragment tev words whose builds fail
     std::set<u64> known_programs;  // vertex sources the "builder" has
     int specialised_ms = 0;
+    int fallback_ms = 0;                                     // (1.0.2) a fallback's build takes this long
+    std::atomic<int> fallbacks_now{0}, fallbacks_most{0};  // (1.0.2) fallbacks built at once, now and at most
     native::SpirvStore* spirv = nullptr;
 
     native::ProviderHost Host() {
@@ -116,6 +118,13 @@ struct FakeHost {
             }
             if (!key.IsFallback() && specialised_ms > 0) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(specialised_ms));
+            }
+            if (key.IsFallback()) {
+                const int now = ++fallbacks_now;
+                for (int most = fallbacks_most.load(); now > most && !fallbacks_most.compare_exchange_weak(most, now);) {
+                }
+                if (fallback_ms > 0) std::this_thread::sleep_for(std::chrono::milliseconds(fallback_ms));
+                --fallbacks_now;
             }
             if (!key.IsFallback() && failing.count(key.fragment.key.texture.tev_stages[0].sources_raw) != 0) {
                 return rhi::Error{"this key does not build"};
@@ -376,6 +385,62 @@ TEST_CASE("pipeline/force_ubershader_answers_every_draw_with_its_fallback") {
     CHECK(Counter(*provider, "pipeline_forced_uber") == 2);
 }
 
+// (1.0.2) The phones' default: a draw without its own pipeline is left out, never drawn with a fallback. No fallback is
+// built ahead then; a key whose own pipeline failed gets its fallback when it asks for it.
+TEST_CASE("pipeline/with_no_fallback_draws_no_fallback_is_built_ahead_but_a_failed_key_gets_its_own") {
+    FakeHost fake;
+    pipeline::CachingOptions options = NoFiles();
+    options.never_wait = true;
+    options.use_fallback = false;
+    auto provider = pipeline::MakeCachingProvider(fake.Host(), options);
+    const native::PipelineKey a = SpecialisedKey(1);
+    rhi::Result<native::PipelineHandle> first = provider->Lookup(a);
+    REQUIRE(first.ok());
+    CHECK(first->pending);
+    CHECK(provider->Prepare(TranslatedKey(5, 2), SpecialisedKey(0).AsFallback()) == native::PipelineReadiness::Pending);
+    pipeline::WaitIdle(*provider);
+    CHECK(fake.CountOf(a) == 1);
+    CHECK(fake.CountOf(TranslatedKey(5, 2)) == 1);
+    CHECK(fake.CountOf(a.AsFallback()) == 0);
+    CHECK(fake.CountOf(SpecialisedKey(0).AsFallback()) == 0);
+    rhi::Result<native::PipelineHandle> ready = provider->Lookup(a);
+    REQUIRE(ready.ok());
+    CHECK_FALSE(ready->pending);
+    CHECK_FALSE(ready->fallback);
+
+    fake.failing.insert(3);
+    const native::PipelineKey bad = SpecialisedKey(3, rhi::CullMode::Back);
+    REQUIRE(provider->Lookup(bad).ok());  // (left out: its own pipeline queued)
+    pipeline::WaitIdle(*provider);         // (and refused)
+    rhi::Result<native::PipelineHandle> h = provider->Lookup(bad);
+    REQUIRE(h.ok());
+    CHECK(h->pending);  // (its fallback asked for now)
+    pipeline::WaitIdle(*provider);
+    h = provider->Lookup(bad);
+    REQUIRE(h.ok());
+    CHECK(h->fallback);
+    CHECK(fake.CountOf(bad.AsFallback()) == 1);
+    CHECK(fake.CountOf(bad) == 1);
+}
+
+// (1.0.2) The ubershader is by far the largest build (an Exynos 2200's driver: over 20 s and a gigabyte each): the
+// workers build one fallback at a time, whatever their number.
+TEST_CASE("pipeline/the_workers_build_one_fallback_at_a_time") {
+    FakeHost fake;
+    fake.fallback_ms = 50;
+    auto provider = pipeline::MakeCachingProvider(fake.Host(), NoFiles(4));  // (3 workers for the background queue)
+    std::vector<native::PipelineKey> keys;
+    for (u32 k = 0; k < 4; ++k) {
+        native::PipelineKey key = SpecialisedKey(10 + k);
+        key.state.color_write_mask = 1 + k;  // (another fixed-function state: another fallback)
+        keys.push_back(key);
+        REQUIRE(provider->Lookup(key).ok());
+    }
+    pipeline::WaitIdle(*provider);
+    for (const native::PipelineKey& key : keys) CHECK(fake.CountOf(key.AsFallback()) == 1);
+    CHECK(fake.fallbacks_most.load() == 1);
+}
+
 // ---- the list ----------------------------------------------------------------------------------------------------------------
 
 TEST_CASE("pipeline/the_keys_seen_are_compiled_at_the_next_start_the_fallbacks_first") {
@@ -435,6 +500,58 @@ TEST_CASE("pipeline/the_keys_seen_are_compiled_at_the_next_start_the_fallbacks_f
     pipeline::Records records;
     CHECK(pipeline::ReadRecords(dir.path / "keys.bin", pipeline::kKindKeys, 1, native::kPipelineKeyVersion + 1, records) ==
           pipeline::ReadStatus::Stale);
+}
+
+// (1.0.2, T27) The list compiled at start keeps its list_max most used keys and lets the others go; a start after a
+// session that ended inside a fallback's build (its file) builds no fallback ahead, and the file goes once one is built.
+TEST_CASE("pipeline/the_list_keeps_its_most_used_keys_and_a_fallback_cut_short_is_not_built_ahead_again") {
+    TempDir dir;
+    {
+        FakeHost fake;
+        pipeline::CachingOptions options = NoFiles();
+        options.folder = dir.path;
+        options.driver_cache = false;
+        auto provider = pipeline::MakeCachingProvider(fake.Host(), options);
+        for (u32 k = 1; k <= 6; ++k) {
+            for (u32 use = 0; use < k; ++use) REQUIRE(provider->Lookup(SpecialisedKey(k)).ok());  // (key k used k times)
+            pipeline::WaitIdle(*provider);
+        }
+    }
+    const native::PipelineKey fallback = SpecialisedKey(1).AsFallback();
+    {
+        FakeHost fake;
+        pipeline::CachingOptions options = NoFiles();
+        options.folder = dir.path;
+        options.driver_cache = false;
+        options.list_max = 3;
+        options.warm = true;
+        auto provider = pipeline::MakeCachingProvider(fake.Host(), options);
+        CHECK(pipeline::StatsOf(*provider)->listed == 3);
+        CHECK(fake.CountOf(fallback) == 1);  // (the fallbacks first: draws are drawn with them here)
+        CHECK(fake.CountOf(SpecialisedKey(6)) == 1);
+        CHECK(fake.CountOf(SpecialisedKey(5)) == 1);
+        CHECK(fake.CountOf(SpecialisedKey(4)) == 0);
+        CHECK(fake.CountOf(SpecialisedKey(1)) == 0);
+        CHECK(fake.Count() == 3);
+    }  // (the list written again: the three)
+    REQUIRE(pipeline::WriteBytes(dir.path / "ubershader-building", std::vector<u8>{'1'}));
+    {
+        FakeHost fake;
+        pipeline::CachingOptions options = NoFiles();
+        options.folder = dir.path;
+        options.driver_cache = false;
+        options.warm = true;
+        auto provider = pipeline::MakeCachingProvider(fake.Host(), options);
+        CHECK(pipeline::StatsOf(*provider)->listed == 2);
+        CHECK(fake.CountOf(fallback) == 0);
+        CHECK(stdfs::exists(dir.path / "ubershader-building"));
+        native::PipelineKey other = SpecialisedKey(7);
+        other.state.color_write_mask = 3;
+        REQUIRE(provider->Lookup(other).ok());  // (its fallback queued and built by a worker)
+        pipeline::WaitIdle(*provider);
+        CHECK(fake.CountOf(other.AsFallback()) == 1);
+        CHECK_FALSE(stdfs::exists(dir.path / "ubershader-building"));
+    }
 }
 
 TEST_CASE("pipeline/a_list_still_compiling_at_the_savers_turn_says_how_far_it_is") {

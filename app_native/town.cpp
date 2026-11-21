@@ -23,6 +23,9 @@
 #include "settings_locale.h"
 #include "settings_panel.h"
 #include "touch.h"
+#ifndef __ANDROID__
+#include "pc_input.h"
+#endif
 
 namespace {
 
@@ -71,7 +74,11 @@ bool g_finger_on = false, g_finger_view = false, g_finger_outside = false, g_x_h
 int g_finger_row = -1;
 ImVec2 g_finger_p;
 
+#ifndef __ANDROID__
+const char* T(const char* english) { return pc_words(settings_text(settings_spanish() ? 1 : 0, english)); }  // (a PC's words)
+#else
 const char* T(const char* english) { return settings_text(settings_spanish() ? 1 : 0, english); }
+#endif
 bool is_view(Mode m) { return m == VIEW_MENU || m == VIEW_PANEL; }
 float ease(float t) {
     t = std::clamp(t, 0.f, 1.f);
@@ -187,6 +194,9 @@ void row_plate(ImDrawList* dl, const ImRect& r, float line, bool lit, bool press
 void glyph(ImDrawList* dl, ImFont* f, ImVec2 c, float size, int g) {
     SettingsIcons::Ink ink;
     ink.plate = IM_COL32(28, 20, 15, 240), ink.rim = BRONZE, ink.rule = GOLD, ink.letter = INK;
+#ifndef __ANDROID__
+    if (pc_glyph(dl, f, c, size, g, ink)) return;  // (the PC: the keyboard's key, a controller's button in its look)
+#endif
     SettingsIcons::draw(dl, f, ImVec2(c.x - SettingsIcons::width(g, size) / 2, c.y - size / 2), size, g, ink);
 }
 // a back arrow (the touch's Back) and a cross (the list's close plate)
@@ -415,6 +425,15 @@ void town_open(bool by_pad) {
 void town_close() {
     if (g_mode == LIST) set_mode(IDLE, "closed");
 }
+
+#ifndef __ANDROID__
+bool town_pick_now(int action) {
+    if (action < 0 || action >= A_COUNT || (!town_available() && g_mode != LIST)) return false;
+    g_sel = action;
+    pick(action);
+    return true;
+}
+#endif
 
 bool town_back() {
     switch (g_mode) {

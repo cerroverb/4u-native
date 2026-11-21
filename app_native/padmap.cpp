@@ -104,7 +104,11 @@ void save_file() {
         if (auto it = g_before.find(guid); it != g_before.end()) std::fprintf(f, "#before,%s\n", it->second.c_str());
     }
     std::fclose(f);
+#ifdef _WIN32  // (Windows' rename never replaces a file: pc/compat/pc_compat.h)
+    pc_replace_file(tmp.c_str(), g_file.c_str());
+#else
     std::rename(tmp.c_str(), g_file.c_str());
+#endif
 }
 
 // ---- reading it

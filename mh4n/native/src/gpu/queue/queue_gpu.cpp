@@ -344,6 +344,9 @@ u32 QueueGpu::ReadReg(u32 addr) {
 }
 
 void QueueGpu::SetBufferSwap(u32 screen, const FrameBufferInfo& info) {
+    if (screen == 0) {
+        swapped_ = true;  // (frames_are_swaps: the next VBlank(0) ends a frame)
+    }
     Finished(Enqueue(
         [this, screen, info] { ForwardTarget("SetBufferSwap").SetBufferSwap(screen, info); }));
 }
@@ -376,7 +379,13 @@ void QueueGpu::InvalidateRegion(u32 vaddr, u32 size) {
 }
 
 void QueueGpu::VBlank(u32 screen) {
-    const bool frame_end = screen == 0;
+    bool frame_end = screen == 0;
+    if (frame_end && config_.frames_are_swaps) {  // (only a VBlank that latched a new picture, or every 16th: QueueConfig)
+        frame_end = swapped_ || ++idle_vblanks_ >= kIdleVBlanksPerFrame;
+        if (frame_end) {
+            swapped_ = false, idle_vblanks_ = 0;
+        }
+    }
     Finished(Enqueue(
         [this, screen, frame_end] {
             // The frame leaves the queue even if the wrapped GPU throws, or the limit would block

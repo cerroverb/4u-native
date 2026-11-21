@@ -38,6 +38,9 @@
 #include "content.h"
 #include "mods/mod_list.h"
 #endif
+#if defined(_WIN32) && !defined(VERIFY_FILES_TEST)
+#include "pc/pc_app.h"  // (MH4U for PC: its code library, mh4u_code_native.dll, and the id inside it)
+#endif
 
 namespace {
 
@@ -386,6 +389,11 @@ void todo_choose_again(Report& r) {
            "Vuelve a elegir la carpeta del juego: Sistema › Tu partida › Carpeta del juego.");
 }
 void todo_library(Report& r) {
+#ifdef _WIN32  // (MH4U for PC: its builder, on this PC)
+    r.todo("Make the code library again, with this version: System › Game code › Build the game code (on this PC).",
+           "Vuelve a crear la librería de código, con esta versión: Sistema › Código del juego › Crear el código del juego (en esta PC).");
+    return;
+#endif
     r.todo("Make the code library again, with this version: System › Game code › Build the game code, or the guide's tool on a PC.",
            "Vuelve a crear la librería de código, con esta versión: Sistema › Código del juego › Crear el código del juego, o la herramienta de la guía en una PC.");
 }
@@ -942,7 +950,11 @@ void run() {
             for (const std::string& n : names) {
                 const std::string p = folder + "/" + n, l = lower(n);
                 if (n[0] == '.' || is_dir(p)) continue;
+#ifdef _WIN32  // (MH4U for PC's library: pc_app.h kPcLibrary)
+                if (l == "mh4u_code_native.dll") library = p;
+#else
                 if (l == "libmh4u_code_native.so" || (ends_with(l, "_native.so") && library.empty())) library = p;
+#endif
                 if (ends_with(l, ".3ds") || ends_with(l, ".cci") || ends_with(l, ".cxi") || ends_with(l, ".cia")) {
                     File f;
                     Ncch n2;
@@ -955,6 +967,9 @@ void run() {
             }
         }
     }
+#ifdef _WIN32  // (a test's library elsewhere, MH4U_CODE_LIBRARY: the one the game runs, for a folder without one)
+    if (library.empty() && !P.code.empty() && exists(P.code)) library = P.code;
+#endif
     std::string run_base, run_update;
     if (!P.game.empty())
         if (FILE* f = fopen((P.game + "/source.txt").c_str(), "rb")) {
@@ -1084,19 +1099,39 @@ void run() {
     // ---- the code library: an arm64 ELF, its id inside and beside it, this app's
     if (!folder.empty() && is_dir(folder)) {
         if (library.empty()) {
+#ifdef _WIN32  // (MH4U for PC's)
+            r.problem("mh4u_code_native.dll is missing from the game folder: the game code, made once on this PC from your own game.",
+                      "Falta mh4u_code_native.dll en la carpeta del juego: el código del juego, que se crea una vez en esta PC desde tu propio juego.");
+#else
             r.problem("libmh4u_code_native.so is missing from the game folder: the game code, made once from your own game.",
                       "Falta libmh4u_code_native.so en la carpeta del juego: el código del juego, que se crea una vez desde tu propio juego.");
+#endif
             todo_library(r);
         } else {
             const std::string name = base_name(library);
             uint8_t h[20] = {};
             File lf;
+#ifdef _WIN32  // (MH4U for PC's: a Windows x64 DLL, its id in its export table, pc_launcher.cpp's reading)
+            bool elf = lf.open(library) && lf.read_exact(0, h, 2) && !memcmp(h, "MZ", 2);
+            lf.close();
+#ifndef VERIFY_FILES_TEST
+            const std::string inside = elf ? pc_library_id_inside(library) : "";
+#else
+            const std::string inside;
+#endif
+            const std::string beside = first_line(library.substr(0, library.size() - 4) + ".id");
+#else
             bool elf = lf.open(library) && lf.read_exact(0, h, 20) && !memcmp(h, "\x7f" "ELF", 4) && h[4] == 2 && h[18] == 183;
             lf.close();
             const std::string beside = first_line(library.substr(0, library.size() - 3) + ".id"), inside = elf ? id_inside(library) : "";
+#endif
             const std::string have = inside.empty() ? beside : inside;
             if (!elf) {
+#ifdef _WIN32
+                r.problem(F("%s is not a Windows (x64) library.", name.c_str()), F("%s no es una librería para Windows (x64).", name.c_str()));
+#else
                 r.problem(F("%s is not an Android (arm64) library.", name.c_str()), F("%s no es una librería para Android (arm64).", name.c_str()));
+#endif
                 todo_library(r);
             } else if (!inside.empty() && !beside.empty() && inside != beside) {
                 r.problem(F("%s and the .id beside it come from different builds (copied from two places). Don't use a library someone else made.", name.c_str()),

@@ -83,6 +83,7 @@ static inline const char* settings_text(int language, const char* english) {
         {"Shadows", "Sombras"},
         {"Frame generation", "Generación de cuadros"},
         {"Reverb", "Reverberación"},
+        {"Sound in screen recordings", "Sonido en las grabaciones de pantalla"},
         {"The picture", "La imagen"},
         {"Field of view", "Campo de visión"},
         {"Pause in the background", "Pausar en segundo plano"},
@@ -142,6 +143,7 @@ static inline const char* settings_text(int language, const char* english) {
         {"In a corner", "En una esquina"},
         {"Stacked", "Apiladas"},
         {"Side by side", "Lado a lado"},
+        {"On the second screen", "En la segunda pantalla"},
         {"Corner", "Esquina"},
         {"Bottom right", "Abajo a la derecha"},
         {"Bottom left", "Abajo a la izquierda"},
@@ -152,6 +154,10 @@ static inline const char* settings_text(int language, const char* english) {
         // Controls
         {"Touch controls", "Controles táctiles"},
         {"Controls and HUD", "Controles y HUD"},
+        // (1.0.2, T10: the MHGU port's the same)
+        {"%s counts as a controller, so the touch controls are hidden. To show them anyway: gear, Controls, Show the touch controls, Always.",
+         "%s cuenta como un mando, así que los controles táctiles se ocultan. Para verlos igual: engranaje, Controles, Mostrar los controles táctiles, Siempre."},
+        {"A device", "Un dispositivo"},
         {"Show the touch controls", "Mostrar los controles táctiles"},
         {"Camera speed", "Velocidad de la cámara"},
         {"Attack buttons", "Botones de ataque"},
@@ -177,6 +183,11 @@ static inline const char* settings_text(int language, const char* english) {
         {"Right stick click", "Clic de la palanca derecha"},
         {"Town actions", "Acciones del pueblo"},
         {"Town actions button", "Botón de acciones del pueblo"},
+        {"Weapon tree", "Árbol de armas"},  // (1.0.2: the Smithy's weapon tree's button, in the layout editor)
+        {"Chat button", "Botón del chat"},  // (1.0.2: the chat's button, in the layout editor)
+        {"The chat button: drag to move, a pinch or - / + for its size  -  Reset puts it back",
+         "El botón del chat: arrastra para moverlo, pellizca o usa - / + para su tamaño  -  Restablecer lo devuelve"},
+        {"Weapon tree button", "Botón del árbol de armas"},  // (1.0.2: its row in Buttons on the screen)
         {"Left stick click", "Clic de la palanca izquierda"},
         {"Guild Cards", "Tarjetas del Gremio"},
         {"Gestures", "Gestos"},
@@ -454,7 +465,7 @@ static inline const char* settings_text(int language, const char* english) {
         // Mods and Cheats
         {"Mods", "Mods"},
         {"Cheats", "Trucos"},
-        {"Add a mod (.zip)", "Agregar un mod (.zip)"},
+        {"Add a mod", "Agregar un mod"},  // (1.0.2: the MHGU port's name; it was Add a mod (.zip))
         {"Add a mod (folder)", "Agregar un mod (carpeta)"},
         {"Mods, in load order", "Mods, en orden de carga"},
         {"Code", "Código"},
@@ -492,7 +503,9 @@ static inline const char* settings_text(int language, const char* english) {
          "Agregado: %s. La librería de código se hizo con él, así que está activado: guarda y luego reinicia el juego."},
         {"Added: %s, off. It changes the game's code and the code library was not made with it: make the library again with this mod (System › Game code › Build the game code) before turning it on, or the game won't start.",
          "Agregado: %s, desactivado. Cambia el código del juego y la librería de código no se hizo con él: vuelve a hacer la librería con este mod (Sistema › Código del juego › Crear el código del juego) antes de activarlo, o el juego no arranca."},
-        {"Import cheats (.txt)", "Importar trucos (.txt)"},
+        {"Add cheats", "Agregar trucos"},
+        {"Shows the thank-you again, as it showed the first time the game opened.",
+         "Muestra otra vez el agradecimiento, como apareció la primera vez que se abrió el juego."},  // (1.0.2: MHGU's)  // (1.0.2: the MHGU port's name; it was Import cheats (.txt))
         {"Remove a cheat", "Quitar un truco"},
         // [mods] S41: a cheat that writes into the game's code, made a code mod
         {"It writes into the game's code, which this port runs translated ahead of time: as a cheat it does nothing. Select it and choose Make a code mod, then turn that mod on in Mods and make your code library again with it: the change is then in the game's code.",
@@ -570,6 +583,9 @@ static inline const char* settings_text(int language, const char* english) {
         {"Tap a control or a part of the game's screen to pick it, drag it to move it",
          "Toca un control o una parte de la pantalla del juego para elegirlo, arrástralo para moverlo"},
         {"Drag it where you want it in your hunts", "Arrástralo adonde lo quieras en tus cacerías"},
+        // (1.0.2) the area map picked in the editor: the game draws it on the main screen once the panels have no Map
+        {"Drag it where you want it  -  to see the map here, take the Map off your panels: Customize Panels (quest menu)",
+         "Arrástralo adonde lo quieras  -  para ver el mapa aquí, quita el Mapa de tus paneles: Personalizar paneles (menú de misión)"},
         {"Shows while a menu of the game's is open - drag to move, pinch or use - / + for its size",
          "Aparece cuando hay un menú del juego abierto - arrástralo para moverlo, pellizca o usa - / + para el tamaño"},
         {"Attacks: pill", "Ataques: píldora"},
@@ -602,6 +618,15 @@ static inline const char* settings_text(int language, const char* english) {
         {"Combined button 4", "Botón combinado 4"},
         {"Combined button 5", "Botón combinado 5"},
         {"Combined button 6", "Botón combinado 6"},
+        {"Combined button 7", "Botón combinado 7"},  // (1.0.2: fifteen)
+        {"Combined button 8", "Botón combinado 8"},
+        {"Combined button 9", "Botón combinado 9"},
+        {"Combined button 10", "Botón combinado 10"},
+        {"Combined button 11", "Botón combinado 11"},
+        {"Combined button 12", "Botón combinado 12"},
+        {"Combined button 13", "Botón combinado 13"},
+        {"Combined button 14", "Botón combinado 14"},
+        {"Combined button 15", "Botón combinado 15"},
         {"Movement", "Movimiento"},
         {"Confirm and back", "Aceptar y volver"},
         {"Clock", "Reloj"},
@@ -611,16 +636,32 @@ static inline const char* settings_text(int language, const char* english) {
         {"Area map", "Mapa de la zona"},
         {"Target camera", "Cámara de objetivo"},
         {"Item bar", "Barra de objetos"},
-        {"Moves and sizes the touch controls, and moves the game's own HUD: the clock, the health and stamina bars, the "
-         "sharpness, the name plates, the area's map, the target camera and the item bar.",
-         "Mueve y cambia de tamaño los controles táctiles, y mueve el HUD del propio juego: el reloj, las barras de vida y "
-         "resistencia, el filo, los nombres, el mapa de la zona, la cámara de objetivo y la barra de objetos."},
+        {"Moves and sizes the touch controls, and moves, sizes and hides the game's own HUD: the clock, the health and "
+         "stamina bars, the sharpness, the name plates, the area's map, the target camera and the item bar. To see the map "
+         "on the main screen, take the Map off your panels in Customize Panels (quest menu).",
+         "Mueve y cambia de tamaño los controles táctiles, y mueve, cambia de tamaño y oculta el HUD del propio juego: el "
+         "reloj, las barras de vida y resistencia, el filo, los nombres, el mapa de la zona, la cámara de objetivo y la barra "
+         "de objetos. Para ver el mapa en la pantalla principal, quita el Mapa de tus paneles en Personalizar paneles (menú "
+         "de misión)."},
+        // (1.0.2) the HUD's size, each part's size and Hide, the map's button
+        {"HUD size", "Tamaño del HUD"},
+        {"Map button", "Botón del mapa"},
+        {"Touch area", "Área táctil"},
+        {"Map: show / hide", "Mapa: mostrar / ocultar"},
+        {"Hidden: Show brings it back", "Oculto: Mostrar lo trae de vuelta"},
+        {"Drag it where you want it in your hunts  -  pinch or use - / + for its size",
+         "Arrástralo adonde lo quieras en tus cacerías  -  pellizca o usa - / + para su tamaño"},
+        {"Drag it where you want it  -  - / + for its size, a pinch for the area a tap uses it in",
+         "Arrástrala adonde la quieras  -  - / + para su tamaño, un pellizco para el área donde un toque la usa"},
         // the 1.0 layout group's: the floating stick, the layout profiles (tabarong's design), the emulator-style
         // layout, the buttons a tap holds, the players' pictures, the FPS counter moved in the editor
         {"Floating stick", "Palanca flotante"},
         {"On: the movement stick comes to where your thumb lands near it, and goes back to its place when you lift it. Off: it stays where it is.",
          "Activado: la palanca de movimiento aparece donde apoyas el pulgar cerca de ella, y vuelve a su lugar al levantarlo. Desactivado: se queda donde está."},
         {"Control profiles", "Perfiles de controles"},
+        {"Camera on the right half only", "Cámara solo en la mitad derecha"},  // (1.0.2, S-CAM)
+        {"With an emulator-style layout in use, this shows or hides its own button, as Hide does in its editor.",  // (1.0.2)
+         "Con un diseño de emulador en uso, esto muestra u oculta su propio botón, como Ocultar en su editor."},
         {"The layout is in use, but profile %d couldn't be saved in its folder. Is the save folder there?",
          "El diseño ya se usa, pero el perfil %d no se pudo guardar en su carpeta. ¿Está la carpeta de partidas?"},
         {"Pick a profile. They are kept in your save folder, and go with it to your other devices.",
@@ -638,6 +679,39 @@ static inline const char* settings_text(int language, const char* english) {
          "Guardado en el perfil %d, que el editor edita ahora: su Guardar juega con él"},
         {"Profile %d holds a layout: tap New again to start it over",
          "El perfil %d tiene un diseño: toca Nuevo otra vez para empezarlo de cero"},
+        // (1.0.2: a profile in a .zip and back; the MHGU port's the same)
+        {"Export", "Exportar"},
+        {"Import", "Importar"},
+        {"Saves this profile with its pictures and combined buttons in a .zip, in a folder you choose.",
+         "Guarda este perfil con sus imágenes y botones combinados en un .zip, en la carpeta que elijas."},
+        {"Puts a profile from a .zip made with Export in this slot, with its pictures.",
+         "Pone en este espacio un perfil de un .zip hecho con Exportar, con sus imágenes."},
+        {"Exported: %s", "Exportado: %s"},
+        {"Imported into profile %d", "Importado en el perfil %d"},
+        {"That .zip is not a control profile of this game.", "Ese .zip no es un perfil de controles de este juego."},
+        {"That .zip has files that would go outside its folder: it was not imported.",
+         "Ese .zip tiene archivos que irían fuera de su carpeta: no se importó."},
+        {"That file is not a .zip, or it is damaged.", "Ese archivo no es un .zip, o está dañado."},
+        {"Profile %d has changes you haven't saved: tap again to leave them",  // (1.0.2)
+         "El perfil %d tiene cambios sin guardar: toca otra vez para dejarlos"},
+        // (1.0.2: a combined button on any controller button)
+        {"Paddle 1", "Paleta 1"},  // (the MHGU port's the same)
+        {"Paddle 2", "Paleta 2"},
+        {"Paddle 3", "Paleta 3"},
+        {"Paddle 4", "Paleta 4"},
+        {"Touchpad", "Panel táctil"},
+        {"A (right)", "A (derecha)"},
+        {"B (bottom)", "B (abajo)"},
+        {"X (top)", "X (arriba)"},
+        {"Y (left)", "Y (izquierda)"},
+        {"Button %d (no name)", "Botón %d (sin nombre)"},
+        {"That controller button presses these buttons instead of its own (%s). Only one combined button can have it.",
+         "Ese botón del mando aprieta estos botones en vez del suyo (%s). Solo un botón combinado puede tenerlo."},
+        {"Press a controller button", "Apretar un botón del mando"},
+        {"Press the controller button you want for it, even one the list doesn't name (a paddle, say).",
+         "Aprieta el botón del mando que quieras para él, aunque la lista no lo nombre (una paleta, por ejemplo)."},
+        {"Press a controller button for combined button %d (8 seconds)",
+         "Aprieta un botón del mando para el botón combinado %d (8 segundos)"},
         {"A new layout in profile %d: Save keeps it and plays with it",
          "Un diseño nuevo en el perfil %d: Guardar lo conserva y juega con él"},
         {"Profile %d is empty", "El perfil %d está vacío"},
@@ -672,10 +746,14 @@ static inline const char* settings_text(int language, const char* english) {
         {"For: base", "Para: base"},
         {"For: knob", "Para: centro"},
         {"the stick's knob", "el centro de la palanca"},
+        // (1.0.2: the menu pad's SELECT takes a picture of its own)
+        {"For: pad", "Para: cruceta"},
+        {"For: SELECT", "Para: SELECT"},
+        {"the menu pad's SELECT", "el SELECT de la cruceta de menú"},
         {"Drag it where you want it  -  pinch or use - / + for the area a tap uses it in", "Arrástrala adonde la quieras  -  pellizca o usa - / + para el área donde un toque la usa"},
         {"Touch controls hidden: long-press an empty spot to show them again.", "Controles táctiles ocultos: mantén apretado un lugar vacío para volver a verlos."},
         {"You can turn this off in Settings › Controls › Touch controls.", "Puedes desactivarlo en Opciones › Controles › Controles táctiles."},
-        {"Long-press hides the controls", "Pulsación larga oculta los controles"},
+        {"Long press hides the controls", "Pulsación larga oculta los controles"},
         {"Slide between buttons: both pressed", "Deslizar entre botones: los dos apretados"},
         {"Camera smoothing", "Suavizado de la cámara"},
         {"Pictures (.png, .bmp)", "Imágenes (.png, .bmp)"},
@@ -684,7 +762,8 @@ static inline const char* settings_text(int language, const char* english) {
         {"The FPS counter: drag it to move it  -  Reset puts it back at the top",
          "El contador de FPS: arrástralo para moverlo  -  Restablecer lo devuelve arriba"},
         // (1.0.1: the monsters' health bars in the layout editor, hunt_bars.cpp)
-        {"Monster health bar", "Barra de vida de los monstruos"},
+        {"Monster health bars", "Barra de vida de los monstruos"},  // (1.0.2: the menu row, the MHGU port's name)
+        {"Monster health bar", "Barra de vida de los monstruos"},   // (the layout editor's part, touch.cpp)
         {"Quick items", "Objetos rápidos"},
         {"Quick items: drag to move, its corner handle, a pinch or - / + for its size  -  Reset puts it back",
          "Objetos rápidos: arrástralos para moverlos; el asa de la esquina, un pellizco o - / + para su tamaño  -  "

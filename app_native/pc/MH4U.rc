@@ -1,0 +1,40 @@
+// MH4U.exe's resources: its manifest (MH4U.manifest), its icon (MH4U.ico, the Android app's launcher icon) and its
+// version (pc.cmake: app_version.h's MH4U_APP_VERSION and its numbers). They come unquoted and are made strings here:
+// windres hands -D values to the preprocessor as a shell would, quotes taken off.
+#include <winver.h>
+
+#define STR_(x) #x
+#define STR(x) STR_(x)
+
+1 24 "MH4U.manifest"
+
+1 ICON "MH4U.ico"
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION MH4U_RC_NUMBERS
+PRODUCTVERSION MH4U_RC_NUMBERS
+FILEFLAGSMASK VS_FFI_FILEFLAGSMASK
+FILEFLAGS 0
+FILEOS VOS_NT_WINDOWS32
+FILETYPE VFT_APP
+FILESUBTYPE VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904b0"
+        BEGIN
+            VALUE "CompanyName", "khorne-hub"
+            VALUE "FileDescription", "MH4U for PC"
+            VALUE "FileVersion", STR(MH4U_RC_TEXT)
+            VALUE "InternalName", "MH4U"
+            VALUE "LegalCopyright", "khorne-hub. Free and open source (GPL-3.0 with additional terms); only the links khorne-hub gives are official."
+            VALUE "OriginalFilename", "MH4U.exe"
+            VALUE "ProductName", "MH4U"
+            VALUE "ProductVersion", STR(MH4U_RC_TEXT)
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END

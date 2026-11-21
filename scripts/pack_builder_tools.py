@@ -4,6 +4,11 @@ tools/android/phone_build.py read) into android/app/src/main/assets/builder/tool
 with, and the check that the library they make on a phone has the id the app wants (assets/code_library_id.txt).
 
     python scripts/pack_builder_tools.py MH4N_DIR
+    python scripts/pack_builder_tools.py --pc MH4N_DIR OUT.zip ID
+
+--pc (scripts/build_pc.sh): the same files into OUT.zip, builder_tools.zip beside MH4U.exe, for the PC's own builder
+(app_native/pc/pc_builder.cpp, mh4n tools/pc_build.py), checked to make the PC app's library id (ID: build_game.py
+--print-id --pc).
 
 No game data is in there (mh4n's tools/check_no_game_data.py checks the same tree for its releases). The files are
 stored in a fixed order with a fixed date, so the same mh4n gives the same zip.
@@ -31,9 +36,13 @@ def files(mh4n):
 
 
 def main():
-    mh4n = os.path.abspath(sys.argv[1])
-    os.makedirs(os.path.join(ASSETS, "builder"), exist_ok=True)
-    out = os.path.join(ASSETS, "builder", "tools.zip")
+    pc = sys.argv[1] == "--pc"
+    mh4n = os.path.abspath(sys.argv[2] if pc else sys.argv[1])
+    if pc:
+        out = os.path.abspath(sys.argv[3])
+    else:
+        os.makedirs(os.path.join(ASSETS, "builder"), exist_ok=True)
+        out = os.path.join(ASSETS, "builder", "tools.zip")
     with zipfile.ZipFile(out + ".part", "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
         for path, name in files(mh4n):
             info = zipfile.ZipInfo(name, (2026, 1, 1, 0, 0, 0))
@@ -54,9 +63,15 @@ def main():
             z.extractall(tmp)
         sys.path.insert(0, os.path.join(tmp, "tools"))
         import build_game
-        got = build_game.code_library_id(True, False, root=tmp)
-    with open(os.path.join(ASSETS, "code_library_id.txt")) as f:
-        want = f.read().strip()
+        if pc:
+            got = build_game.code_library_id(True, False, root=tmp, pc=True)
+        else:
+            got = build_game.code_library_id(True, False, root=tmp)
+    if pc:
+        want = sys.argv[4]
+    else:
+        with open(os.path.join(ASSETS, "code_library_id.txt")) as f:
+            want = f.read().strip()
     if got != want:
         sys.exit(f"builder tools: their library id is {got}, the app's is {want}")
     print(f"builder tools: {out} ({os.path.getsize(out) >> 10} KB), library id {got}")

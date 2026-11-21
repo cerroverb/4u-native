@@ -50,6 +50,12 @@ bool KeptSetsOn() {
     return on;
 }
 
+// MH4N_INDEX_AT_FIRST=0 (a measurement aid): the index buffer bound at the draw's offset, a bind a draw, as before
+bool IndexAtFirstOn() {
+    static const bool on = [] { const char* v = std::getenv("MH4N_INDEX_AT_FIRST"); return !(v != nullptr && *v == '0'); }();
+    return on;
+}
+
 struct Set2Sig {
     const rhi::Image* image = nullptr;
     bool operator==(const Set2Sig&) const = default;
@@ -614,8 +620,16 @@ rhi::Result<DrawResult> DrawComposer::Draw(rhi::Recorder& rec, const DrawDesc& d
         rec.SetVertexBuffers(0, d.vertex_buffers);
     }
     if (d.index_buffer != nullptr) {
-        rec.SetIndexBuffer(*d.index_buffer, d.index_offset, d.index_type);
-        rec.DrawIndexed(d.count, 1, d.first, d.base_vertex, d.first_instance);
+        // The index ring bound at its start once, the draw's indices reached by its first index (the offset is a
+        // multiple of the index size, as vkCmdBindIndexBuffer needs): the same indices read, without a bind a draw
+        const u64 size = d.index_type == rhi::IndexType::U8 ? 1 : d.index_type == rhi::IndexType::U32 ? 4 : 2;
+        if (IndexAtFirstOn() && d.index_offset % size == 0 && d.index_offset / size + d.first <= 0xFFFFFFFFull) {
+            rec.SetIndexBuffer(*d.index_buffer, 0, d.index_type);
+            rec.DrawIndexed(d.count, 1, static_cast<u32>(d.index_offset / size + d.first), d.base_vertex, d.first_instance);
+        } else {
+            rec.SetIndexBuffer(*d.index_buffer, d.index_offset, d.index_type);
+            rec.DrawIndexed(d.count, 1, d.first, d.base_vertex, d.first_instance);
+        }
     } else {
         rec.Draw(d.count, 1, d.first, d.first_instance);
     }

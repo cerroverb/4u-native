@@ -6,6 +6,7 @@
 #include "display_mem/display_mem.h"
 
 #include <algorithm>
+#include <chrono>
 #include <utility>
 
 #include "gpu/native/scaled_screens.h"
@@ -74,6 +75,10 @@ std::shared_ptr<std::vector<u8>> Enlarge(const std::vector<u8>& pixels, u32 widt
 
 DisplayMemGpu::DisplayMemGpu(gpu::Host& host, std::unique_ptr<gpu::Gpu> inner)
     : host_(host), inner_(std::move(inner)) {
+    if (const char* v = std::getenv("MH4N_PUBLISH_ON_CHANGE"); v != nullptr && *v == '1') {
+        publish_on_change_ = true;
+        MH4N_LOG(Info, kLog, "the screens published at a VBlank after a change, and 60 times a second at least");
+    }
     // Load takes the registers as little-endian bytes: read them from the inner GPU's register file.
     std::vector<u8> gpu_regs(4 * gpu_capture::DisplayShadow::kGpuRegWords);
     std::vector<u8> lcd_regs(4 * gpu_capture::DisplayShadow::kLcdRegWords);
@@ -103,6 +108,7 @@ void DisplayMemGpu::Execute(const gpu::GxCommand& command) {
 void DisplayMemGpu::WriteReg(u32 addr, u32 value) {
     inner_->WriteReg(addr, value);
     shadow_.WriteReg(addr, value);
+    screens_changed_ = true;
 }
 
 u32 DisplayMemGpu::ReadReg(u32 addr) {
@@ -111,6 +117,7 @@ u32 DisplayMemGpu::ReadReg(u32 addr) {
 
 void DisplayMemGpu::SetBufferSwap(u32 screen, const gpu::FrameBufferInfo& info) {
     inner_->SetBufferSwap(screen, info);
+    screens_changed_ = true;
     if (screen == 0) {
         ++top_swaps_;
     }
@@ -128,6 +135,7 @@ void DisplayMemGpu::SetBufferSwap(u32 screen, const gpu::FrameBufferInfo& info) 
 void DisplayMemGpu::SetColorFill(u32 fill) {
     inner_->SetColorFill(fill);
     shadow_.ApplyFill(fill);
+    screens_changed_ = true;
 }
 
 void DisplayMemGpu::FlushRegion(u32 vaddr, u32 size) {
@@ -212,6 +220,16 @@ void DisplayMemGpu::VBlank(u32 screen) {
     }
     if (screen != 0 || sinks_.empty()) {
         return;
+    }
+    if (publish_on_change_) {
+        const u64 now = static_cast<u64>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
+        constexpr u64 kAtLeastEveryNs = 16'000'000;  // (60 times a second and a little more)
+        if (!screens_changed_ && now - last_publish_ns_ < kAtLeastEveryNs) {
+            return;
+        }
+        screens_changed_ = false;
+        last_publish_ns_ = now;
     }
     if (scaled_ != nullptr) {
         const bool hidden = std::any_of(sinks_.begin(), sinks_.end(), [](const present::ScreenSink* s) {
@@ -305,6 +323,12 @@ std::optional<present::ScreenImage> DisplayMemGpu::BuildScreen(u32 screen) {
         if (std::optional<present::ScreenImage> scaled = BuildScaledScreen(screen)) {
             last_error_[screen].clear();
             return scaled;
+        }
+        // (1.0.2) the touch screen's framebuffer of a turn whose draws the renderer left out (it was hidden then) holds
+        // the top screen's picture: no touch screen this frame, rather than the top screen in small (the sink keeps its
+        // last one). It is not read from memory either, which would wait for the GPU.
+        if (screen == 1 && ShownFramebufferLeftOut(screen)) {
+            return std::nullopt;
         }
         last_scaled_[screen] = LastScaled{};
         PrepareScreenMemory(screen);  // a framebuffer the renderer still owes (asynchronous screens) is written first
@@ -561,6 +585,18 @@ std::optional<present::ScreenImage> DisplayMemGpu::BuildSharedScreen(u32 screen)
     return result;
 }
 
+bool DisplayMemGpu::ShownFramebufferLeftOut(u32 screen) {
+    // (the registers as BuildScaledScreen reads them; a colour fill shows no framebuffer)
+    const u32 fb = kFbConfigBase + kFbConfigWords * screen;
+    const u32 fill = shadow_.LcdReg(screen == 0 ? kLcdColorFillTop : kLcdColorFillBottom);
+    if (((fill >> 24) & 1) != 0) {
+        return false;
+    }
+    const u32 address = shadow_.GpuReg(fb + kFbActive) == 0 ? shadow_.GpuReg(fb + kFbAddressLeft1)
+                                                             : shadow_.GpuReg(fb + kFbAddressLeft2);
+    return scaled_->ScreenLeftOut(address);
+}
+
 void DisplayMemGpu::PrepareScreenMemory(u32 screen) {
     const u32 fb = kFbConfigBase + kFbConfigWords * screen;
     const u32 address = shadow_.GpuReg(fb + kFbActive) == 0 ? shadow_.GpuReg(fb + kFbAddressLeft1)
@@ -671,7 +707,13 @@ std::unique_ptr<gpu::Gpu> MakeNativeDisplay(gpu::Host& host, const Options& opti
         MH4N_LOG(Error, kLog, "--render-queue: {}", e.what());
     }
     config.max_frames_queued = static_cast<u32>(std::clamp<u64>(queued, 2, 4));
-    MH4N_LOG(Info, kLog, "the renderer runs on its own thread ({} frames queued at most)", config.max_frames_queued);
+    // MH4N_RENDER_QUEUE_SWAPS=1 (the PC app): the frames counted are the VBlanks that latched a new picture
+    // (QueueConfig::frames_are_swaps), not every VBlank
+    if (const char* swaps = std::getenv("MH4N_RENDER_QUEUE_SWAPS"); swaps != nullptr && *swaps == '1') {
+        config.frames_are_swaps = true;
+    }
+    MH4N_LOG(Info, kLog, "the renderer runs on its own thread ({} frames queued at most{})", config.max_frames_queued,
+             config.frames_are_swaps ? ", a frame a new picture" : "");
     // The wrapped GPU is made on the renderer thread (it owns every image it makes); `options` outlives the call.
     return std::make_unique<gpu::queue::QueueGpu>(
         host, [&options](gpu::Host& queue_host) { return MakeNativeDisplayOn(queue_host, options); }, config);

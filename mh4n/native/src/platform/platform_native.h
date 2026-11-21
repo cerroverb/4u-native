@@ -35,6 +35,7 @@
 #include <vector>
 
 #include "platform.h"  // port/src/platform.h
+#include "platform/netsync_native.h"
 #include "mh4n/runtime.h"
 #include "mh4n/types.h"
 
@@ -97,6 +98,7 @@ public:
     bool SetOption(const std::string& key, const std::string& value) override;
     std::string GetOption(const std::string& key) override;
     void InstallNetSync(Port::NetSyncMode mode, double slack_ms, std::vector<std::string>& log) override;
+    void NetSyncFrame() override;
     void VoteEndSkip(bool vote) override;
     bool EndSkipAgreed() override;
     // The file system's: fs::HasReadableGameDlc and fs::BackUpGameSave (services/fs/dlc_titles.h).
@@ -131,6 +133,12 @@ private:
     std::uint64_t layout_refreshes_ = 0;
     double refresh_hz_ = 0.0;
     bool end_skip_vote_ = false;
+    // the net sync (netsync_native.h): the peers, the room's listener, and how far this game has run (the guest's thread)
+    netsync::Peers netsync_;
+    std::uint64_t netsync_listener_ = 0;
+    double netsync_run_ms_ = 0.0;
+    double netsync_last_frame_s_ = -1.0, netsync_last_send_s_ = -1e9;
+    void NetSyncSend(double now_s, const netsync::MacAddress& waiting_for);
 };
 
 // The `started` step, in three parts (the tests call them one by one):

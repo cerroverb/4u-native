@@ -1,7 +1,7 @@
-# MH4U para Android
+# MH4U para Android y PC
 
 Juega tu propia copia de Monster Hunter 4 Ultimate en Android, de forma nativa y con controles táctiles pensados para
-teléfonos. No es un emulador: el código del juego se recompila de antemano a código nativo para tu dispositivo, y corre
+teléfonos, y en una PC con Windows con teclado, ratón o mando ([PC (Windows)](#pc-windows)). No es un emulador: el código del juego se recompila de antemano a código nativo para tu dispositivo, y corre
 sobre un runtime propio que hace el trabajo de la consola, con los gráficos dibujados con Vulkan.
 
 **Este proyecto no incluye código del juego, archivos del juego, ROMs ni keys. Necesitas tu propia copia del juego.**
@@ -59,8 +59,25 @@ partida se copia a mano.
 - **Color:** engranaje, **Gráficos y audio**, **Color**: tono, temperatura, tinte, brillo, contraste, saturación y gamma de
   la imagen del juego en las dos pantallas (nunca los controles táctiles ni este menú), todo en 0, sin cambio, por defecto,
   con **Restablecer el color**
-- **Tu propio driver de GPU** en un Adreno, bajo tu responsabilidad: engranaje, **Gráficos y audio**, **Avanzado**, **Driver de GPU**. Si
+- **Tu propio driver de GPU** en cualquier GPU, bajo tu responsabilidad: engranaje, **Gráficos y audio**, **Avanzado**, **Driver de GPU**. Si
   uno falla, la app vuelve sola al del sistema y lo avisa
+- **Presets de color:** en la página **Color**, **Preset 1** a **Preset 3** guardan un ajuste de color cada uno
+  (**Guardar el color actual aquí**), y **Usar** lo trae de vuelta
+- **FSR 1** (engranaje, **Gráficos y audio**, **Filtro de escalado**, apagado por defecto): la pantalla de arriba
+  agrandada con bordes más nítidos cuando se muestra más grande que su imagen, con su propia **Nitidez de FSR 1**
+- **Escalado rápido (más FPS)** (engranaje, **Gráficos y audio**, apagado por defecto): agranda la imagen del juego de
+  forma más simple cuando la resolución 3D no es el tamaño con que la muestra tu pantalla (por ejemplo 2x en una
+  pantalla de 720 líneas): más cuadros por segundo en teléfonos débiles. Algunos colores pueden variar apenas
+- **Tamaño del HUD** (engranaje, **Gráficos y audio**, **Pantalla y HUD**): todo el HUD más chico, de 60 a 100 %, al
+  momento, con las ventanas de diálogo y de sí o no de las misiones
+- **Contorno del texto** (engranaje, **Gráficos y audio**, **Pantalla y HUD**, apagado por defecto): un contorno oscuro
+  fino alrededor de las letras del juego, para el texto que cuesta leer
+- **Sonido en las grabaciones de pantalla** (engranaje, **Gráficos y audio**, **Imagen y sonido**, apagado por defecto):
+  para los teléfonos cuya grabación de pantalla no graba el sonido del juego, desde el próximo inicio
+- **Aparatos con dos pantallas:** engranaje, **Gráficos y audio**, **Pantalla y HUD**, **Disposición**, **En la segunda
+  pantalla** pone la pantalla táctil en la segunda pantalla, y se toca ahí; solo aparece si hay una, y si se va vuelve
+  la disposición que tenías. En lado a lado, la pantalla táctil queda fuera del agujero de la cámara o la muesca del
+  borde
 
 ### Controles táctiles
 
@@ -90,8 +107,11 @@ partida se copia a mano.
   bajo el pulgar derecho, con los botones de página L y R encima. La palanca de movimiento y arrastrar en la pantalla
   también mueven el cursor, y A y B quedan donde están. Para ocultarlo: engranaje, **Controles**, **Botones en la
   pantalla**, **Pad de menú**
-- **Botones combinados:** hasta seis botones propios que aprietan varios a la vez, como A+X. Cada uno también puede ir en
-  un botón del mando (**Botón del mando**)
+- **Botones combinados:** hasta 15 botones propios que aprietan varios a la vez, como A+X, cada perfil de controles con
+  los suyos. Cada uno también puede ir en cualquier botón del mando (**Botón del mando**): A, B, X e Y por su lugar, L,
+  R, ZL, ZR, START, SELECT, la cruceta, los clics de las palancas, las paletas o el panel táctil. **Apretar un botón del
+  mando** toma también uno que el mapa del mando no nombra, como algunas paletas en Android; ese botón aprieta entonces
+  el combinado en vez del suyo
 - **El editor del diseño:** una pulsación larga en el engranaje. Mueve y cambia el tamaño de cada botón, y mueve el HUD del
   propio juego: el reloj, las barras de vida y aguante, el filo, los nombres, el mapa de la zona, la cámara de objetivo y
   la barra de objetos. El pad de menú y el círculo del candado de carrera también se mueven y cambian de tamaño ahí. El
@@ -108,6 +128,23 @@ partida se copia a mano.
   ubica el editor acepta una, la base y el centro de la palanca cada uno la suya (**Para: base / centro**), y tu imagen es
   todo el aspecto del control: solo se dibuja tu PNG, un poco más chico y más oscuro mientras lo aprietas. Lo que agregues
   es tu responsabilidad
+- **Exportar e importar un perfil:** engranaje, **Controles**, **Perfiles de controles**, un perfil, **Exportar** lo
+  pone en un .zip con sus imágenes y sus botones combinados, e **Importar** trae uno de vuelta (si ya hay una imagen con
+  ese nombre, la nueva entra con otro). Dejar un perfil sin guardar ya no lo vacía, y el editor pregunta antes de que
+  **Cargar** o **Nuevo** descarten cambios sin guardar
+- **Cada parte del HUD** se puede achicar o agrandar (- / + o pellizcando) y ocultar en el editor del diseño;
+  **Restablecer** y **Por defecto** la devuelven
+- **Botón del mapa:** en una cacería, un botón en el borde izquierdo muestra u oculta el mapa de la pantalla principal
+  (engranaje, **Controles**, **Botones en la pantalla**, **Botón del mapa**). Para tener el mapa en la pantalla
+  principal, quita el Mapa de tus paneles en Personalizar paneles (el menú de misión)
+- **Árbol de armas en la herrería:** cuando la herrería muestra un arma (Forjar o Mejorar), un botón redondo (o el clic
+  de la palanca derecha) abre el árbol de esa arma: las que tienes (en la caja o equipada), las anteriores y el paso
+  siguiente de cada una como "?". Solo consulta, con los nombres en el idioma del juego. **Botón del árbol de armas**,
+  en **Botones en la pantalla**, saca el botón
+- **Cámara solo en la mitad derecha** (engranaje, **Controles**, **Controles táctiles**, apagado por defecto): arrastrar
+  gira la cámara solo en la mitad derecha de la pantalla, así un toque errado cerca de la palanca no la mueve
+- Un toque en el centro de la palanca o en el SELECT de la cruceta de menú, en el editor, lo elige para una imagen
+  propia
 - **Palanca flotante**, desactivada por defecto: engranaje, **Controles**, **Controles táctiles**, **Palanca flotante**. La
   palanca de movimiento aparece donde apoyas el pulgar cerca de ella, y vuelve a su lugar al levantarlo
 - **Ocultar los controles:** mantén un dedo quieto un momento en un lugar vacío (sin botón) y se ocultan todos los
@@ -224,7 +261,7 @@ propio juego, tan nítidos como el resto de la imagen: no hay nada que instalar 
 de EE. UU. la pantalla táctil arranca oculta; su botón (a la izquierda) la vuelve a mostrar para lo que todavía se usa con
 el dedo: el mapa del pueblo, el mapa del mundo, el teclado y la creación del personaje. Mientras un menú del juego está en
 la pantalla de arriba, un botón táctil con la mitad de su imagen o más encima del menú se dibuja tenue para que el menú
-se lea entero (sigue funcionando y no se mueve), y en una pantalla 4:3 el engranaje espera en la esquina de abajo a la izquierda. En una pantalla más ancha que la de
+se lea entero (sigue funcionando y no se mueve); el engranaje queda donde está. En una pantalla más ancha que la de
 la consola, esos menús se recortan al ancho de la pantalla de la consola, como los recortaba la consola. Las placas de
 la pantalla táctil y las preguntas de sí o no van al lado de las cajas, las listas y las fichas en vez de encima. En la
 cacería no cambia nada. Está basado en el modo de
@@ -509,7 +546,7 @@ guarda su partida de la misma forma (`MHGU save`), así una sola carpeta sincron
 
 ## Mods y trucos
 
-**Mods:** engranaje, **Mods y trucos**, **Mods**, **Agregar un mod (.zip)** o **Agregar un mod (carpeta)**. Un mod para el juego de América
+**Mods:** engranaje, **Mods y trucos**, **Mods**, **Agregar un mod** (su .zip) o **Agregar un mod (carpeta)**. Un mod para el juego de América
 tiene una carpeta `romfs`, una `exefs` o las dos; también sirve la forma de los emuladores, con una carpeta
 `0004000000126300` adentro. La página lista los mods en orden de carga: toca uno para activarlo o desactivarlo, moverlo o
 quitarlo. Si dos mods cambian el mismo archivo, gana el que está más abajo en la lista. Guarda y reinicia el juego: los mods
@@ -520,7 +557,7 @@ ese mod en la carpeta `mods`). La fila **Librería de código** dice si tu libre
 activos. Si el juego se detiene al arrancar después de cambiar los mods, su pantalla de error ofrece **Mods del último
 inicio**.
 
-**Trucos:** engranaje, **Mods y trucos**, **Trucos**, **Importar trucos (.txt)**, y elige un `.txt` de códigos para MH4U de América 1.3.0 en el
+**Trucos:** engranaje, **Mods y trucos**, **Trucos**, **Agregar trucos**, y elige un `.txt` de códigos para MH4U de América 1.3.0 en el
 formato de Azahar y Citra (cada truco es su `[Nombre]` y sus líneas de código). Entran desactivados: activa los que quieras
 y guarda. Funcionan al momento. Guarda tu partida antes de probar uno, y úsalos en línea solo si todos en la sala están de
 acuerdo. Un truco que escribe en el código del juego no hace nada por sí solo en este port, cuyo código está traducido de
@@ -536,14 +573,29 @@ apagarlos, el efecto dura hasta la próxima misión.
 
 Los packs de texturas hechos para Azahar y Citra funcionan tal como vienen: pon la carpeta del pack (la que tiene los archivos
 `tex1_...png` y, si lo trae, `pack.json`) dentro de una carpeta `textures` en la carpeta de tu juego, junto al `.cci` y a
-`mods`. También sirve la forma de Azahar, `textures/0004000000126300/...`. Solo se usan las texturas PNG (los archivos DDS y
+`mods`. También sirve la forma de Azahar, `textures/0004000000126300/...`. Se usan las texturas PNG y KTX2 (los archivos DDS y
 KTX se omiten). Cada textura se lee y se decodifica en segundo plano la primera vez que el juego la dibuja (mientras tanto se ve la del
 juego), y cada textura HD ocupa memoria del teléfono (una de 1024x1024 son 4 MB). El pack tiene una parte de la memoria que la
-app da a las texturas, según la RAM de tu teléfono: pasada esa parte, algunas texturas quedan como las del juego, y las de las
+app da a las texturas, según la memoria libre de tu teléfono al abrir el juego (nunca menos que antes): pasada esa parte, algunas texturas quedan como las del juego, y las de las
 zonas que dejaste se liberan al rato. Si un pack entero es mucho para tu teléfono, engranaje, **Mods y trucos**, **Packs de
 texturas**, **Tamaño de las texturas del pack: Mitad** dibuja las texturas grandes del pack a la mitad de ancho y de alto (un
 cuarto de la memoria; se aplica al volver a abrir el juego). El registro dice cuántas texturas salieron del pack y cuánta
 memoria ocupan. Esta app no trae ningún pack: consíguelo de su autor.
+
+#### Packs en KTX2
+
+Un pack también puede traer archivos `.ktx2`, con los mismos nombres que sus `.png` (`tex1_..._12.ktx2`); si una textura tiene
+los dos, se usa el `.ktx2`, así el pack puede conservar sus PNG para las versiones viejas. Los KTX2 ocupan menos y se leen más
+rápido. Se leen: ETC1S y UASTC de Basis Universal, y archivos que ya vienen en RGBA8 o BC7. En el teléfono, por ahora, ocupan la
+misma memoria que un PNG (se convierten a RGBA8). Para convertir un pack tú mismo, con tu propia copia y tus herramientas:
+
+- toktx (KTX-Software): `toktx --t2 --encode uastc --zcmp 18 --lower_left_maps_to_s0t0 tex1_..._12.ktx2 tex1_..._12.png`
+  (`--encode etc1s` hace archivos más chicos, un poco menos nítidos).
+- basisu (Basis Universal): `basisu -uastc -ktx2 tex1_..._12.png` (`-etc1s` para ETC1S). No agregues `-y_flip`: basisu no lo
+  anota en el archivo y la textura se vería al revés.
+
+Conserva los nombres: cada textura se encuentra por su nombre. Un archivo que la app no puede leer queda como la textura del
+juego, y el registro dice por qué.
 
 ### Comodidades
 
@@ -671,19 +723,39 @@ tus amigos:
 - **General:** todos los del chat en línea que juegan MH4U.
 - **Global:** todos los del chat en línea de los dos ports, MHGU y MH4U.
 
-**Los dos chats empiezan apagados.** Hasta que actives uno, arriba en la página **Chat**, no se ve nada del chat sobre el
+**Los dos chats empiezan apagados.** Hasta que actives uno, en la página **Chat** (debajo de las líneas), no se ve nada del chat sobre el
 juego: **Chat de la sala** activa el de la sala (sin relés) y **Chat en línea** Global, General y amigos. Con el chat de la
 sala apagado, los mensajes propios de la sala se ven como antes: **Mensajes de la sala sobre el juego** avisa quién entra y
 sale, y lo que dice alguien.
 
+La página **Chat** se abre como una ventana de chat sobre el juego, más chica y que deja ver lo de atrás, solo con el
+chat: su encabezado tiene una pestaña por cada chat que hay ahora (Sala, General, Global, Amigos), cada una con las líneas que
+no leíste (en **Amigos** las flechas pasan de un amigo a otro), el engranaje abre las opciones del chat (los
+interruptores, **Amigos**, las líneas sobre el juego, el botón del chat...) y la X la cierra; debajo, el texto para
+escribir y **Enviar**, y las líneas, la más nueva primero, cada una sobre una tira oscura para que se lea sobre pasto o
+nieve. Arrastra su parte de arriba para moverla y su esquina de abajo a la derecha para agrandarla o achicarla; queda
+donde la dejes (opciones del chat: **Ventana del chat a su lugar**). Mientras el teclado del teléfono está abierto, la
+ventana sube arriba de todo de la pantalla y usa el alto que deja el teclado: el texto, **Enviar** y las últimas líneas
+quedan a la vista. El botón del chat se mueve y se cambia de tamaño en **Personalizar controles y HUD**, como cualquier
+botón, y queda guardado con el perfil de controles.
+
+Jugando con el dedo, el juego sigue debajo de la ventana del chat y los controles táctiles funcionan alrededor: solo
+los controles de la ventana toman el dedo, y tocar su parte vacía mueve la palanca o la cámara. Mientras escribes,
+tocar fuera de la ventana la cierra junto con el teclado. Un menú del juego la esconde hasta que se cierra, el botón
+de ajustes va al menú y el botón del chat la cierra. En las opciones del chat, **Fondo de la ventana**, **Fondo de
+los mensajes** y **Fondo del campo de escribir** van de 0 a 100 %; el texto queda siempre sólido.
+En PC la ventana del chat flota igual, con el ratón: un clic en sus controles es de la ventana, en cualquier otro lado
+del juego; las teclas son del juego salvo mientras escribes en ella, y **F1** va al menú.
+
 Un botón redondo del chat aparece sobre el juego mientras el chat en línea está activo, o el chat de la sala está activo y
 estás en una sala. Un toque abre el chat, arrastrarlo lo mueve, y el número que tiene cuenta las líneas que no leíste. En
 **Chat**, **Opciones**, **Botón del chat** lo apaga y **Tamaño del botón del chat** cambia su tamaño. Las líneas nuevas se
-ven unos segundos a su lado, también las de la sala (con el chat de la sala activo): **Líneas sobre el juego** elige
+ven 8 segundos a su lado, hasta cuatro, cada chat con su color y el nombre de cada jugador con el suyo (las tuyas no;
+se van al abrirse un menú), también las de la sala (con el chat de la sala activo): **Líneas sobre el juego** elige
 **Apagado**, **Sala y amigos** (lo predeterminado) o **Todos**. **Mensajes de la sala sobre el juego** sigue avisando quién
 entra y sale de la sala.
 
-**El chat en línea** (Global, General y amigos) está apagado hasta que lo activas con **Chat en línea**, arriba en la página
+**El chat en línea** (Global, General y amigos) está apagado hasta que lo activas con **Chat en línea**, en la página
 **Chat**. La primera vez, una pregunta lo explica:
 
 - Se conecta a relés públicos de Nostr: `relay.damus.io`, `nos.lol` y `relay.primal.net`, u otros que elijas en **Relés**.
@@ -743,17 +815,289 @@ Usa el nombre del APK que descargaste. Es opcional: el juego anda igual sin esto
 | El juego se cierra solo | Cierra otras apps: suele ser falta de memoria. Después comparte el registro |
 | Pantalla negra al arrancar, con la música del menú sonando (algunas GPU Mali viejas) | Cuando los gráficos del teléfono rechazan la forma habitual de mostrar la imagen, la app ahora pasa sola a otra. Si sigue negra, adjunta a un issue el `log.txt` de `Android/data/com.mh4u.native/files` (lo copia un explorador de archivos o una PC) |
 
-MH4U para Android es solo para Android: este proyecto no tiene versión de PC. Un port de MH4U para PC que encuentres en
-otro lado es otro proyecto, hecho por otras personas.
+En una PC, mira [Si algo falla en PC](#si-algo-falla-en-pc).
 
 Si sigue fallando, pregunta en el [Discord](https://discord.gg/sk5xEjEMwF) o abre un [issue](../../issues) con el modelo de tu dispositivo, la
 versión de la app y el registro. Si el juego se cierra por un
 error, una pantalla te deja compartirlo; si no, está en el engranaje, **Sistema**, **Tu partida**, **Compartir registro**. No
 adjuntes archivos del juego.
 
+## PC (Windows)
+
+La misma carpeta del juego se juega en una PC con Windows: `MH4U.exe` corre tu juego de forma nativa, con el mismo
+runtime, los mismos ajustes y las mismas funciones que la app, y lo que agrega una PC: teclado y ratón, una ventana de
+cualquier tamaño, muchos cuadros por segundo y Discord.
+
+La descarga trae solo el programa: el código del juego (`mh4u_code_native.dll` y `mh4u_code_native.id`) se arma una vez
+con tu propia copia, en el mismo programa: ábrelo, elige tu carpeta del juego y toca **Crear el código del juego en esta
+PC** ([paso 3 en PC](#paso-3-en-pc-crear-el-código-del-juego)). No hace falta nada más: ni Python ni un compilador propios.
+
+### Qué hace en PC
+
+- **Teclado y ratón:** WASD mueve, el ratón gira la cámara, el clic izquierdo ataca (X) y F es el botón de acción (A):
+  habla, abre, recolecta y recoge. El clic derecho también es A, pero solo con el arma afuera, en un menú o una charla, o
+  fuera del pueblo y de las misiones: en el pueblo nunca habla, recolecta ni talla por error. Un toque de Alt fija la
+  cámara en el monstruo. Cada tecla se puede cambiar, hasta tres por botón, con los botones del ratón. En los menús del
+  juego WASD mueve el cursor. Ver [Controles en PC](#controles-en-pc)
+- **Escribe con tu teclado:** el nombre de tu cazador, y una línea del chat en una sala o un hub con **/**
+- **F2 muestra la lista de los controles** sobre el juego, con tus propias teclas, y el juego espera mientras está abierta
+- **La pantalla táctil al lado del juego:** la pantalla de abajo de la 3DS se ve al lado de la de arriba, y el ratón es tu
+  dedo en ella. Puede ir debajo de la de arriba, en una esquina o en una ventana propia; el **Modo de pantalla única**
+  funciona como en la app
+- **Cualquier ventana:** pantalla completa sin bordes a la resolución de tu pantalla de fábrica, una ventana de cualquier
+  tamaño o pantalla completa exclusiva. **F11** o **Alt+Enter** cambia. Arrastra un borde de la ventana y la imagen toma
+  su forma nueva al instante, de 5:3 a ultra ancha, con el HUD en sus bordes (o sobre el 16:9, 21:9 o 32:9 del centro:
+  **Anclaje del HUD**)
+- **Cuadros por segundo:** límites de hasta 240, o **Sin límite**, con **VSync** encendido o apagado; el juego mantiene su
+  velocidad normal a cualquier cantidad de cuadros. **Mostrar FPS y datos de la PC** muestra los cuadros por segundo, y
+  con **Completo** el uso de la GPU y de la CPU
+- **Las mismas opciones de imagen que la app:** resolución 3D, modo gama baja, el filtro de color, el filtro PS1, Ladrillo,
+  la generación de cuadros, FSR 1, y un **Filtro de escalado** para la imagen escalada (Suave, Píxeles nítidos, Vecino
+  más cercano o FSR 1)
+- **Un mando:** conéctalo y juega. START y SELECT juntos abren los ajustes; un clic del stick derecho fija la cámara en el
+  monstruo; los menús pueden mostrar los botones de tu mando (**Íconos de los botones**). Un mando con giroscopio puede
+  apuntar arcos y ballestas, como en la app (**Controles**, **Apuntar con giroscopio**)
+- **Discord:** con la app de Discord abierta en la misma PC, tu perfil muestra qué estás haciendo: los menús, el pueblo, o
+  los monstruos que cazas, el mapa y la zona, tu arma, y el nombre y el RC de tu cazador. **F1**, **Multijugador**,
+  **Discord** lo apaga, o deja afuera tu nombre
+- **Partidas, mods, trucos, DLC y misiones de evento, hubs y chat** funcionan como en la app, desde el mismo menú **F1**:
+  ver [Partidas en PC](#partidas-en-pc), [Mods y trucos en PC](#mods-y-trucos-en-pc) y
+  [Multijugador en PC](#multijugador-en-pc)
+- **Verificar archivos del juego** lee tu juego y tu actualización y dice qué está mal (**F1**, **Sistema**, **Tu partida**)
+- Si el juego se cierra por un error, una ventana te dice qué pasó y abre la carpeta del registro
+- El juego se detiene mientras su ventana está minimizada, y sigue donde estaba al volver a abrirla (**F1**,
+  **Sistema**, **Pausar en segundo plano**)
+- **Una versión nueva:** como mucho una vez al día el programa le pregunta a GitHub cuál es la última versión (no se
+  envía nada más) y te avisa al arrancar la próxima vez cuando hay una nueva; nunca descarga nada por su cuenta. **F1**,
+  **Sistema**, **Buscar actualizaciones** lo apaga
+
+### ¿Qué tal anda en PC?
+
+Medido en la PC del desarrollador (Ryzen 5 3600XT, Radeon RX 6800 XT), sin bordes en un monitor de 3440x1440 y 160 Hz,
+con la imagen 3D a 6x:
+
+| Dónde | Ajustes | Cuadros por segundo |
+|---|---|---|
+| La aldea | Sin límite, VSync apagado | de 293 a 315 |
+| El salón | Sin límite, VSync apagado | de 408 a 420 |
+| Una misión | Sin límite, VSync apagado | de 305 a 310 |
+| Aldea, salón y misión | Límite de 60, 120, 144 o 240 | ese límite, firme |
+| Aldea, salón y misión | VSync encendido, a 160 Hz | 160 |
+
+Todavía no se midió con gráficos integrados ni en una PC modesta. Si pruebas una, un [issue](../../issues) con tu
+procesador, tu tarjeta gráfica y los cuadros por segundo ayuda.
+
+### Qué necesitas en PC
+
+- **Windows 10 u 11,** de 64 bits.
+- **Una tarjeta gráfica con Vulkan,** con su controlador al día. La ventana se dibuja con OpenGL, que todo controlador con
+  Vulkan para Windows también trae.
+- **8 GB de RAM** recomendados. El juego en sí usa menos de 1 GB.
+- **Espacio libre:** unos 4,3 GB para tu carpeta del juego, unos 2 GB más mientras se crea el código del juego (quedan
+  unos 300 MB, las herramientas, que después se pueden borrar), y unos 200 MB para el programa y sus cachés.
+- **Conexión a internet** la primera vez que se crea el código del juego: sus herramientas pesan unos 90 MB.
+- **Tu propia copia del juego, descifrada:** la misma que para la app, Monster Hunter 4 Ultimate de EE. UU. como archivo
+  `.3ds` o `.cci` y su **actualización 1.3.0** como archivo `.cia`.
+
+### Instalación en PC
+
+Lo haces una sola vez.
+
+#### Paso 1 en PC: Pon tus archivos en una carpeta
+
+La misma carpeta que para la app ([paso 1](#paso-1-pon-tus-archivos-en-una-carpeta)): tu juego y su actualización juntos,
+por ejemplo en `C:\MH4U`. Si también usas la app, la misma carpeta sirve para las dos, y cada una guarda en ella su propio
+código del juego.
+
+#### Paso 2 en PC: Instálalo
+
+No hay instalador: el programa es una carpeta.
+
+1. Descarga `MH4U-PC-<versión>.zip` de [Releases](../../releases/latest) y descomprímelo entero en una carpeta tuya, como
+   `C:\Juegos` (abierto desde dentro del zip, `MH4U.exe` no arranca). No en Archivos de programa: el programa guarda sus
+   ajustes, cachés, registro y las herramientas que crean el código del juego en su propia carpeta, y Windows no lo deja
+   escribir ahí.
+2. Abre `MH4U.exe`. Windows puede decir que no conoce el programa, porque no está firmado: **Más información**,
+   **Ejecutar de todas formas**.
+3. La primera vez, una pantalla pide tu carpeta del juego: **Elegir carpeta**, y elígela. El programa la revisa y dice
+   exactamente qué falta si algo está mal. Recuerda la carpeta.
+
+#### Paso 3 en PC: Crear el código del juego
+
+El programa no trae código del juego, así que arma el tuyo con tu propia copia, una vez, en tu PC. No se envía nada a
+ningún lado.
+
+Cuando tu carpeta tiene todo menos el código del juego, la pantalla dice que falta `mh4u_code_native.dll`: toca **Crear
+el código del juego en esta PC** y después **Crear**.
+
+- La primera vez descarga sus herramientas, unos 90 MB: Python de python.org y Zig, un compilador de C, de PyPI, o de
+  ziglang.org, el sitio de Zig, cuando PyPI no responde. Las dos son software libre, se verifican con su SHA-256 antes de
+  usarlas, y nunca se descarga nada del juego.
+- Necesita unos 2 GB libres en el disco donde está `MH4U.exe` mientras trabaja. Al terminar quedan solo las herramientas
+  (unos 300 MB, en la carpeta `builder` al lado de `MH4U.exe`), y **Borrar las herramientas** también las quita.
+- Tarda de unos 10 a 40 minutos, según la PC (13 minutos en la del desarrollador, con un procesador de 6 núcleos). Usa
+  todos los núcleos del procesador menos uno, con prioridad baja, así que puedes usar la PC mientras tanto.
+- **Cancelar** lo detiene, y también cerrar la ventana o reiniciar la PC: lo que hizo se guarda, y **Seguir** continúa
+  desde ahí. **Empezar de cero** olvida una creación a medias y empieza desde el principio.
+- Un mod de código en la carpeta `mods` de tu carpeta (el de una sola pantalla, por ejemplo) entra en el código del juego,
+  como en la app: **Cambiar los mods de código** elige cuáles.
+
+Cuando dice que el código del juego está listo, tu carpeta tiene dos archivos nuevos, `mh4u_code_native.dll` y
+`mh4u_code_native.id`, y **Jugar** arranca el juego. **Esos archivos están hechos con tu juego: guárdalos para ti y no los
+compartas.**
+
+Para elegir otra carpeta más adelante: **F1**, **Sistema**, **Tu partida**, **Carpeta del juego**. Para volver a crear el
+código del juego: **F1**, **Sistema**, **Código del juego**, **Crear el código del juego** (el juego pregunta, se cierra y
+abre el creador).
+
+El zip trae una carpeta con los archivos del programa y nada del juego:
+
+- `MH4U.exe`, y `SDL3.dll` a su lado
+- `zigcc.exe` y `builder_tools.zip`: lo que usa el creador del programa para armar el código del juego
+- `code_library_id.txt`: el id del código del juego que necesita esta versión. El `mh4u_code_native.id` de tu carpeta tiene
+  que decir lo mismo
+- `cheats`: los trucos opcionales para comer y beber más rápido, que el programa suma a tus trucos, apagados
+- `licenses`: el aviso legal y las licencias, también en **F1**, **Créditos y licencias**, **Licencias**
+- `README.txt`: una guía corta
+
+### Controles en PC
+
+- **Teclado y ratón:** WASD mueve, Shift izquierdo camina, I, J, K, L giran la cámara. El clic izquierdo, U o X es X; F, O
+  o el clic derecho es A (el clic derecho solo con el arma afuera, en un menú o una charla, o fuera del pueblo y de las
+  misiones); Espacio es B, y Esc también; R, Y o el botón del medio es Y; Q es L, E es R; Tab y T son ZL y ZR; Enter es
+  START, Retroceso SELECT, y las flechas son la cruceta. Un toque de Alt fija la cámara en el monstruo. La rueda del ratón
+  mueve la barra de objetos. Haz clic en la ventana para girar la cámara con el ratón; Esc suelta el ratón.
+- **Las teclas propias del programa:** **F1** los ajustes, **F2** la lista de los controles, **F11** o **Alt+Enter**
+  pantalla completa o ventana, **1** a **4** los objetos de los atajos de objetos de la pantalla táctil, **G** los Gestos
+  del pueblo, y **/** el chat en una sala o un hub.
+- **Cada tecla se puede cambiar,** hasta tres por botón, con los botones del ratón: **F1**, **Controles**, **Teclado y
+  ratón**, **Asignación de teclas**. Alt, Ctrl y la tecla de Windows solo presionan su botón si se tocan solas, así que
+  Alt+Tab y Alt+Enter no lo hacen. Ahí también se pueden invertir los ejes del ratón.
+- **La pantalla táctil:** un clic en ella es un toque. En una PC con pantalla táctil, los controles táctiles aparecen
+  cuando la tocas.
+- **El menú de ajustes (F1)** funciona con el ratón, con el teclado (las flechas, Enter, Esc; Tab y Re Pág/Av Pág cambian
+  de sección, Ctrl+S guarda) o con un mando. Un clic fuera de él lo cierra, y pregunta antes si algo no está guardado.
+- **El HUD:** **F1**, **Controles**, **Personalizar controles y HUD**: arrastra cualquier parte con el ratón, la rueda
+  cambia su tamaño, **Ocultar** también quita de la pantalla las partes propias del juego, y Esc cancela.
+- **Mando:** conéctalo y juega. START y SELECT juntos abren los ajustes. Si el juego no lee bien el tuyo: **Controles**,
+  **Mando**, **Mapear un mando**.
+
+### Gráficos y cuadros por segundo en PC
+
+En **F1**, **Gráficos y audio**: **Límite de FPS** (de 15 a 240, o **Sin límite**; 60 de fábrica), la resolución 3D, el
+**Filtro de escalado** (Suave, Píxeles nítidos, Vecino más cercano o FSR 1), el modo gama baja y los filtros como en la
+app. En su **Pantalla y HUD**: **Modo de ventana** (Sin bordes, Ventana o Pantalla completa), **Resolución de pantalla**,
+**VSync** (encendido de fábrica), **Anclaje del HUD**, **Tamaño del HUD**, **Mostrar FPS y datos de la PC** (Básico o
+Completo), el modo de pantalla única y la **Disposición** de la pantalla táctil (Lado a lado, la de fábrica en PC;
+Apiladas; En una esquina; En su propia ventana). En su **Color**: **Salida HDR** (apagada de fábrica; con el HDR de
+Windows activado para la pantalla). En su **Avanzado**: **GPU**, en una PC con dos tarjetas gráficas (de fábrica, una
+dedicada). Los mismos lugares que en MHGU para PC.
+
+- **Sin límite** necesita **VSync** apagado: con VSync encendido, la frecuencia del monitor es el máximo. Con VSync
+  encendido y un límite que divide la frecuencia del monitor (60 en 120 o 240 Hz, 30 en 60 Hz), cada cuadro se ve el
+  mismo tiempo.
+- **Generación de cuadros** necesita VSync y un límite de la mitad de la frecuencia del monitor o menos, como en un
+  teléfono.
+- La **Salida HDR** (Gráficos y audio > Color) necesita el HDR de Windows activado para la pantalla (Configuración >
+  Pantalla > Usar HDR) y reiniciar; el juego dibuja una imagen común, así que el HDR reparte su luz y no agrega detalle.
+- La ventana dice **Iniciando el juego...** hasta la primera imagen del juego. El primer arranque tarda un poco más
+  mientras el controlador de la tarjeta gráfica prepara sus shaders; los siguientes arrancan rápido.
+- En una laptop con gráficos integrados, baja la **Resolución 3D** o enciende el **Modo gama baja**; en una laptop con dos
+  tarjetas gráficas, revisa que **GPU** muestre la dedicada.
+
+### Partidas en PC
+
+Tu partida está en `%APPDATA%\MH4U` (escríbelo en la barra de direcciones del Explorador de archivos), así una versión
+nueva descomprimida en otro lado la encuentra. Desde **F1**, **Sistema**, **Tu partida**, como en la app
+([Importar tu partida](#importar-tu-partida), [Exportar tu partida](#exportar-tu-partida),
+[Elegir dónde se guarda tu partida](#elegir-dónde-se-guarda-tu-partida)):
+
+- **Importar partida:** elige una carpeta: la de un emulador (la carpeta de usuario de Azahar o de Citra, o su `sdmc`), una
+  copia de Checkpoint o JKSM, o una carpeta exportada desde la app. El juego encuentra la partida en ella, dice qué
+  encontró y se reinicia con ella; la partida que reemplaza queda en `%APPDATA%\MH4U\save_backups`.
+- **Exportar partida:** elige una carpeta, y se crea en ella una carpeta `MH4U save <fecha>` con `sdmc` como lo ordena
+  Azahar: cópiala sobre el `sdmc` del emulador, o impórtala en la app.
+- **Carpeta de partidas:** guarda la partida en otra carpeta, como una que una app de sincronización comparte con tus otros
+  dispositivos. Nada se pisa sin preguntar: la partida que no sigue queda en `save_backups`.
+- **Importar DLC y misiones de evento** (**F1**, **Mods y trucos**, **DLC y misiones de evento**): el DLC que instalaste en
+  Azahar, o un `.cia` descifrado tuyo, y tus misiones de evento, como en la app
+  ([Importar DLC y misiones de evento](#importar-dlc-y-misiones-de-evento)). **DLC en todas las partidas** funciona como
+  en la app, y antes copia tu partida a `save_backups`.
+
+### Mods y trucos en PC
+
+Como en la app ([Mods y trucos](#mods-y-trucos)), en **F1**, **Mods y trucos**: **Agregar un mod** (su .zip) o **Agregar un
+mod (carpeta)**, **Agregar trucos**, y los mods de la carpeta `mods` de tu carpeta del juego. Los packs de texturas
+HD van en la carpeta `textures` de tu carpeta del juego: **Packs de texturas**, **Abrir la carpeta textures** la abre en
+el Explorador de archivos. Un mod con carpeta `exefs` necesita el código del juego creado con él: **F1**, **Sistema**,
+**Código del juego**, **Crear el código del juego**, y **Cambiar los mods de código** en la página del creador.
+
+### Multijugador en PC
+
+Los hubs por internet, las salas en tu red y el chat funcionan como en la app, con los mismos ajustes en **F1**,
+**Multijugador** ([Jugar con otros](#jugar-con-otros)). Una PC y un teléfono juegan en el mismo hub.
+
+- **/** abre el chat para escribir una línea (**Controles**, **Teclado y ratón**, **Asignación de teclas**, **Tecla del chat** la cambia).
+- Cuando creas un hub al que otros entran directo (con emuladores, o en tu red), el Firewall de Windows pregunta la primera
+  vez si MH4U puede usar la red: permítelo, o nadie podrá encontrar ni entrar a tu hub. Solo por el servidor de hubs no
+  pregunta.
+
+### Dónde se guarda cada cosa en PC
+
+| Qué | Dónde |
+|---|---|
+| Ajustes, la carpeta que elegiste, el registro | Al lado de `MH4U.exe`: `mh4u-app.ini`, `game_folder.txt`, `log.txt` (las sesiones anteriores: `log_prev.txt`, `log_prev2.txt`), y `notices.txt` (cuándo buscó una versión nueva por última vez) |
+| Los archivos chicos del juego, los ajustes propios del juego, trucos, mods y DLC que agregaste | Al lado de `MH4U.exe`: `game` (leídos de tu juego y tu actualización), `user` (`mh4u.ini`, `cheats`, `load/mods`, y el DLC dentro de `sdmc`) |
+| La caché de shaders | `%LOCALAPPDATA%\MH4U\cache`: **F1**, **Gráficos y audio**, **Avanzado**, **Borrar la caché de shaders** la vacía |
+| Las herramientas que crean el código del juego, y su registro | Al lado de `MH4U.exe`: `builder` (Python y Zig; mientras crea, también su carpeta de trabajo), `builder_log.txt` |
+| Tu partida | `%APPDATA%\MH4U` (o la carpeta que elegiste en **Carpeta de partidas**). Una partida o misiones de evento que importas esperan en `save_import` y `save_import_extra` al lado de `MH4U.exe` hasta que el juego se reinicia |
+| Copias de las partidas que una importación o un cambio reemplazó | `%APPDATA%\MH4U\save_backups` |
+| Tu juego, el código del juego, los mods y packs HD que pongas ahí | Tu carpeta del juego: `mh4u_code_native.dll` y `.id`, `mods`, `textures` |
+
+### Actualizar la versión de PC
+
+1. Descomprime la versión nueva y copia sus archivos sobre los viejos. Tus ajustes y la carpeta que elegiste quedan, y tu
+   partida queda de todas formas.
+2. Si la versión nueva necesita un código del juego nuevo, el juego dice "Esta mh4u_code_native.dll es de otra versión"
+   al arrancar: toca **Crear el código del juego en esta PC** y después **Crear** (las herramientas ya están).
+
+### Desinstalar la versión de PC
+
+- Borra la carpeta del programa, la que tiene `MH4U.exe`. Sus ajustes, cachés, registro, los trucos, mods y DLC que
+  agregaste y las herramientas del creador (`builder`) se van con ella.
+- Tu partida queda en `%APPDATA%\MH4U`. Borra esa carpeta también solo si quieres que desaparezca, y guarda una copia
+  antes.
+- La caché de shaders queda en `%LOCALAPPDATA%\MH4U`: borra esa carpeta también.
+- Tu carpeta del juego es tuya: guárdala para la app, o bórrala.
+- No se instaló nada más: no hubo instalador, y el programa no guarda ajustes en el registro de Windows. Si permitiste MH4U
+  en el Firewall de Windows, esa regla queda hasta que la quites en Seguridad de Windows.
+
+### Si algo falla en PC
+
+| Problema | Qué hacer |
+|---|---|
+| "No se encontró SDL3.dll" | Descomprime todo el zip en una carpeta primero: `MH4U.exe` no arranca desde dentro del zip |
+| El Control inteligente de aplicaciones lo bloqueó | Bloquea los programas que no están firmados, y `MH4U.exe` no lo está: solo corre con el Control inteligente de aplicaciones apagado (Seguridad de Windows, **Control de aplicaciones y navegador**). Piénsalo antes: en muchas versiones de Windows no se puede volver a encender sin reinstalar Windows |
+| "La librería de código del juego (mh4u_code_native.dll) no está en la carpeta" | La descarga no la incluye: toca **Crear el código del juego en esta PC** en esa pantalla ([paso 3 en PC](#paso-3-en-pc-crear-el-código-del-juego)) |
+| "Esta mh4u_code_native.dll es de otra versión" | Se hizo para otra versión, o para la app: toca **Crear el código del juego en esta PC**, y se vuelve a crear para esta |
+| El creador no puede descargar sus herramientas | Revisa la conexión a internet y toca **Seguir**: la descarga continúa donde quedó. Si PyPI no responde, el creador baja Zig de ziglang.org solo. Si los dos están bloqueados, otra red, o un DNS como 1.1.1.1, lo resuelve |
+| Tu antivirus avisa, bloquea o borra `zig.exe` o `python.exe` en la carpeta `builder` | Son el Zig y el Python oficiales, verificados con su SHA-256 antes de correr. Permite la carpeta `builder` al lado de `MH4U.exe` y toca **Seguir** |
+| El creador dice que no hay espacio | Necesita unos 2 GB libres en el disco donde está `MH4U.exe`. Libera espacio, o mueve la carpeta del programa a otro disco, y toca **Seguir** |
+| El creador se detuvo y **Seguir** vuelve a fallar | **Empezar de cero** empieza desde el principio. Si sigue fallando, adjunta `builder_log.txt` (al lado de `MH4U.exe`) a un [issue](../../issues) |
+| Pide la carpeta del juego en cada arranque | Windows no lo deja escribir en su carpeta: sácalo de Archivos de programa |
+| Se cierra al arrancar, o la ventana queda en negro | Actualiza el controlador de tu tarjeta gráfica. Hasta la primera imagen del juego la ventana dice **Iniciando el juego...**; el primer arranque tarda un poco más mientras se preparan los shaders |
+| El ratón no gira la cámara | Haz clic en la ventana primero. Esc suelta el ratón |
+| Va lento | Baja la **Resolución 3D** o enciende el **Modo gama baja**. En una laptop con dos tarjetas gráficas, revisa que **GPU** muestre la dedicada |
+| No sabes si tus archivos del juego están bien | **F1**, **Sistema**, **Tu partida**, **Verificar archivos del juego**: lee todos los archivos y dice qué está mal y qué hacer |
+
+Si el juego se cierra por un error, una ventana lo dice; **Abrir la carpeta del registro** abre la carpeta con `log.txt`
+(si volviste a abrir el juego después, el de esa sesión es `log_prev.txt`). También está en **F1**, **Sistema**, **Tu
+partida**, **Carpeta del registro**. Adjúntalo a un [issue](../../issues) con el procesador y la tarjeta gráfica de tu PC,
+o pregunta en el [Discord](https://discord.gg/sk5xEjEMwF). No adjuntes archivos del juego.
+
 ## Compilar la app
 
-Para desarrolladores; los jugadores solo necesitan el APK de Releases. En Windows (Git Bash), Linux o macOS, con el SDK de
+Para desarrolladores; los jugadores solo necesitan el APK o el zip de PC de Releases. En Windows (Git Bash), Linux o macOS, con el SDK de
 Android (plataforma 35) y el NDK 27.0.12077973, CMake 3.25 o superior, Ninja, Python 3.10 o superior y un JDK 17:
 
 ```
@@ -763,7 +1107,17 @@ sh scripts/build_apk.sh     # libmain.so, las librerías de hooks, el armado en 
 
 `scripts/android_env.sh` dice dónde se busca cada herramienta. Firma con tu propia clave en `android/keystore.properties` y
 `android/mh4u.keystore`; sin ellas sale un APK de depuración. `app_native/` es la app (SDL3 y Dear ImGui), `android/` su
-parte de Android, y `mh4n/` el runtime y el recompilador (mira [mh4n/README.md](mh4n/README.md)).
+parte de Android, `app_native/pc/` la de PC, y `mh4n/` el runtime y el recompilador (mira [mh4n/README.md](mh4n/README.md)).
+
+La versión de PC, en Git Bash en Windows, con [llvm-mingw](https://github.com/mstorsjo/llvm-mingw/releases) 20241217 para
+x86_64 con la UCRT, CMake 3.25 o superior, Ninja y Python 3.10 o superior:
+
+```
+LLVM_MINGW=C:/llvm-mingw-20241217-ucrt-x86_64 bash scripts/build_pc.sh            # build/pc/MH4U, como la descomprime un jugador
+LLVM_MINGW=C:/llvm-mingw-20241217-ucrt-x86_64 PACK=1 bash scripts/build_pc.sh     # y el zip de la versión con su .sha256
+```
+
+La primera vez compila SDL 3.4.18 para Windows desde su release.
 
 ## Legal
 
@@ -771,7 +1125,7 @@ Este proyecto no está afiliado, respaldado ni patrocinado por la Gran C ni la G
 C. 3DS es una marca de la Gran N.
 
 Este repositorio y sus releases no contienen código del juego, datos del juego, ROMs ni keys. Úsalo solo con una copia del
-juego que te pertenezca. Los pedidos de archivos del juego, keys o archivos `libmh4u_code_native.so` ya hechos se cerrarán.
+juego que te pertenezca. Los pedidos de archivos del juego, keys o archivos `libmh4u_code_native.so` o `mh4u_code_native.dll` ya hechos se cerrarán.
 
 Titulares de derechos: abran un issue para ponerse en contacto.
 
@@ -780,28 +1134,30 @@ Titulares de derechos: abran un issue para ponerse en contacto.
 - El recompilador del juego y el runtime nativo vienen de [MH4UltimateDC](https://github.com/CompaLarios18/MH4UltimateDC),
   de CompaLarios18 y sus colaboradores.
 - Partes del runtime derivan de [Azahar](https://github.com/azahar-emu/azahar) y Citra.
-- Del mismo autor: [MHGU para Android](https://github.com/khorne-hub/gu-native), Monster Hunter Generations Ultimate
-  recompilado para Android de la misma forma.
+- Del mismo autor: [MHGU para Android y PC](https://github.com/khorne-hub/gu-native), Monster Hunter Generations
+  Ultimate recompilado para Android y Windows de la misma forma. Partes de la versión de PC (sus datos de la PC, su lector
+  de zip y Discord Rich Presence) siguen a las del MHGU para PC.
 - El mod de una sola pantalla es de [jM5557](https://github.com/jM5557/mh4u-single-screen-mod), y no es parte de este
   proyecto.
-- El chat, las claves de sala (el generador de contraseñas de sala) y los perfiles de controles siguen los diseños de
-  tabarong (Discord; GitHub: [oliveaglien](https://github.com/oliveaglien)).
-- Las **Comodidades** siguen los [mods MH4U QOL](https://github.com/jM5557/MH4U-QOL-Cheats) de jM5557; este proyecto no
-  tiene código de ellos.
+- Aportaron al desarrollo:
+  - tabarong
+  - Klark231
+  - Alfonso Matador
+  - popzol
+  - BlitzWOLF
+  - jM5557
 - El modo de pantalla única pone los menús donde los pone el modo de una pantalla de
   [Heavenfall](https://github.com/popzol/4u-heavenfall-mod-beta), de popzol y BlitzWOLF (GPL-3.0), sin los cambios que
   Heavenfall le hace al juego.
-- Crear el código del juego en el teléfono fue idea de [Klark231](https://github.com/klark231)
-  ([mh4u-builder](https://github.com/klark231/mh4u-builder)); el creador de la app es una implementación propia de este
-  proyecto. La primera vez descarga Python ([python.org](https://www.python.org), licencia PSF) y [Zig](https://ziglang.org)
-  (MIT; con LLVM, Apache 2.0 con excepciones de LLVM); sus licencias también están en **Licencias** de la app.
-- Alfonso, por la idea de mandar todas las recompensas a la caja de una vez.
+- El creador de la app, que crea el código del juego en el teléfono, la primera vez descarga Python
+  ([python.org](https://www.python.org), licencia PSF) y [Zig](https://ziglang.org) (MIT; con LLVM, Apache 2.0 con
+  excepciones de LLVM); sus licencias también están en **Licencias** de la app.
 - Las librerías que usa este proyecto, con sus licencias, están en [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES). Sus licencias
   también están en la app: engranaje, **Créditos y licencias**, **Licencias**.
 
 ## Descargas oficiales
 
-MH4U para Android es gratis. Las únicas descargas oficiales son los links que da khorne-hub, empezando por las
+MH4U para Android y PC es gratis. Las únicas descargas oficiales son los links que da khorne-hub, empezando por las
 [Releases](https://github.com/khorne-hub/4u-native/releases) de este repositorio. Si la bajaste de otro lado, pagaste por
 ella o tu copia vino con publicidad, no es la oficial. En la app, el botón de GitHub arriba en el menú de opciones, junto a
 **Guardar**, abre esta página en tu navegador, y el botón de Discord a su lado el [Discord](https://discord.gg/sk5xEjEMwF) de la comunidad.
@@ -816,13 +1172,17 @@ Para revisar un APK: `apksigner verify --print-certs MH4U-<versión>.apk` (build
 firmada con otra clave tampoco se puede instalar encima de la app oficial. Desde la 0.1.9 la app también lo revisa: una
 copia firmada con otra clave lo avisa una vez al arrancar.
 
+La versión de PC es el zip `MH4U-PC-<versión>.zip`, con su SHA-256 al lado en `MH4U-PC-<versión>.zip.sha256`. Para
+revisar el tuyo, en un Símbolo del sistema: `certutil -hashfile MH4U-PC-<versión>.zip SHA256`, y compáralo con ese
+archivo.
+
 La app también te avisa cuando sale una versión nueva. Como mucho una vez al día le pregunta a GitHub cuál es la última
 versión de este repositorio (no se envía nada más, ni siquiera el modelo del teléfono), y al abrir el juego te ofrece abrir
 su página. Nunca descarga ni instala nada por su cuenta. Engranaje, **Sistema**, **Buscar actualizaciones** lo apaga.
 
 ## Licencia
 
-MH4U para Android es software libre bajo la [Licencia Pública General GNU, versión 3](LICENSE) o (a tu elección) cualquier
+MH4U para Android y PC es software libre bajo la [Licencia Pública General GNU, versión 3](LICENSE) o (a tu elección) cualquier
 versión posterior, como el runtime de MH4UltimateDC sobre el que se construye. Las partes de terceros conservan sus propias
 licencias.
 

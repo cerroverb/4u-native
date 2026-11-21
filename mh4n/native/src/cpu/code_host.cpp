@@ -93,6 +93,22 @@ void ApplyFpscr(u32 fpscr) {
     if (want != fpcr) {
         asm volatile("msr fpcr, %0" : : "r"(want));
     }
+#elif defined(__x86_64__) && (defined(__clang__) || defined(__GNUC__))
+    // (x86-64, the PC app: the same in MXCSR's rounding control and FTZ/DAZ, and the x87 control word's rounding control,
+    // each written only when it changes; the C library's fesetround wrote both every time, 2 % of the game's thread)
+    static constexpr unsigned kRc[4] = {0u, 2u, 1u, 3u};  // VFP RMode (nearest, up, down, zero) -> x86's RC
+    const unsigned rc = kRc[(fpscr >> 22) & 3];
+    const unsigned csr = _mm_getcsr();
+    const unsigned want = (csr & ~0xE040u) | (rc << 13) | ((fpscr & 0x01000000u) != 0 ? 0x8040u : 0u);
+    if (want != csr) {
+        _mm_setcsr(want);
+    }
+    unsigned short cw = 0;
+    asm volatile("fnstcw %0" : "=m"(cw));
+    const unsigned short want_cw = static_cast<unsigned short>((cw & ~0x0C00u) | (rc << 10));
+    if (want_cw != cw) {
+        asm volatile("fldcw %0" : : "m"(want_cw));
+    }
 #else
     rc_apply_rounding(fpscr);
 #endif

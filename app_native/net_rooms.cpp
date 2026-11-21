@@ -6,10 +6,16 @@
 #include "net_lan.h"
 
 #include <SDL3/SDL.h>
+#ifdef _WIN32  // (the PC: the network's addresses from Windows' adapters)
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <iphlpapi.h>
+#else
 #include <arpa/inet.h>
 #include <ifaddrs.h>
 #include <net/if.h>
 #include <netinet/in.h>
+#endif
 
 #include <algorithm>
 #include <cstdio>
@@ -220,6 +226,31 @@ std::vector<std::string> net_local_addresses() {
     if (when && now - when < 3000) return cached;  // (asked each frame the tab shows)
     when = now;
     cached.clear();
+#ifdef _WIN32
+    // (the adapters that are up, their IPv4 unicast addresses; Wi-Fi first, as on a phone)
+    ULONG size = 16 * 1024;
+    std::vector<unsigned char> buffer(size);
+    auto* adapters = reinterpret_cast<IP_ADAPTER_ADDRESSES*>(buffer.data());
+    ULONG got = GetAdaptersAddresses(AF_INET, GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER,
+                                     nullptr, adapters, &size);
+    if (got == ERROR_BUFFER_OVERFLOW) {
+        buffer.resize(size);
+        adapters = reinterpret_cast<IP_ADAPTER_ADDRESSES*>(buffer.data());
+        got = GetAdaptersAddresses(AF_INET, GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER, nullptr,
+                                   adapters, &size);
+    }
+    if (got != NO_ERROR) return cached;
+    std::vector<std::pair<int, std::string>> found;
+    for (IP_ADAPTER_ADDRESSES* a = adapters; a; a = a->Next) {
+        if (a->OperStatus != IfOperStatusUp || a->IfType == IF_TYPE_SOFTWARE_LOOPBACK) continue;
+        for (IP_ADAPTER_UNICAST_ADDRESS* u = a->FirstUnicastAddress; u; u = u->Next) {
+            if (u->Address.lpSockaddr == nullptr || u->Address.lpSockaddr->sa_family != AF_INET) continue;
+            char text[INET_ADDRSTRLEN] = {};
+            inet_ntop(AF_INET, &reinterpret_cast<sockaddr_in*>(u->Address.lpSockaddr)->sin_addr, text, sizeof text);
+            found.emplace_back(a->IfType == IF_TYPE_IEEE80211 ? 0 : 2, text);
+        }
+    }
+#else
     ifaddrs* list = nullptr;
     if (getifaddrs(&list) != 0) return cached;
     std::vector<std::pair<int, std::string>> found;  // (Wi-Fi first, then the rest: mobile data, a hotspot)
@@ -232,6 +263,7 @@ std::vector<std::string> net_local_addresses() {
         found.emplace_back(name.rfind("wlan", 0) == 0 ? 0 : name.rfind("ap", 0) == 0 || name.rfind("swlan", 0) == 0 ? 1 : 2, text);
     }
     freeifaddrs(list);
+#endif
     std::stable_sort(found.begin(), found.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
     for (const auto& f : found) cached.push_back(f.second);
     return cached;

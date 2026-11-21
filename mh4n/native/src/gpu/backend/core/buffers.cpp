@@ -1,7 +1,9 @@
 // Buffers and ring buffers (N2-26).
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
+#include <string_view>
 
 #include <fmt/format.h>
 
@@ -168,6 +170,11 @@ void Buffer::Invalidate(u64 offset, u64 size) const {
     }
 }
 
+namespace {
+// CreateRing's choice for the buffer it makes (RingInHostMemory below): an Upload buffer in the host's cached memory
+thread_local bool t_ring_in_host_memory = false;
+}  // namespace
+
 Result<std::shared_ptr<Buffer>> Backend::CreateBuffer(const BufferDesc& desc) {
     if (desc.size == 0) {
         return Error{fmt::format("buffer \"{}\": size 0", desc.name)};
@@ -176,7 +183,11 @@ Result<std::shared_ptr<Buffer>> Backend::CreateBuffer(const BufferDesc& desc) {
     plume_desc.size = desc.size;
     switch (desc.heap) {
     case Heap::Device: plume_desc.heapType = ::plume::RenderHeapType::DEFAULT; break;
-    case Heap::Upload: plume_desc.heapType = ::plume::RenderHeapType::UPLOAD; break;
+    case Heap::Upload:
+        // (plume's READBACK heap: the host's cached memory, written through the CPU's caches; UPLOAD: memory the
+        // driver's writes combine into, on a card with a resizable BAR its own memory across the bus)
+        plume_desc.heapType = t_ring_in_host_memory ? ::plume::RenderHeapType::READBACK : ::plume::RenderHeapType::UPLOAD;
+        break;
     case Heap::Readback: plume_desc.heapType = ::plume::RenderHeapType::READBACK; break;
     }
     if (HasUsage(desc.usage, BufferUsage::Vertex)) plume_desc.flags |= ::plume::RenderBufferFlag::VERTEX;
@@ -215,6 +226,10 @@ struct RingState {
     core::RingAllocator allocator;
     // The spans each open recorder committed: one hook per recorder stamps them all when it is submitted.
     std::vector<std::pair<Recorder::Impl*, std::vector<u64>>> pending;
+    // (Commit's fast path: the recorder the last commit went to and its entry's index in `pending`; a draw commits two
+    // or three times, always to the same recorder until it is submitted)
+    Recorder::Impl* last_recorder = nullptr;
+    std::size_t last_index = 0;
     // The backend's completed value as Map last read it: Map tries with it first and asks the device (a driver call:
     // a timeline semaphore's value or the pending fences' status) only when the ring has no room with it. An older
     // value retires fewer spans, never too many.
@@ -292,14 +307,23 @@ Result<void> Ring::Commit(u64 size) {
         std::lock_guard lock(state.mutex);
         id = state.allocator.Commit(size);
         if (id != 0) {
-            auto it = std::find_if(state.pending.begin(), state.pending.end(),
-                                   [&](const auto& p) { return p.first == recorder; });
-            if (it == state.pending.end()) {
-                state.pending.emplace_back(recorder, std::vector<u64>{});
-                it = std::prev(state.pending.end());
-                hook = true;
+            if (state.last_recorder == recorder && state.last_index < state.pending.size() &&
+                state.pending[state.last_index].first == recorder) {
+                state.pending[state.last_index].second.push_back(id);
+            } else {
+                auto it = std::find_if(state.pending.begin(), state.pending.end(),
+                                       [&](const auto& p) { return p.first == recorder; });
+                if (it == state.pending.end()) {
+                    std::vector<u64> ids;
+                    ids.reserve(256);  // (a recording's commits: no reallocation draw after draw)
+                    state.pending.emplace_back(recorder, std::move(ids));
+                    it = std::prev(state.pending.end());
+                    hook = true;
+                }
+                it->second.push_back(id);
+                state.last_recorder = recorder;
+                state.last_index = static_cast<std::size_t>(it - state.pending.begin());
             }
-            it->second.push_back(id);
         }
     }
     if (id == 0) {
@@ -317,11 +341,24 @@ Result<void> Ring::Commit(u64 size) {
                         state->allocator.Stamp(span, value);
                     }
                     state->pending.erase(it);
+                    state->last_recorder = nullptr;  // (the indices behind it moved)
                 }
             }
         });
     }
     return Result<void>{};
+}
+
+// Where a ring that the GPU reads from (vertices, uniforms, tables: not a copy's source) lives. MH4N_RING_MEMORY=host:
+// the host's cached memory, read by the GPU across the bus at its draws; else (device, the default) the memory the
+// driver offers for uploads, which on a discrete card with a resizable BAR is the card's own: the renderer's writes of a
+// draw's vertices and uniforms there go across the bus as they are made.
+static bool RingInHostMemory(BufferUsage usage) {
+    static const bool host = [] {
+        const char* v = std::getenv("MH4N_RING_MEMORY");
+        return v != nullptr && std::string_view(v) == "host";
+    }();
+    return host && !HasUsage(usage, BufferUsage::Transfer);
 }
 
 Result<std::unique_ptr<Ring>> Backend::CreateRing(u64 size, BufferUsage usage, std::string name) {
@@ -330,7 +367,9 @@ Result<std::unique_ptr<Ring>> Backend::CreateRing(u64 size, BufferUsage usage, s
     desc.heap = Heap::Upload;
     desc.usage = usage;
     desc.name = std::move(name);
+    t_ring_in_host_memory = RingInHostMemory(usage);
     Result<std::shared_ptr<Buffer>> buffer = CreateBuffer(desc);
+    t_ring_in_host_memory = false;
     if (!buffer.ok()) {
         return Error{buffer.error()};
     }

@@ -7,6 +7,7 @@
 //   MH4U_ADPF_LOG=1         every 2 s: the work reported per frame (average, max), each thread's CPU time per frame
 //                           (average / max), the target, the thermal headroom and status (also without a session)
 //   MH4U_ADPF_TARGET=<pct>  the target as a percentage of the frame period (default 70; lower: boosted sooner, warmer)
+//   MH4U_ADPF_RENEW=<s>     (1.0.2, a test) the same target sent again every s seconds (renew, below)
 //
 // The target is 70 % of the period, not all of it: the system winds the clocks down until the busiest thread's work
 // fills the target, and with the whole period that thread had no time left over. Frames then ended on either side of a
@@ -746,6 +747,36 @@ static void *mem_thread(void *arg) {
     return NULL;
 }
 
+// (1.0.2, a test: MH4U_ADPF_RENEW=<seconds>, 5 or more; unset or 0 off) The same target sent to the session again every so many
+// seconds. A realme (Helio G70, Android 11) had its big cores' allowed clock at 998 of 2000 MHz from the start, with no
+// heat (battery 30-35 C, thermal status 0), and back at 2000 for good once the app lost the focus and got it again (the
+// notification bar pulled down); the FPS fell with it (GU#262, Discord "Helio G70"). Whether asking again from the app
+// does what the focus did is what this tries, on phones with a session (API 33 and later; that realme has none). The
+// log's [perf] heat lines show the allowed clocks each minute.
+static void renew(APerformanceHintSession *s) {
+    static int every = -1;
+    static uint64_t last;
+    static unsigned sent, told;
+    if (every < 0) {
+        const char *e = getenv("MH4U_ADPF_RENEW");
+        every = e ? atoi(e) : 0;
+        every = every <= 0 ? 0 : every < 5 ? 5 : every;
+        if (every) LOG("[perf] MH4U_ADPF_RENEW=%d: the ADPF target sent again every %d s (a test)\n", every, every);
+    }
+    if (!every) return;
+    uint64_t now = plat_now_ns();
+    if (!last) last = now;
+    if (now - last < (uint64_t)every * 1000000000ull) return;
+    last = now;
+    if (!s) {
+        if (!told++) LOG("[perf] MH4U_ADPF_RENEW: no ADPF session to send it to\n");
+        return;
+    }
+    int r = fn.update_target(s, target_ns);
+    if (r || ++sent <= 3 || sent % 20 == 0)
+        LOG("[perf] ADPF target %.2f ms sent again (%u times)%s\n", target_ns / 1e6, sent, r ? ": not taken" : "");
+}
+
 void perf_hint_frame(void) {
     perf_hint_thread(PERF_RENDER);
     static pthread_once_t mem_once = PTHREAD_ONCE_INIT;
@@ -765,6 +796,7 @@ void perf_hint_frame(void) {
     int n = atomic_load_explicit(&nthr, memory_order_acquire);
     // (the frame that ends here: the number the translating threads noted while it ran)
     uint32_t f = atomic_fetch_add_explicit(&presents, 1, memory_order_relaxed);
+    renew(s);  // (a test, off unless given: above)
     if (!s && !making && !atomic_load_explicit(&unavailable, memory_order_relaxed) &&
         (atomic_load_explicit(&roles_known, memory_order_acquire) & CORE) == CORE) {
         // (the update thread's first frame came: the session is made with the game and render threads, those still

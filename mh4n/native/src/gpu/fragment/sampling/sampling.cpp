@@ -44,6 +44,7 @@
 // profile from the emitter, and writes only `tex_lod_bias` and `tex_border_color`.
 #include "gpu/fragment/sampling/sampling.h"
 
+#include <algorithm>
 #include <cstring>
 
 #include "gpu/fragment/emitter.h"
@@ -379,6 +380,35 @@ rhi::Result<void> UploadRgba8Rows(rhi::Recorder& rec, rhi::Ring& staging, rhi::I
     region.mip_level = mip;
     region.layer = layer;
     region.image_rect = rhi::Rect{0, static_cast<s32>(height - first - count), width, count};
+    region.aspect = rhi::ImageAspect::Color;
+    rec.CopyBufferToImage(*staging.GetBuffer(), image, std::span<const rhi::BufferImageRegion>(&region, 1));
+    return rhi::Result<void>{};
+}
+
+rhi::Result<void> UploadBlockRows(rhi::Recorder& rec, rhi::Ring& staging, rhi::Image& image, u32 mip, u32 layer, u32 width,
+                                  u32 height, u32 first, u32 count, std::span<const u8> blocks) {
+    const u32 block_rows = (height + 3) / 4;
+    const u64 row = static_cast<u64>((width + 3) / 4) * 16;
+    const u64 size = row * count;
+    if (width == 0 || count == 0 || first + count > block_rows || blocks.size() < row * block_rows) {
+        return rhi::Error{"UploadBlockRows: the rows are out of the image"};
+    }
+    rhi::Result<rhi::RingAllocation> alloc = staging.Map(size, 16);
+    if (!alloc.ok()) {
+        return rhi::Error{alloc.error()};
+    }
+    std::memcpy(alloc->data.data(), blocks.data() + static_cast<u64>(first) * row, size);
+    staging.GetBuffer()->Flush(alloc->offset, size);
+    rhi::Result<void> committed = staging.Commit(size);
+    if (!committed.ok()) {
+        return committed;
+    }
+    rhi::BufferImageRegion region;
+    region.buffer_offset = alloc->offset;
+    region.mip_level = mip;
+    region.layer = layer;
+    const u32 y = first * 4;  // (a block's whole rows, the last ones cut at the image's edge)
+    region.image_rect = rhi::Rect{0, static_cast<s32>(y), width, std::min(height, (first + count) * 4) - y};
     region.aspect = rhi::ImageAspect::Color;
     rec.CopyBufferToImage(*staging.GetBuffer(), image, std::span<const rhi::BufferImageRegion>(&region, 1));
     return rhi::Result<void>{};

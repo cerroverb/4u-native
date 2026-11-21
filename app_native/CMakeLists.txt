@@ -12,9 +12,17 @@ set(MH4N_TESTS OFF CACHE BOOL "" FORCE)
 set(MH4N_APP ON CACHE BOOL "" FORCE)
 add_subdirectory(${MH4N_DIR}/native mh4n)
 
+# MH4U for PC (Windows x64): MH4U.exe, the same app with its own main and the PC's parts (pc/pc.cmake). Everything below
+# is the Android app's alone.
+if(NOT ANDROID)
+  include(${CMAKE_CURRENT_SOURCE_DIR}/pc/pc.cmake)
+  return()
+endif()
+
 add_library(main SHARED android_main.cpp controls.cpp padmap.cpp ui.cpp touch.cpp town.cpp third_party/imgui_backends/imgui_impl_sdlrenderer3.cpp perf_hint.c thread_place.c perfstats.cpp game_options.cpp settings_panel.cpp app_settings.cpp net_rooms.cpp net_lan.cpp game_keyboard.cpp gpu_driver.cpp content.cpp
             app_live.cpp crash_screen.cpp first_run.cpp shared_screens.cpp display_vsync.cpp present_pacing.cpp chat_app.cpp
-            cache_clear.cpp verify_files.cpp diag.cpp frame_gen.cpp hunt_numbers.cpp hunt_bars.cpp quick_items.cpp)
+            cache_clear.cpp verify_files.cpp diag.cpp frame_gen.cpp fsr1.cpp hunt_numbers.cpp hunt_bars.cpp quick_items.cpp unzip.c zipw.c
+            weapon_tree_ui.cpp weapon_tree_panel.cpp second_screen.cpp)
 # The port's chat (chat/, the same files as MHGU's runtime/chat; chat_app.cpp is this app's side of it): its keys and
 # signatures with libsecp256k1 (third_party/secp256k1, MIT), its relays through the system's TLS (the app's ChatSocket)
 set(CHAT_SRC chat/chat.cpp chat/chat_crypto.cpp chat/chat_json.cpp chat/chat_text.cpp chat/chat_overlay.cpp

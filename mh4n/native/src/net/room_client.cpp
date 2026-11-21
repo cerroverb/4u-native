@@ -18,6 +18,7 @@
 //  - Outgoing messages wait at most 5 ms for the network thread (Azahar's loop waits up to 16 ms in enet_host_service
 //    before it sends what was queued).
 //  - A join may ask for a smaller ENet MTU (JoinRequest::mtu: a hub's tunnel does, mh4n/hubs.h).
+//  - ENet's packet throttle never narrows the link's window (net_internal.h, KeepWindowOpen).
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -35,6 +36,7 @@
 #include "../services/cfg/sha256.h"
 #include "mh4n/log.h"
 #include "mh4n/rooms.h"
+#include "link_watch.h"
 #include "net_internal.h"
 #include "packet.h"
 
@@ -62,6 +64,12 @@ bool EnsureEnet() {
         return true;
     }();
     return ok;
+}
+
+void KeepWindowOpen(ENetPeer* peer) {
+    if (peer != nullptr) {
+        enet_peer_throttle_configure(peer, ENET_PEER_PACKET_THROTTLE_INTERVAL, ENET_PEER_PACKET_THROTTLE_ACCELERATION, 0);
+    }
 }
 
 }  // namespace detail
@@ -373,9 +381,11 @@ void Client::Impl::Loop(const std::shared_ptr<Session>& s, ENetHost* host, ENetP
         std::lock_guard lock(mutex);
         return Current(*s) && state != State::Idle;
     };
+    detail::LinkWatch watch(fmt::format("room link to {}:{}", this->host, port));
     while (!s->stop.load() && connected()) {
         ENetEvent event;
         const int got = enet_host_service(host, &event, 5);
+        watch.Sample(peer);
         if (got > 0) {
             switch (event.type) {
             case ENET_EVENT_TYPE_RECEIVE:
@@ -487,6 +497,7 @@ void Client::Impl::Run(const std::shared_ptr<Session>& s) {
         }
         return;
     }
+    detail::KeepWindowOpen(peer);
     {
         // SendJoinRequest, then SendGameInfo (the game being played, kept from before the join)
         Packet join;

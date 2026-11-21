@@ -2221,6 +2221,79 @@ TEST_CASE("y2r: the conversion matches the hardware formula for every output for
         for (int px = 0; px < 8; ++px) check_at(runs[7], kMorton[py * 8 + px], image.Pixel(px, py), "block");
 }
 
+TEST_CASE("y2r: the fast conversion writes the same bytes as the reference one, for random formats and transfers") {
+    Fixture f;
+    TempDir dir;
+    int compared = 0, differ = 0;
+    const int status = BootWith(f, dir, {"--ms", "100"}, [&] {
+        Guest g(*f.runtime);
+        u32 seed = 0x2545F491u;
+        const auto next = [&seed](u32 n) {
+            seed ^= seed << 13, seed ^= seed >> 17, seed ^= seed << 5;
+            return seed % n;
+        };
+        const u32 y_at = g.Scratch(0), u_at = g.Scratch(0x800), v_at = g.Scratch(0xA00), yuyv_at = g.Scratch(0xC00);
+        const u32 out_at = g.Scratch(0x1400);
+        constexpr u32 kOut = 0x1A00;
+        std::vector<u8> input(0x1400);
+        for (int run = 0; run < 400; ++run) {
+            for (u8& b : input) b = static_cast<u8>(next(256));
+            g.PutBytes(y_at, input);
+            y2r::ConversionConfiguration c;
+            c.input_format = static_cast<y2r::InputFormat>(next(5));
+            c.output_format = static_cast<y2r::OutputFormat>(next(4));
+            c.rotation = static_cast<y2r::Rotation>(next(4));
+            c.block_alignment = static_cast<y2r::BlockAlignment>(next(2));
+            const u16 width = static_cast<u16>(8 * (1 + next(4)));
+            const u16 lines = c.block_alignment == y2r::BlockAlignment::Block8x8 ? static_cast<u16>(8 * (1 + next(2)))
+                                                                                  : static_cast<u16>(1 + next(16));
+            c.input_line_width = width;
+            c.input_lines = lines;
+            c.coefficients = {static_cast<s16>(0x100 + next(64)), static_cast<s16>(0x166 - next(32)), 0xB6, 0x58,
+                              static_cast<s16>(0x1C5 + next(16)), -0x166F, 0x10EE, -0x1C5B};
+            c.alpha = static_cast<u16>(next(256));
+            const bool wide = c.input_format == y2r::InputFormat::YUV422_Indiv16 || c.input_format == y2r::InputFormat::YUV420_Indiv16;
+            const bool four20 = c.input_format == y2r::InputFormat::YUV420_Indiv8 || c.input_format == y2r::InputFormat::YUV420_Indiv16;
+            const u16 n = wide ? 2 : 1;
+            c.src_Y = {y_at, 0, static_cast<u16>(width * n), static_cast<u16>(next(3) * 2)};
+            c.src_U = {u_at, 0, static_cast<u16>(width / (four20 ? 4 : 2) * n), static_cast<u16>(next(3))};
+            c.src_V = {v_at, 0, static_cast<u16>(width / (four20 ? 4 : 2) * n), static_cast<u16>(next(3))};
+            c.src_YUYV = {yuyv_at, 0, static_cast<u16>(width * 2), static_cast<u16>(next(3))};
+            const u16 bpp = c.output_format == y2r::OutputFormat::RGBA8 ? 4 : c.output_format == y2r::OutputFormat::RGB8 ? 3 : 2;
+            const u16 units[] = {static_cast<u16>(bpp * 8), static_cast<u16>(bpp * width), 5, 7, 12, 30};
+            c.dst = {out_at, 0, units[next(6)], static_cast<u16>(next(5))};
+            // (the bytes the output may touch must stay inside the scratch area)
+            const u64 per_unit = (c.dst.transfer_unit + bpp - 1) / bpp;
+            const u64 strip_units = (u64{width} * 8 + per_unit - 1) / per_unit;
+            const u64 strips = (lines + 7) / 8;
+            if (strips * strip_units * (c.dst.transfer_unit + c.dst.gap + bpp) >= kOut) continue;
+            // (the 16-bit and the 4:2:0 sources must stay in their areas too)
+            if (u64{width} * lines * n > 0x800 || u64{width} * lines * 2 > 0x800) continue;
+            std::vector<u8> outs[2];
+            bool oks[2];
+            for (int way = 0; way < 2; ++way) {
+                g.PutBytes(out_at, std::vector<u8>(kOut, 0xEE));
+                oks[way] = way == 0 ? y2r::PerformConversionReference(f.runtime->Memory(), c)
+                                    : y2r::PerformConversion(f.runtime->Memory(), c);
+                outs[way] = g.GetBytes(out_at, kOut);
+            }
+            ++compared;
+            if (oks[0] != oks[1] || outs[0] != outs[1]) {
+                ++differ;
+                INFO("run " << run << ": format " << int(c.input_format) << " -> " << int(c.output_format) << ", rotation "
+                            << int(c.rotation) << ", alignment " << int(c.block_alignment) << ", " << width << "x" << lines
+                            << ", dst unit " << c.dst.transfer_unit << " gap " << c.dst.gap);
+                CHECK(oks[0] == oks[1]);
+                CHECK(outs[0] == outs[1]);
+            }
+        }
+        ExitProcess(*f.runtime);
+    });
+    CHECK(status == 0);
+    CHECK(compared > 200);
+    CHECK(differ == 0);
+}
+
 TEST_CASE("y2r: a transfer unit that does not divide the data ends the conversion without touching memory") {
     Fixture f;
     TempDir dir;

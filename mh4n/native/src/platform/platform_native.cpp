@@ -8,10 +8,12 @@
 #include "platform/platform_native.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <fstream>
 #include <sstream>
+#include <thread>
 #include <utility>
 
 #include "../common/utf8.h"
@@ -45,6 +47,11 @@ namespace mh4n::platform {
 namespace {
 
 constexpr const char* kLog = "Platform";
+
+// The host's monotonic seconds (the net sync's timing: host time, not the game's)
+double HostSeconds() {
+    return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
 
 MH4N_OPTION("runner", "--set", "MS|fN:KEY=VALUE",
             "at that game time (ms) or game frame (fN), change one of the hooks' options that can change "
@@ -216,6 +223,7 @@ NativePlatform::~NativePlatform() {
     }
     // The hooks keep the pointer they were given: back to their null platform.
     Port::Hooks::SetPlatform(nullptr);
+    if (netsync_listener_ != 0) rooms::Default().RemoveWifiListener(netsync_listener_);  // (it calls into this object)
 }
 
 void NativePlatform::Log(Port::LogLevel level, const std::string& message) {
@@ -293,25 +301,91 @@ std::string NativePlatform::GetOption(const std::string& key) {
     return aspect_ratio_;
 }
 
+// The net sync (1.0.2, netsync_native.h): the room's listener takes the peers' reports and counts the game data addressed
+// to this console; NetSyncFrame, on the guest's thread, reports and waits. The log's lines are those the Azahar build's
+// Install writes for the same options (the port's netsync.cpp), and one more when it is on.
 void NativePlatform::InstallNetSync(Port::NetSyncMode mode, double slack_ms, std::vector<std::string>& log) {
-    // Local only until N4: there is no room to keep the clocks of other consoles together with, so
-    // nothing is installed. The lines are those the Azahar build's Install writes for the same
-    // options (the port's netsync.cpp), so that the hooks' log reads the same in both.
-    constexpr double kDefaultSlackMs = 200.0;  // netsync.h
+    netsync_.Configure(mode, slack_ms);
     if (mode == Port::NetSyncMode::Off) {
+        if (netsync_listener_ != 0) {
+            rooms::Default().RemoveWifiListener(netsync_listener_);
+            netsync_listener_ = 0;
+        }
         log.push_back("net sync off");
         return;
     }
-    if (mode == Port::NetSyncMode::All) {
-        log.push_back("net sync with every port console in the room");
+    if (netsync_listener_ == 0) {
+        netsync_listener_ = rooms::Default().AddWifiListener([this](const rooms::WifiPacket& packet) {
+            if (static_cast<std::uint8_t>(packet.type) == netsync::kPacketType) {
+                if (const std::optional<netsync::Report> report = netsync::Decode(packet.data)) {
+                    netsync_.OnReport(packet.transmitter, *report, HostSeconds());
+                }
+            } else if (packet.type == rooms::WifiPacket::Type::Data) {
+                netsync_.OnData(packet.transmitter, packet.destination);
+            }
+        });
     }
-    if (slack_ms > 0.0 && slack_ms != kDefaultSlackMs) {
+    log.push_back(mode == Port::NetSyncMode::All ? "net sync with every port console in the room"
+                                                 : "net sync on: a port console that stalls is waited for");
+    if (slack_ms > 0.0 && slack_ms != netsync::kDefaultSlackMs) {
         log.push_back("net sync slack " + [&] {
             char buffer[32];
             std::snprintf(buffer, sizeof buffer, "%.0f", slack_ms);
             return std::string(buffer);
         }() + " ms");
     }
+}
+
+void NativePlatform::NetSyncSend(double now_s, const netsync::MacAddress& waiting_for) {
+    if (now_s - netsync_last_send_s_ < netsync::kSendEveryS) return;
+    netsync_last_send_s_ = now_s;
+    rooms::WifiPacket packet;
+    packet.type = static_cast<rooms::WifiPacket::Type>(netsync::kPacketType);
+    packet.destination = rooms::kBroadcastMac;
+    packet.channel = 0;
+    packet.data = netsync::Encode(netsync_run_ms_, waiting_for, EndSkipVote() ? netsync::kFlagEndSkip : 0);
+    rooms::Default().SendWifi(std::move(packet));
+}
+
+void NativePlatform::NetSyncFrame() {
+    double now_s = HostSeconds();
+    const double step_ms = netsync_last_frame_s_ < 0.0 ? 0.0 : (now_s - netsync_last_frame_s_) * 1000.0;
+    netsync_last_frame_s_ = now_s;
+    netsync_run_ms_ += std::clamp(step_ms, 0.0, netsync::kStepCapMs);
+    if (netsync_.Mode() == Port::NetSyncMode::Off) return;
+    const std::optional<rooms::MacAddress> self = rooms::Default().RoomMac();
+    if (!self) {
+        netsync_.Clear();
+        return;
+    }
+    netsync_.SetSelf(*self);
+    NetSyncSend(now_s, {});
+    std::vector<std::string> log;
+    netsync::Peers::Ahead ahead = netsync_.Compute(netsync_run_ms_, now_s, false, &log);
+    const double slack = netsync_.Slack();
+    if (ahead.lead > slack) {
+        // wait, the game clock held so that the game doesn't see the time jump when it goes on
+        GameClock& clock = runtime_.Clock();
+        clock.Hold(clock.Now());
+        const double from_s = now_s;
+        const netsync::MacAddress first = ahead.mac;
+        while (ahead.lead > slack && netsync_.Mode() != Port::NetSyncMode::Off && rooms::Default().RoomMac()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            now_s = HostSeconds();
+            NetSyncSend(now_s, ahead.mac);
+            ahead = netsync_.Compute(netsync_run_ms_, now_s, now_s - from_s > netsync::kMaxWaitS, &log);
+        }
+        clock.ReleaseHold();
+        now_s = HostSeconds();
+        if (now_s - from_s >= 0.1) {
+            char line[160];
+            std::snprintf(line, sizeof line, "net sync: waited %.0f ms at %.0f ms for %s", (now_s - from_s) * 1000.0,
+                          netsync_run_ms_, netsync::MacText(first).c_str());
+            log.push_back(line);
+        }
+        netsync_last_frame_s_ = now_s;  // (the wait is not the game's run)
+    }
+    for (const std::string& line : log) MH4N_LOG(Info, kLog, "{}", line);
 }
 
 void NativePlatform::VoteEndSkip(bool vote) {

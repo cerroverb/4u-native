@@ -6,7 +6,8 @@
 //     scheduler never calls std::chrono or a condition variable's timed wait itself; it asks the
 //     source. `SteadyTimeSource` is the real one, `ManualTimeSource` moves only when told.
 //   - `GameClock` turns a source into ticks, minus the time spent paused (`Pause`/`Resume`) or held
-//     back (`Hold`, for net sync later).
+//     back (`Hold`, net sync), or stopped by the port's own guards (`Halt`/`Unhalt`: the scheduler's stall
+//     guard, the local wireless service's link hold).
 //
 // Conversions go through 128-bit intermediates: ns * 268111856 overflows 64 bits after about 68 s.
 // The results are exact (floor) for every input; one year of ticks is 8.46e15, well inside 64 bits.
@@ -89,15 +90,30 @@ public:
     // stops waiting: false means the deadline was reached first. `lock` is held when it returns.
     virtual bool WaitUntil(std::condition_variable& cv, std::unique_lock<std::mutex>& lock,
                            std::optional<s64> deadline_ns, const std::function<bool()>& pred) = 0;
+    // Wakes a WaitUntil on `cv`: where a waiter's cv is notified, it is notified through this (cv.notify_all(); the
+    // steady source's Windows waits also need it, below).
+    virtual void Notify(std::condition_variable& cv) { cv.notify_all(); }
 };
 
+// The calling thread's timed waits need no precision (the preemption timer's: a slice that ends a few hundred
+// microseconds late changes nothing): on Windows they are not finished on the clock (SteadyTimeSource below). Elsewhere
+// nothing.
+void SetThreadWaitsCoarse();
+
 // std::chrono::steady_clock, counted from the construction of the source.
+// On Windows (the PC app) a timed wait is not libc++'s: that one sleeps whole milliseconds, rounded down, and waits
+// again, so a deadline less than 1 ms away is waited for with 0 ms timeouts, a core spinning until it (the preemption
+// timer's 1 ms slices and the scheduler's waits for the next VBlank: two cores busy while the game had nothing to do).
+// It waits on a high-resolution waitable timer and an event Notify sets (MH4N_WIN_WAIT=spin: libc++'s, as before).
 class SteadyTimeSource final : public TimeSource {
 public:
     SteadyTimeSource() : epoch_(std::chrono::steady_clock::now()) {}
     s64 NowNs() override;
     bool WaitUntil(std::condition_variable& cv, std::unique_lock<std::mutex>& lock,
                    std::optional<s64> deadline_ns, const std::function<bool()>& pred) override;
+#if defined(_WIN32)
+    void Notify(std::condition_variable& cv) override;
+#endif
 
 private:
     std::chrono::steady_clock::time_point epoch_;
@@ -147,6 +163,18 @@ public:
     void Resume();
     bool Paused() const;
 
+    // The port's guards stop the clock (Halt) and let it go (Unhalt), each with its own bit: the clock
+    // stands still while any bit is set, as when paused, and that time is not made up. Apart from Pause
+    // and Hold: a guard that lets go while the player has the game paused, or while net sync holds it,
+    // leaves it so, and the other way round. Neither nests per bit. Any thread.
+    enum HaltBy : u32 {
+        kHaltStall = 1,  // the scheduler's stall guard (--stall-pause): the console's own thread stood still
+        kHaltLink = 2,   // nwm's link hold (--link-hold): the host of a hall is late
+    };
+    void Halt(HaltBy who);
+    void Unhalt(HaltBy who);
+    u32 Halted() const;  // the bits set
+
     // The clock never reads more than `until_tick` while the hold lasts (it stands still at that
     // value, as when paused, and the time spent standing there is not made up). A value below the
     // current reading holds the clock where it is: the clock never goes backwards. A second Hold
@@ -168,9 +196,14 @@ private:
     void Snapshot();  // base_ := the current reading, at the current host time
     void Notify();
 
+    bool Running() const { return !paused_ && halted_ == 0; }
+    // Sets what stops the clock (the pause, the guards' bits); false when nothing changed.
+    bool SetStopped(bool paused, u32 halted);
+
     TimeSource& source_;
     mutable std::mutex mutex_;
-    bool running_ = true;
+    bool paused_ = false;  // Pause/Resume
+    u32 halted_ = 0;       // Halt/Unhalt
     u64 base_ticks_ = 0;
     s64 base_host_ns_ = 0;
     std::optional<u64> limit_;

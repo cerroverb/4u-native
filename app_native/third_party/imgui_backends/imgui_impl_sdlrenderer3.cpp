@@ -95,24 +95,6 @@ void ImGui_ImplSDLRenderer3_NewFrame()
     IM_UNUSED(bd);
 }
 
-// https://github.com/libsdl-org/SDL/issues/9009
-static int SDL_RenderGeometryRaw8BitColor(SDL_Renderer* renderer, ImVector<SDL_FColor>& colors_out, SDL_Texture* texture, const float* xy, int xy_stride, const SDL_Color* color, int color_stride, const float* uv, int uv_stride, int num_vertices, const void* indices, int num_indices, int size_indices)
-{
-    const Uint8* color2 = (const Uint8*)color;
-    colors_out.resize(num_vertices);
-    SDL_FColor* color3 = colors_out.Data;
-    for (int i = 0; i < num_vertices; i++)
-    {
-        color3[i].r = color->r / 255.0f;
-        color3[i].g = color->g / 255.0f;
-        color3[i].b = color->b / 255.0f;
-        color3[i].a = color->a / 255.0f;
-        color2 += color_stride;
-        color = (const SDL_Color*)color2;
-    }
-    return SDL_RenderGeometryRaw(renderer, texture, xy, xy_stride, color3, sizeof(*color3), uv, uv_stride, num_vertices, indices, num_indices, size_indices);
-}
-
 // Draw callbacks
 static void ImGui_ImplSDLRenderer3_DrawCallback_ResetRenderState(const ImDrawList*, const ImDrawCmd*)   {} // Intentionally empty. Used as an identifier for rendering loop to call its code. Simpler to implement this way.
 static void ImGui_ImplSDLRenderer3_DrawCallback_SetSamplerLinear(const ImDrawList*, const ImDrawCmd*)   { ImGui_ImplSDLRenderer3_Data* bd = ImGui_ImplSDLRenderer3_GetBackendData(); bd->CurrentScaleMode = SDL_SCALEMODE_LINEAR; }
@@ -178,6 +160,9 @@ void ImGui_ImplSDLRenderer3_RenderDrawData(ImDrawData* draw_data, SDL_Renderer* 
     {
         const ImDrawVert* vtx_buffer = draw_list->VtxBuffer.Data;
         const ImDrawIdx* idx_buffer = draw_list->IdxBuffer.Data;
+        // (MH4U: the list's colours made floats once, not once per command: each command used to convert every vertex
+        // from its VtxOffset to the list's end, the whole list again for each of its commands; the same values given)
+        bool colors_ready = false;
 
         for (int cmd_i = 0; cmd_i < draw_list->CmdBuffer.Size; cmd_i++)
         {
@@ -207,7 +192,21 @@ void ImGui_ImplSDLRenderer3_RenderDrawData(ImDrawData* draw_data, SDL_Renderer* 
 
                 const float* xy = (const float*)(const void*)((const char*)(vtx_buffer + pcmd->VtxOffset) + offsetof(ImDrawVert, pos));
                 const float* uv = (const float*)(const void*)((const char*)(vtx_buffer + pcmd->VtxOffset) + offsetof(ImDrawVert, uv));
-                const SDL_Color* color = (const SDL_Color*)(const void*)((const char*)(vtx_buffer + pcmd->VtxOffset) + offsetof(ImDrawVert, col)); // SDL 2.0.19+
+                if (!colors_ready)
+                {
+                    const int count = draw_list->VtxBuffer.Size;
+                    bd->ColorBuffer.resize(count);
+                    SDL_FColor* out = bd->ColorBuffer.Data;
+                    for (int i = 0; i < count; i++)
+                    {
+                        const SDL_Color c = *(const SDL_Color*)(const void*)((const char*)(vtx_buffer + i) + offsetof(ImDrawVert, col));
+                        out[i].r = c.r / 255.0f;
+                        out[i].g = c.g / 255.0f;
+                        out[i].b = c.b / 255.0f;
+                        out[i].a = c.a / 255.0f;
+                    }
+                    colors_ready = true;
+                }
 
                 if (last_scale_mode != bd->CurrentScaleMode)
                     SDL_FlushRenderer(renderer);
@@ -215,9 +214,9 @@ void ImGui_ImplSDLRenderer3_RenderDrawData(ImDrawData* draw_data, SDL_Renderer* 
                 // Bind texture, Draw
                 SDL_Texture* tex = (SDL_Texture*)pcmd->GetTexID();
                 SDL_SetTextureScaleMode(tex, bd->CurrentScaleMode);
-                SDL_RenderGeometryRaw8BitColor(renderer, bd->ColorBuffer, tex,
+                SDL_RenderGeometryRaw(renderer, tex,
                     xy, (int)sizeof(ImDrawVert),
-                    color, (int)sizeof(ImDrawVert),
+                    bd->ColorBuffer.Data + pcmd->VtxOffset, (int)sizeof(SDL_FColor),
                     uv, (int)sizeof(ImDrawVert),
                     draw_list->VtxBuffer.Size - pcmd->VtxOffset,
                     idx_buffer + pcmd->IdxOffset, pcmd->ElemCount, sizeof(ImDrawIdx));

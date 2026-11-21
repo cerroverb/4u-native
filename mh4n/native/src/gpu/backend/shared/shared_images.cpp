@@ -7,6 +7,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
+#include <cstring>
 #include <thread>
 
 #include <fmt/format.h>
@@ -22,13 +23,37 @@
 // (the NDK's copy: the tree's Vulkan headers have no platform headers; it only declares the Android types and
 // function pointer types, against the vulkan_core.h volk already included)
 #include <vulkan/vulkan_android.h>
+#elif defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+
+#include "mh4n/present.h"
+// (VK_KHR_external_memory_win32's few declarations: the tree's Vulkan headers have no platform headers)
+typedef struct VkMemoryGetWin32HandleInfoKHR_ {
+    VkStructureType sType;
+    const void* pNext;
+    VkDeviceMemory memory;
+    VkExternalMemoryHandleTypeFlagBits handleType;
+} VkMemoryGetWin32HandleInfoKHR_;
+typedef VkResult(VKAPI_PTR* PFN_vkGetMemoryWin32HandleKHR_)(VkDevice, const VkMemoryGetWin32HandleInfoKHR_*, HANDLE*);
 #endif
 
 namespace mh4n::gpu::rhi {
 
 namespace {
 constexpr const char* kLog = "RHI";
-[[maybe_unused]] std::atomic<u64> g_next_id{1};  // (SharedImage::Id; Android only)
+[[maybe_unused]] std::atomic<u64> g_next_id{1};  // (SharedImage::Id; Android and Windows)
+// The queue family the images are handed to: the system's other graphics on Android, the same driver's OpenGL on Windows
+#if defined(__ANDROID__)
+constexpr u32 kOtherFamily = VK_QUEUE_FAMILY_FOREIGN_EXT;
+#else
+constexpr u32 kOtherFamily = VK_QUEUE_FAMILY_EXTERNAL;
+#endif
 }  // namespace
 
 // ---- SyncFile ---------------------------------------------------------------------------------------------------------
@@ -101,6 +126,11 @@ struct SharedImages::Impl {
     u64 buffer_usage = 0;  // AHardwareBuffer_UsageFlags
 #if defined(__ANDROID__)
     PFN_vkGetAndroidHardwareBufferPropertiesANDROID get_properties = nullptr;
+#elif defined(_WIN32)
+    PFN_vkGetMemoryWin32HandleKHR_ get_handle = nullptr;
+    bool dedicated_only = false;
+    VkImageTiling tiling = VK_IMAGE_TILING_OPTIMAL;
+    u8 device_uuid[16] = {}, driver_uuid[16] = {};
 #endif
     PFN_vkGetFenceFdKHR get_fence_fd = nullptr;
     VkFence fence = VK_NULL_HANDLE;  // exportable as a sync file; reset by every export
@@ -121,7 +151,69 @@ std::unique_ptr<SharedImages> SharedImages::Create(const std::shared_ptr<Backend
         if (why != nullptr) *why = std::move(text);
         return nullptr;
     };
-#if !defined(__ANDROID__)
+#if defined(_WIN32)
+    // Windows: an R8G8B8A8 colour target in memory exported as an opaque NT handle, for the PC app's OpenGL. Linear tiling
+    // where the device can draw into it so (MH4N_SHARED_TILING=optimal: optimal tiling): its memory is plain pixels, with
+    // no compression or other metadata of the driver's that the GL side, which waits for the picture on the CPU and is
+    // told nothing of its layout, could read wrong (optimal tiling on an RX 6800 XT showed black screens now and then)
+    if (backend == nullptr) return fail("no backend");
+    const auto& enabled = backend->EnabledExtensions();
+    if (std::find(enabled.begin(), enabled.end(), "VK_KHR_external_memory_win32") == enabled.end()) {
+        return fail("the device has no VK_KHR_external_memory_win32");
+    }
+    auto impl = std::make_unique<Impl>();
+    impl->backend = backend;
+    impl->handles = Handles(*backend);
+    impl->get_handle = reinterpret_cast<PFN_vkGetMemoryWin32HandleKHR_>(
+        vkGetDeviceProcAddr(impl->handles.device, "vkGetMemoryWin32HandleKHR"));
+    if (impl->get_handle == nullptr) return fail("vkGetMemoryWin32HandleKHR is missing");
+    VkImageUsageFlags usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                              VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    VkExternalImageFormatProperties external_props = {};
+    const auto exportable = [&](VkImageTiling tiling) {
+        VkPhysicalDeviceExternalImageFormatInfo external_info = {};
+        external_info.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_IMAGE_FORMAT_INFO;
+        external_info.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT;
+        VkPhysicalDeviceImageFormatInfo2 info = {};
+        info.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2;
+        info.pNext = &external_info;
+        info.format = VK_FORMAT_R8G8B8A8_UNORM;
+        info.type = VK_IMAGE_TYPE_2D;
+        info.tiling = tiling;
+        info.usage = usage;
+        external_props = {};
+        external_props.sType = VK_STRUCTURE_TYPE_EXTERNAL_IMAGE_FORMAT_PROPERTIES;
+        VkImageFormatProperties2 props = {};
+        props.sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2;
+        props.pNext = &external_props;
+        return vkGetPhysicalDeviceImageFormatProperties2(impl->handles.physical_device, &info, &props) == VK_SUCCESS &&
+               (external_props.externalMemoryProperties.externalMemoryFeatures & VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT) != 0 &&
+               props.imageFormatProperties.maxExtent.width >= 4096 && props.imageFormatProperties.maxExtent.height >= 4096;
+    };
+    const char* tiling_env = std::getenv("MH4N_SHARED_TILING");
+    const bool want_optimal = tiling_env != nullptr && std::string(tiling_env) == "optimal";
+    if (!want_optimal && exportable(VK_IMAGE_TILING_LINEAR)) {
+        impl->tiling = VK_IMAGE_TILING_LINEAR;
+    } else if (exportable(VK_IMAGE_TILING_OPTIMAL)) {
+        impl->tiling = VK_IMAGE_TILING_OPTIMAL;
+    } else {
+        return fail("the device cannot export an R8G8B8A8 colour target as an NT handle");
+    }
+    impl->usage = usage;
+    impl->dedicated_only =
+        (external_props.externalMemoryProperties.externalMemoryFeatures & VK_EXTERNAL_MEMORY_FEATURE_DEDICATED_ONLY_BIT) != 0;
+    VkPhysicalDeviceIDProperties ids = {};
+    ids.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES;
+    VkPhysicalDeviceProperties2 device_props = {};
+    device_props.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+    device_props.pNext = &ids;
+    vkGetPhysicalDeviceProperties2(impl->handles.physical_device, &device_props);
+    std::memcpy(impl->device_uuid, ids.deviceUUID, 16);
+    std::memcpy(impl->driver_uuid, ids.driverUUID, 16);
+    MH4N_LOG(Info, kLog, "rhi: shared images (opaque NT handles, {} tiling{}), the reader waits on the CPU",
+             impl->tiling == VK_IMAGE_TILING_LINEAR ? "linear" : "optimal", impl->dedicated_only ? ", dedicated allocations" : "");
+    return std::make_unique<SharedImages>(std::move(impl));
+#elif !defined(__ANDROID__)
     (void)backend;
     return fail("shared images are made on Android only");
 #else
@@ -211,7 +303,95 @@ std::unique_ptr<SharedImages> SharedImages::Create(const std::shared_ptr<Backend
 }
 
 Result<std::shared_ptr<SharedImage>> SharedImages::Make(u32 width, u32 height) {
-#if !defined(__ANDROID__)
+#if defined(_WIN32)
+    Impl& s = *impl_;
+    const VkDevice device = s.handles.device;
+    auto image_impl = std::make_unique<SharedImage::Impl>();
+    image_impl->device_owner = s.backend->impl().shared_from_this();
+    image_impl->width = width;
+    image_impl->height = height;
+    image_impl->id = g_next_id.fetch_add(1);
+    VkExternalMemoryImageCreateInfo external = {};
+    external.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO;
+    external.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT;
+    VkImageCreateInfo create = {};
+    create.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    create.pNext = &external;
+    create.imageType = VK_IMAGE_TYPE_2D;
+    create.format = VK_FORMAT_R8G8B8A8_UNORM;
+    create.extent = {width, height, 1};
+    create.mipLevels = 1;
+    create.arrayLayers = 1;
+    create.samples = VK_SAMPLE_COUNT_1_BIT;
+    create.tiling = s.tiling;
+    create.usage = s.usage;
+    create.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    create.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    if (vkCreateImage(device, &create, nullptr, &image_impl->vk_image) != VK_SUCCESS) {
+        image_impl->vk_image = VK_NULL_HANDLE;
+        return Error{"vkCreateImage of an exportable image failed"};
+    }
+    VkMemoryRequirements needs = {};
+    vkGetImageMemoryRequirements(device, image_impl->vk_image, &needs);
+    VkPhysicalDeviceMemoryProperties memory_props = {};
+    vkGetPhysicalDeviceMemoryProperties(s.handles.physical_device, &memory_props);
+    u32 type = ~0u;
+    for (int pass = 0; pass < 2 && type == ~0u; ++pass) {  // a device-local type first, else any the image allows
+        for (u32 i = 0; i < memory_props.memoryTypeCount && type == ~0u; ++i) {
+            const bool local = (memory_props.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0;
+            if ((needs.memoryTypeBits & (1u << i)) != 0 && (local || pass == 1)) type = i;
+        }
+    }
+    // (always a dedicated allocation of its own: what the GL import is told, GL_DEDICATED_MEMORY_OBJECT_EXT)
+    VkMemoryDedicatedAllocateInfo dedicated = {};
+    dedicated.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO;
+    dedicated.image = image_impl->vk_image;
+    VkExportMemoryAllocateInfo export_info = {};
+    export_info.sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO;
+    export_info.pNext = &dedicated;
+    export_info.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT;
+    VkMemoryAllocateInfo allocate = {};
+    allocate.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocate.pNext = &export_info;
+    allocate.allocationSize = needs.size;
+    allocate.memoryTypeIndex = type;
+    if (type == ~0u || vkAllocateMemory(device, &allocate, nullptr, &image_impl->memory) != VK_SUCCESS) {
+        image_impl->memory = VK_NULL_HANDLE;
+        return Error{fmt::format("vkAllocateMemory of {} exportable bytes failed", needs.size)};
+    }
+    if (vkBindImageMemory(device, image_impl->vk_image, image_impl->memory, 0) != VK_SUCCESS) {
+        return Error{"vkBindImageMemory of an exportable image failed"};
+    }
+    VkMemoryGetWin32HandleInfoKHR_ get = {};
+    get.sType = VK_STRUCTURE_TYPE_MEMORY_GET_WIN32_HANDLE_INFO_KHR;
+    get.memory = image_impl->memory;
+    get.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT;
+    HANDLE handle = nullptr;
+    if (s.get_handle(device, &get, &handle) != VK_SUCCESS || handle == nullptr) {
+        return Error{"vkGetMemoryWin32HandleKHR failed"};
+    }
+    auto* memory = new present::Win32SharedMemory;
+    memory->handle = handle;
+    memory->size = needs.size;
+    memory->width = width;
+    memory->height = height;
+    memory->dedicated = true;
+    memory->linear = s.tiling == VK_IMAGE_TILING_LINEAR;
+    std::memcpy(memory->device_uuid, s.device_uuid, 16);
+    std::memcpy(memory->driver_uuid, s.driver_uuid, 16);
+    image_impl->buffer = std::shared_ptr<void>(memory, [](void* p) {
+        auto* m = static_cast<present::Win32SharedMemory*>(p);
+        if (m->handle != nullptr) CloseHandle(m->handle);
+        delete m;
+    });
+    Result<std::shared_ptr<Image>> wrapped =
+        WrapExternalImage(*s.backend, image_impl->vk_image, Format::Rgba8Unorm, width, height);
+    if (!wrapped.ok()) {
+        return Error{wrapped.error()};
+    }
+    image_impl->image = *wrapped;
+    return std::make_shared<SharedImage>(std::move(image_impl));
+#elif !defined(__ANDROID__)
     (void)width;
     (void)height;
     return Error{"shared images are made on Android only"};
@@ -328,13 +508,13 @@ void Barrier(Recorder& recorder, VkImage image, u32 src_family, u32 dst_family, 
 }  // namespace
 
 void SharedImages::Acquire(Recorder& recorder, SharedImage& image) {
-    Barrier(recorder, image.impl().vk_image, VK_QUEUE_FAMILY_FOREIGN_EXT, impl_->handles.queue_family_index,
+    Barrier(recorder, image.impl().vk_image, kOtherFamily, impl_->handles.queue_family_index,
             VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
             VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
 }
 
 void SharedImages::Release(Recorder& recorder, SharedImage& image) {
-    Barrier(recorder, image.impl().vk_image, impl_->handles.queue_family_index, VK_QUEUE_FAMILY_FOREIGN_EXT,
+    Barrier(recorder, image.impl().vk_image, impl_->handles.queue_family_index, kOtherFamily,
             VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
             VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0);
 }
@@ -345,13 +525,13 @@ bool SharedImages::CanCopy() const {
 }
 
 void SharedImages::AcquireAll(Recorder& recorder, SharedImage& image) {
-    Barrier(recorder, image.impl().vk_image, VK_QUEUE_FAMILY_FOREIGN_EXT, impl_->handles.queue_family_index,
+    Barrier(recorder, image.impl().vk_image, kOtherFamily, impl_->handles.queue_family_index,
             VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
             VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT);
 }
 
 void SharedImages::ReleaseAll(Recorder& recorder, SharedImage& image) {
-    Barrier(recorder, image.impl().vk_image, impl_->handles.queue_family_index, VK_QUEUE_FAMILY_FOREIGN_EXT,
+    Barrier(recorder, image.impl().vk_image, impl_->handles.queue_family_index, kOtherFamily,
             VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_MEMORY_WRITE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0);
 }
 

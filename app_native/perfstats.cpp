@@ -8,6 +8,10 @@
 //   - temperature (Android): the battery's (the sticky ACTION_BATTERY_CHANGED intent: no permission needed) and
 //     PowerManager's thermal status and headroom, from DeviceStats.java by JNI on the host main thread every 2 s while
 //     shown (perfstats_poll), kept in atomics for the game thread
+//   - a PC (Windows, MH4U for PC; MHGU for PC's same lines): [Graphics] PcStats basic adds the GPU's temperature; full a
+//     plate under it with a line on the GPU (use, temperature, clock, video memory) and one on the CPU (the game's use and
+//     memory, the processors' clock, the game's and the window's threads' time a frame), from a sampler on a thread of
+//     its own (pc/pc_stats.c)
 #include <algorithm>
 #include <atomic>
 #include <cfloat>
@@ -15,6 +19,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <initializer_list>
 #include <chrono>
 #include <thread>
@@ -27,6 +32,12 @@
 #include "imgui.h"
 
 #include "perfstats.h"
+#ifdef _WIN32
+#include "pc_stats.h"
+// (the PC's level: 0 or 1 the GPU's temperature on the line, 2 the GPU's and the CPU's lines too; settings_pc.inc)
+static std::atomic<int> g_pc_level{0};
+void perfstats_set_pc_level(int level) { g_pc_level = level; }
+#endif
 
 // (MHGU's settings gave these: here the app sets them)
 static std::atomic<bool> g_show_stats{false};
@@ -148,6 +159,8 @@ extern "C" void perfstats_poll(void) {
     }
     started = true;
     std::thread(poll_thread, vm, cls, m_temp, m_status, m_headroom).detach();
+#elif defined(_WIN32)
+    winstats_level(config_live_show_stats() ? std::max(1, g_pc_level.load()) : 0);  // (the sampler: idle while hidden)
 #endif
 }
 
@@ -199,6 +212,12 @@ extern "C" void perfstats_draw(float w, float h) {
     int nr = 0;
     auto add = [&](const char *t, ImU32 c) { if (nr < 24) runs[nr++] = {t, c}; };
     float cap = config_live_fps();
+#ifdef _WIN32
+    if (cap >= 1000) cap = 0;  // (no limit: settings_pc.h kPcFpsUnlimited)
+    static WinStats pc{};
+    static uint32_t pc_seq = 0;
+    pc_seq = winstats_get(&pc, pc_seq);
+#endif
     add(f, fps >= cap * .95f ? GOOD : fps >= cap * .75f ? GOLD : BAD);
     add(" FPS", GOLD);
     char sh[16];
@@ -214,6 +233,16 @@ extern "C" void perfstats_draw(float w, float h) {
     add(SEP, DIM);
     add(es ? "m\xC3\xA1x " : "max ", GOLD);
     add(mx, INK);
+#ifdef _WIN32
+    char gt[16];
+    if (pc_seq != 0 && std::isfinite(pc.gpu_temp)) {  // (the GPU's temperature: a value a driver leaves at 0 is not one)
+        decimal(gt, sizeof gt, pc.gpu_temp, es);
+        add(SEP, DIM);
+        add("GPU ", GOLD);
+        add(gt, pc.gpu_temp >= 85 ? BAD : pc.gpu_temp >= 75 ? GOLD : INK);
+        add(" \xC2\xB0" "C", GOLD);
+    }
+#endif
 #ifdef __ANDROID__
     static const char *const STATUS_EN[7] = {"", "light", "moderate", "severe", "critical", "emergency", "shutdown"};
     static const char *const STATUS_ES[7] = {"", "leve", "moderado", "grave", "cr\xC3\xADtico", "emergencia", "apagando"};
@@ -261,4 +290,49 @@ extern "C" void perfstats_draw(float w, float h) {
         dl->AddText(font, fs, ImVec2(x, y), runs[i].col, runs[i].text);
         x += font->CalcTextSizeA(fs, FLT_MAX, 0, runs[i].text).x;
     }
+#ifdef _WIN32
+    // Full: a plate under it, its width or more, with the GPU's line and the CPU's
+    if (g_pc_level.load() >= 2 && pc_seq != 0) {
+        char l1[200] = "", l2[240] = "";
+        auto put = [&](char *line, size_t size, const char *text) {
+            size_t n = strlen(line);
+            if (n && n + 3 < size) strcat(line, " \xC2\xB7 "), n = strlen(line);
+            if (n < size) snprintf(line + n, size - n, "%s", text);
+        };
+        char t[64], a[16], b2[16];
+        if (std::isfinite(pc.gpu_use)) snprintf(t, sizeof t, es ? "uso %.0f %%" : "%.0f %% use", pc.gpu_use), put(l1, sizeof l1, t);
+        if (std::isfinite(pc.gpu_ghz)) decimal(a, sizeof a, pc.gpu_ghz, es), snprintf(t, sizeof t, "%s GHz", a), put(l1, sizeof l1, t);
+        if (std::isfinite(pc.vram_gb)) {
+            decimal(a, sizeof a, pc.vram_gb, es), decimal(b2, sizeof b2, pc.vram_budget_gb, es);
+            snprintf(t, sizeof t, es ? "VRAM %s de %s GB" : "VRAM %s of %s GB", a, b2), put(l1, sizeof l1, t);
+        }
+        if (std::isfinite(pc.cpu_use)) decimal(a, sizeof a, pc.cpu_use, es), snprintf(t, sizeof t, es ? "uso %s %%" : "%s %% use", a), put(l2, sizeof l2, t);
+        if (std::isfinite(pc.cpu_ghz)) decimal(a, sizeof a, pc.cpu_ghz, es), snprintf(t, sizeof t, "%s GHz", a), put(l2, sizeof l2, t);
+        if (std::isfinite(pc.ram_gb)) decimal(a, sizeof a, pc.ram_gb, es), snprintf(t, sizeof t, "RAM %s GB", a), put(l2, sizeof l2, t);
+        if (std::isfinite(pc.game_ms)) {
+            decimal(a, sizeof a, pc.game_ms, es);
+            snprintf(t, sizeof t, es ? "juego %s ms" : "game %s ms", a), put(l2, sizeof l2, t);
+        }
+        const char *names[2] = {"GPU  ", "CPU  "};
+        const char *texts[2] = {*l1 ? l1 : "--", *l2 ? l2 : "--"};
+        float lw = 0;
+        for (int k = 0; k < 2; k++)
+            lw = std::max(lw, font->CalcTextSizeA(fs, FLT_MAX, 0, names[k]).x + font->CalcTextSizeA(fs, FLT_MAX, 0, texts[k]).x);
+        const float qw = std::min(std::max(pw, lw + 2 * padx), .9f * w), qh = 2 * fs + 3 * pady + 2 * line * 1.7f;
+        const float qx = std::clamp(p0.x + pw - qw, .01f * w, w - qw - .01f * w);
+        ImVec2 q0(qx, p1.y + .004f * h), q1(qx + qw, p1.y + .004f * h + qh);
+        dl->AddRectFilled(q0, q1, WINE);
+        dl->AddRect(q0, q1, IM_COL32(0, 0, 0, 255), 0.0f, line);
+        dl->AddRectFilled(q0, ImVec2(q1.x, q0.y + line), RED);
+        dl->AddRectFilled(ImVec2(q0.x, q1.y - line), q1, RED);
+        for (int k = 0; k < 2; k++) {
+            float tx = q0.x + padx, ty = q0.y + line * 1.7f + pady + k * (fs + pady);
+            dl->AddText(font, fs, ImVec2(tx, ty), GOLD, names[k]);
+            tx += font->CalcTextSizeA(fs, FLT_MAX, 0, names[k]).x;
+            dl->AddText(font, fs, ImVec2(tx + fs * .05f, ty + fs * .06f), IM_COL32(0, 0, 0, 200), texts[k]);
+            dl->AddText(font, fs, ImVec2(tx, ty), INK, texts[k]);
+        }
+        g_plate[3] = q1.y;
+    }
+#endif
 }

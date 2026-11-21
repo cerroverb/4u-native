@@ -76,10 +76,18 @@ void shared_screens_set_colour(const ColourAdjust& colour);
 // PS1's shimmer, after the colour filter; `sharp` alone (Low-end mode's Brick) its pixels sharp. Both false: the screens are
 // drawn as before.
 void shared_screens_set_ps1(bool filter, bool sharp);
+// FastTopScreen ([Graphics], off as the app comes): a top screen the window shows at another size than its picture's is
+// scaled by the GPU's own filter from a picture cut once (shared_screens.cpp kPrecutLinearFragment): much lighter on a
+// weak GPU (2x on a 720-line screen), its colours by 1 or 2 off in places. Off: as 1.0.1.1.
+void shared_screens_set_fast_top(bool on);
 // The screen upright at `w` x `h`, the whole of what is bound now (an SDL render target of that size: frame_gen.cpp keeps
 // the top screen's pictures so), drawn as shared_screens_draw draws it into the window but with nothing added to its
 // colours (the made picture is drawn with shared_screens_draw, which adds them once).
 void shared_screens_draw_upright(SharedScreenView& view, int w, int h);
+// The screen into `dst` of what is bound now, an SDL render target of `w` x `h` (the second display's picture:
+// second_screen.h), as shared_screens_draw draws it into the window: the colour filter on it, no PS1 style (the touch
+// screen never has it), fully opaque.
+void shared_screens_draw_into(SharedScreenView& view, const SDL_FRect& dst, int w, int h);
 // MH4N_TARGET_SCREENS_CHECK=1 (a measurement aid; the renderer draws the upright copy as well): now and then the screen
 // drawn both ways into a texture of the window's size and compared pixel by pixel; logged, and the first pair saved as
 // BMPs into `dir`.

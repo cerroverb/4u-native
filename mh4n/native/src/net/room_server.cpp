@@ -12,9 +12,12 @@
 //  - Members' tokens are not checked with a lobby (Azahar's NullBackend: every member is unchecked).
 //  - Received messages are checked: a short or malformed one is dropped (Azahar reads past its end).
 //  - Close waits up to 500 ms for the members' disconnects to go out before the host is destroyed.
+//  - ENet's packet throttle never narrows a member's window (net_internal.h, KeepWindowOpen).
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <map>
+#include <memory>
 #include <mutex>
 #include <random>
 #include <thread>
@@ -23,6 +26,7 @@
 
 #include "mh4n/log.h"
 #include "mh4n/rooms.h"
+#include "link_watch.h"
 #include "net_internal.h"
 #include "packet.h"
 
@@ -74,8 +78,11 @@ struct Server::Impl {
     mutable std::mutex info_mutex;  // room_information, for other threads
 
     std::thread thread;
+    std::map<ENetPeer*, std::unique_ptr<detail::LinkWatch>> watches;  // (the server's thread only)
+    u32 last_watch = 0;
 
     void Loop();
+    void WatchLinks();
     void Send(ENetPeer* peer, const Packet& packet) {
         ENetPacket* out = enet_packet_create(packet.Data(), packet.Size(), ENET_PACKET_FLAG_RELIABLE);
         if (out != nullptr && enet_peer_send(peer, 0, out) != 0) {
@@ -109,7 +116,9 @@ struct Server::Impl {
 void Server::Impl::Loop() {
     while (open.load()) {
         ENetEvent event;
-        if (enet_host_service(server, &event, 5) > 0) {
+        const int got = enet_host_service(server, &event, 5);
+        WatchLinks();
+        if (got > 0) {
             switch (event.type) {
             case ENET_EVENT_TYPE_RECEIVE:
                 if (event.packet->dataLength > 0) {
@@ -143,12 +152,36 @@ void Server::Impl::Loop() {
                 HandleDisconnection(event.peer);
                 break;
             case ENET_EVENT_TYPE_NONE:
+                break;
             case ENET_EVENT_TYPE_CONNECT:
+                detail::KeepWindowOpen(event.peer);
                 break;
             }
         }
     }
     SendCloseMessage();
+}
+
+// Each member's link (detail::LinkWatch): a line when frames were held back long for a lost one, and a line a minute,
+// on slow links only (a hub's players)
+void Server::Impl::WatchLinks() {
+    const u32 now = enet_time_get();
+    if (now - last_watch < 50) {
+        return;
+    }
+    last_watch = now;
+    std::lock_guard lock(member_mutex);
+    for (auto it = watches.begin(); it != watches.end();) {
+        const bool member = std::any_of(members.begin(), members.end(), [&it](const RoomMember& m) { return m.peer == it->first; });
+        it = member ? std::next(it) : watches.erase(it);
+    }
+    for (const RoomMember& m : members) {
+        auto& watch = watches[m.peer];
+        if (watch == nullptr) {
+            watch = std::make_unique<detail::LinkWatch>(fmt::format("room link to {} ({})", m.nickname, AddressText(m.peer->address)));
+        }
+        watch->Sample(m.peer);
+    }
 }
 
 void Server::Impl::HandleJoinRequest(const ENetEvent& event) {

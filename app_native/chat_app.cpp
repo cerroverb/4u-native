@@ -9,9 +9,11 @@
 #include "chat_app.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <string>
 
 #include "app_settings.h"
+#include "app_version.h"
 #include "chat/chat.h"
 #include "chat/chat_overlay.h"
 #include "chat/chat_text.h"
@@ -29,6 +31,13 @@ namespace {
 bool g_started;
 bool in_room(const rooms::Status& st) { return st.state == rooms::State::Joined || st.state == rooms::State::Moderator; }
 void chat_log(const char* s) { std::fprintf(stderr, "%s\n", s); }
+// (1.0.2, tests: MH4U_CHAT_TEST=1 in launch.txt's env=) a room that isn't there to talk in, and lines in each chat as if
+// they had come (chat::test_lines): the chat window's tabs and the lines beside the button with no one else
+bool chat_test() {
+    static int on = -1;
+    if (on < 0) on = std::getenv("MH4U_CHAT_TEST") && std::atoi(std::getenv("MH4U_CHAT_TEST")) > 0;
+    return on > 0;
+}
 }  // namespace
 
 void chat_app_init() {
@@ -36,28 +45,46 @@ void chat_app_init() {
     g_started = true;
     chat::Port p;
     p.game = "mh4u";
-    p.app = "MH4U for Android";
+    p.app = MH4U_APP_NAME;
     p.java_class = "com/mh4u/port/ChatSocket";
     std::string ini = app_settings_path();
     size_t slash = ini.find_last_of('/');
     p.dir = slash == std::string::npos ? std::string(".") : ini.substr(0, slash);
     p.hub_up = [](std::string* label) {
+        if (chat_test()) {  // (1.0.2, tests: a room that isn't there to talk in)
+            if (label) *label = "test";
+            return true;
+        }
         const rooms::Status st = rooms::GetStatus();
         if (!in_room(st)) return false;
         if (label) *label = st.room.name;
         return true;
     };
-    p.hub_send = [](const std::string& text) { return net_say(text); };  // (its line comes back through net_rooms.cpp)
+    p.hub_send = [](const std::string& text) {  // (its line comes back through net_rooms.cpp)
+        if (chat_test()) {  // (the room that isn't there: the line as said, nothing sent)
+            chat::hub_line(chat::my_key(), chat::name(), text, true);
+            return true;
+        }
+        return net_say(text);
+    };
     p.default_name = []() { return app_setting("Network", "Nick"); };
     p.log = chat_log;
     chat::init(p);
     chat::OverlayPort o;
     o.controls_shown = []() { return touch_controls_shown(); };
-    o.menu_open = []() { return ui_settings_open(); };
+    // (1.0.2, after tabarong's floating chat: with the chat window afloat the button stays, and a tap on it closes the
+    // window; the lines beside it go while a menu of the game's is open, or the chat window is up)
+    o.menu_open = []() { return ui_settings_open() && !settings_panel_chat_floating(); };
+    o.lines_hidden = []() { return ui_settings_open() || touch_game_menu(); };
     o.open_chat = []() {
+        if (ui_settings_open() && settings_panel_chat_floating()) {
+            settings_panel_chat_request(SETTINGS_CHAT_CLOSE);
+            return;
+        }
         ui_open_settings();
         settings_panel_open_chat();
     };
+    o.place = [](float* x, float* y, float* r) { return touch_chat_place(x, y, r); };  // (1.0.2: the editor places it)
     o.log = chat_log;
     chat::overlay_setup(o);
 }
@@ -93,11 +120,14 @@ void chat_app_frame() {
     }
     chat::set_spanish(settings_spanish());
     chat::tick();
+    if (chat_test()) chat::test_lines();  // (1.0.2, tests: MH4U_CHAT_TEST)
     room_notice();
     if (!chat::overlay_frame()) return;
     ImGuiIO& io = ImGui::GetIO();
     chat::overlay_draw(io.DisplaySize.x, io.DisplaySize.y);
 }
+
+bool chat_app_test() { return chat_test(); }
 
 void chat_app_room_line(const std::string& nick, const std::string& text, bool mine) {
     if (!g_started) return;

@@ -40,7 +40,7 @@ write a patch instead.
 
 Patches 01 to 07 are the files of `docs/research/rhi-spike-evidence/patches/`, byte for byte (their sha256 is in
 that folder's `SHA256SUMS`); they were made one on top of another (01, 02, 04 and 03, 05, 06, 07 chains), so
-they are applied in number order only. 08 to 23 were written for this repository. The changed-line figures
+they are applied in number order only. 08 to 24 were written for this repository. The changed-line figures
 are `git diff --numstat` (added plus removed).
 
 | No. | File | What | Lines |
@@ -68,6 +68,7 @@ are `git diff --numstat` (added plus removed).
 | 21 | `21-implied-transfer-queue.diff` | `pickFamilyQueue` takes `VK_QUEUE_TRANSFER_BIT` as implied by a graphics or compute family (the Vulkan spec): Adreno 7xx drivers leave it out of their only family, and no family was picked (4u-native #1) | 10 |
 | 22 | `22-pipeline-results.diff` | `VulkanShader::result`, `VulkanComputePipeline::result` and `VulkanGraphicsPipeline::result`: the `VkResult` creation returned, which the RHI's errors name | 6 |
 | 23 | `23-submit-result.diff` | `VulkanCommandQueue::lastSubmitResult`: the `VkResult` a failed `vkQueueSubmit` returned, so the RHI can tell a lost device (`VK_ERROR_DEVICE_LOST`) and stop instead of waiting forever for a submission that never went | 2 |
+| 24 | `24-win32-shared-memory.diff` | one more optional device extension a caller can name: `VK_KHR_external_memory_win32` (images whose memory the PC app's OpenGL reads through an NT handle) | 3 |
 
 `RenderTextureLayout::PRESENT` (`VK_IMAGE_LAYOUT_PRESENT_SRC_KHR`) exists at the pinned commit
 (`plume_render_interface_types.h`, `toImageLayout` in `plume_vulkan.cpp`), so no patch adds it.

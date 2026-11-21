@@ -204,6 +204,19 @@ struct Recorder::Impl {
     bool viewport_known = false, scissor_known = false;
     Viewport viewport{};
     Rect scissor{};
+    // The vertex and index buffers bound, the same way: the renderer binds them at every draw, mostly the same ring
+    // again (the index ring at offset 0 with the draw's first index, DrawComposer::Draw). Bindings stay in a command
+    // buffer across passes and pipelines.
+    struct BoundBuffers {
+        std::array<VkBuffer, kMaxVertexBindings> vertex{};
+        std::array<u64, kMaxVertexBindings> vertex_offset{};
+        u32 vertex_known = 0;  // (a bit a binding)
+        VkBuffer index = VK_NULL_HANDLE;
+        u64 index_offset = 0;
+        IndexType index_type = IndexType::U16;
+        bool index_known = false;
+    };
+    BoundBuffers buffers{};
 
     // The prelude (Recorder::BeginPrelude), made at its first use: between BeginPrelude and EndPrelude it is `list`
     // and the fields above are its own, while `other` holds the main command list and the fields above are kept in
@@ -215,13 +228,15 @@ struct Recorder::Impl {
         bool viewport_known = false, scissor_known = false;
         Viewport viewport{};
         Rect scissor{};
+        BoundBuffers buffers{};
     };
     std::unique_ptr<::plume::RenderCommandList> other;
     ListState other_state;
     bool has_prelude = false, in_prelude = false;
     void SwapLists() {
         std::swap(list, other);
-        ListState current{in_pass, attachmentless_pass, pipeline, bound_sets, viewport_known, scissor_known, viewport, scissor};
+        ListState current{in_pass, attachmentless_pass, pipeline, bound_sets, viewport_known, scissor_known, viewport, scissor,
+                          buffers};
         in_pass = other_state.in_pass;
         attachmentless_pass = other_state.attachmentless_pass;
         pipeline = other_state.pipeline;
@@ -230,6 +245,7 @@ struct Recorder::Impl {
         scissor_known = other_state.scissor_known;
         viewport = other_state.viewport;
         scissor = other_state.scissor;
+        buffers = other_state.buffers;
         other_state = current;
     }
 

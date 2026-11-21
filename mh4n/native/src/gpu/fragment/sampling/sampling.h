@@ -105,5 +105,9 @@ rhi::Result<void> UploadRgba8(rhi::Recorder& rec, rhi::Ring& staging, rhi::Image
 // image bigger than the staging ring goes up in bands (an HD pack's texture, gpu/native/hd_textures.h). The same flip.
 rhi::Result<void> UploadRgba8Rows(rhi::Recorder& rec, rhi::Ring& staging, rhi::Image& image, u32 mip, u32 layer, u32 width,
                                   u32 height, u32 first, u32 count, std::span<const u8> rgba);
+// (1.0.2, S9b) `count` rows of 4x4 blocks of 16 bytes (BC7) from block row `first` of `blocks` (the image's whole level,
+// its rows of blocks in the image's order: nothing is turned over), into the same rows of a `width` x `height` image
+rhi::Result<void> UploadBlockRows(rhi::Recorder& rec, rhi::Ring& staging, rhi::Image& image, u32 mip, u32 layer, u32 width,
+                                  u32 height, u32 first, u32 count, std::span<const u8> blocks);
 
 }  // namespace mh4n::gpu::fragment::sampling

@@ -19,7 +19,10 @@
 #include <android/log.h>
 #include <jni.h>
 #include <poll.h>
+#include <strings.h>
 #include <sys/eventfd.h>
+#include <sys/mman.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -54,6 +57,7 @@
 #include "display_vsync.h"
 #include "first_run.h"
 #include "frame_gen.h"
+#include "fsr1.h"
 #include "game_options.h"
 #include "gpu_driver.h"
 #include "perf_hint.h"
@@ -62,6 +66,7 @@
 #include "perfstats.h"
 #include "settings_panel.h"
 #include "quick_items.h"
+#include "second_screen.h"
 #include "shared_screens.h"
 #include "town.h"
 #include "verify_files.h"
@@ -141,6 +146,50 @@ extern "C" {
 volatile uint64_t g_present_count = 0;
 }
 
+// (1.0.2) Back after a long time in the background, Android has often swapped the app's memory out, and the next load
+// paged it back in one fault at a time (MHGU's GU#272, a Galaxy S24 Ultra after an hour away: resident 1068 MB, 819 of it
+// the app's own, before; 277 and 64 after; the next area took 26 s instead of 2). A thread of low priority asks for it all
+// back at once (madvise MADV_WILLNEED over each private writable mapping and the code library's file), so the swap is read
+// ahead while the player looks at the screen. MH4U_WARM_AFTER=<s>: after how long a background (default 60; 0 never)
+long ResidentMb() {
+    std::FILE* f = std::fopen("/proc/self/status", "r");
+    long kb = 0;
+    char line[256];
+    while (f != nullptr && std::fgets(line, sizeof line, f) != nullptr)
+        if (std::sscanf(line, "VmRSS: %ld kB", &kb) == 1) break;
+    if (f != nullptr) std::fclose(f);
+    return kb / 1024;
+}
+void WarmMemory(double away_s) {
+    static const double after = [] {
+        const char* v = std::getenv("MH4U_WARM_AFTER");
+        return v != nullptr ? std::atof(v) : 60.0;
+    }();
+    if (after <= 0 || away_s < after) return;
+    std::thread([away_s] {
+        setpriority(PRIO_PROCESS, 0, 10);  // (this thread: the game and the renderer first)
+        const Uint64 t0 = SDL_GetTicksNS();
+        const long before = ResidentMb();
+        double asked = 0;
+        int n = 0;
+        if (std::FILE* f = std::fopen("/proc/self/maps", "r")) {
+            char line[512];
+            while (std::fgets(line, sizeof line, f) != nullptr) {
+                unsigned long lo = 0, hi = 0;
+                char perms[8] = "";
+                if (std::sscanf(line, "%lx-%lx %7s", &lo, &hi, perms) != 3 || hi <= lo || perms[0] != 'r') continue;
+                const bool own = perms[1] == 'w' && perms[3] == 'p', code = std::strstr(line, "libmh4u_code") != nullptr;
+                if (!own && !code) continue;
+                if (madvise(reinterpret_cast<void*>(lo), hi - lo, MADV_WILLNEED) == 0) asked += static_cast<double>(hi - lo), n++;
+            }
+            std::fclose(f);
+        }
+        std::fprintf(stderr, "[app] back after %.0f s away: %d mappings (%.0f MB) asked back from the swap in %.0f ms, "
+                             "resident %ld MB before, %ld after\n", away_s, n, asked / 1048576.0,
+                     static_cast<double>(SDL_GetTicksNS() - t0) / 1e6, before, ResidentMb());
+    }).detach();
+}
+
 // (1.0.1, diag) The window's events the log's timeline wants, with the session's time (diag_clock): to the background and
 // back, the focus (the notification shade, a dialog over the game), a new size (split screen, DeX; 40 at most) and the
 // system's low memory warning
@@ -155,6 +204,7 @@ void DiagWindowEvent(const SDL_Event& e) {
     case SDL_EVENT_DID_ENTER_FOREGROUND:
         std::fprintf(stderr, "[app] %s: back in front after %.0f s\n", diag_clock(),
                      background_ns ? (SDL_GetTicksNS() - background_ns) / 1e9 : 0.0);
+        if (background_ns) WarmMemory((SDL_GetTicksNS() - background_ns) / 1e9);  // (1.0.2: the swap read back ahead)
         break;
     case SDL_EVENT_WINDOW_FOCUS_LOST: std::fprintf(stderr, "[app] %s: the window lost the focus\n", diag_clock()); break;
     case SDL_EVENT_WINDOW_FOCUS_GAINED: std::fprintf(stderr, "[app] %s: the window has the focus\n", diag_clock()); break;
@@ -202,14 +252,21 @@ int g_publish_event = -1;
 bool g_want_shared = false;
 // The touch screen's corner is hidden (the main loop's layout): the renderer may leave its draws out (ScreenHidden).
 // 0 shown, 1 hidden, 2 hidden but for the quick items' piece (1.0.1.1): the touch screen drawn kItemsWindow frames in
-// kItemsPeriod, its picture taken from the last of each run (the first ones may be of frames whose draws were left
-// out), and every frame for a moment after a finger on the piece or after it shows (a used item's count at once). Drawn
-// every frame for the piece, the touch screen cost a hunt 103 -> 86 FPS on the owner's Galaxy (an Adreno 830 at 3x:
-// its draws were 18 % of the GPU's frame).
+// kItemsPeriod, its picture taken from the last of each run, and every frame for a moment after a finger on the piece
+// or after it shows (a used item's count at once). Drawn every frame for the piece, the touch screen cost a hunt
+// 103 -> 86 FPS on the owner's Galaxy (an Adreno 830 at 3x: its draws were 18 % of the GPU's frame).
+// (1.0.2) The first pictures of the touch screen once it is drawn again are of turns whose draws were left out: the top
+// screen in small (the target the two screens share still holds it). Measured on the PC (MH4N_SHOTS_TOUCH_DUTY, a hunt
+// at 3x): the 1st to 3rd with the renderer on its own thread (as on a phone), the 1st to 4th without; 1.0.1.1 took the
+// 3rd of 3, so the piece showed the top screen a few seconds after it came up. Now the 8th of 8 in 30 (twice a second at
+// 60 FPS), and no picture of the touch screen is taken in the first 8 frames it is drawn again, whatever shows it (the
+// corner too: it showed the top screen for a moment as it opened). The renderer itself no longer publishes a touch
+// screen of a turn whose draws it left out (mh4n's ScreenLeftOut): these frames are the margin, should a phone's
+// renderer lag more.
 std::atomic<int> g_touch_mode{0};
 std::atomic<Uint64> g_items_hot_until{0};  // (SDL ticks, ms: every frame until then)
 std::atomic<bool> g_items_picture{false};  // (a picture of the touch screen taken since the piece showed: drawn then)
-constexpr int kItemsPeriod = 20, kItemsWindow = 3;
+constexpr int kItemsPeriod = 30, kItemsWindow = 8;
 
 class WindowSink final : public mh4n::present::ScreenSink {
 public:
@@ -217,7 +274,8 @@ public:
         {
             std::lock_guard lock(g_screens.mutex);
             Take(frame.top, g_screens.top);
-            // (the piece's: only a picture of a frame the touch screen was drawn in, the last of a run)
+            // (only a picture of a frame the touch screen has been drawn in for kItemsWindow frames: the piece's, the
+            // last of a run)
             if (items_accept_) {
                 Take(frame.bottom, g_screens.bottom);
                 if (frame.bottom) g_items_picture.store(true, std::memory_order_relaxed);
@@ -235,20 +293,21 @@ public:
     bool ScreenHidden(u32 screen) const override {
         if (screen != 1) return false;
         const int mode = g_touch_mode.load(std::memory_order_relaxed);
-        if (mode != 2) {
-            items_streak_ = 0, items_accept_ = true;
-            return mode == 1;
+        bool draw = mode == 0;
+        if (mode == 2) {
+            const bool hot = SDL_GetTicks() < g_items_hot_until.load(std::memory_order_relaxed);
+            draw = hot || items_frames_++ % kItemsPeriod < kItemsWindow;
         }
-        const bool hot = SDL_GetTicks() < g_items_hot_until.load(std::memory_order_relaxed);
-        const bool draw = hot || items_frames_++ % kItemsPeriod < kItemsWindow;
-        items_streak_ = draw ? items_streak_ + 1 : 0;
+        // (the frames in a row the touch screen has been drawn, in any mode: the corner shown after it was hidden waits
+        // as the piece does)
+        items_streak_ = draw ? std::min(items_streak_ + 1, kItemsWindow) : 0;
         items_accept_ = items_streak_ >= kItemsWindow;  // (what Publish takes of this frame)
         return !draw;
     }
 
 private:
     mutable unsigned items_frames_ = 0;  // (the piece's: frames counted, and the touch screen drawn these last ones)
-    mutable int items_streak_ = 0;
+    mutable int items_streak_ = kItemsWindow;  // (never hidden yet: taken from the first frame)
     mutable bool items_accept_ = true;
     static void Take(const std::optional<mh4n::present::ScreenImage>& image, ScreenPicture& out) {
         if (!image) return;
@@ -380,9 +439,12 @@ struct Layout {
     u8 bottom_alpha = 255;
 };
 
-// [Display] of mh4u-app.ini (the settings panel writes it): where the touch screen goes
+// [Display] of mh4u-app.ini (the settings panel writes it): where the touch screen goes. Second (1.0.2): on a second
+// display of the device (second_screen.h), and while there is none (or its window has no surface yet) `before`, the
+// layout the player had before choosing it ([Display] LayoutBefore)
 struct DisplayOptions {
-    enum Mode { Overlay, Stacked, Side } mode = Overlay;
+    enum Mode { Overlay, Stacked, Side, Second } mode = Overlay;
+    Mode before = Overlay;
     int corner = 0;        // 0 bottom right, 1 bottom left, 2 top right, 3 top left
     float size = 0.42f;    // the touch screen's height, as a share of the window's (overlay)
     u8 opacity = 255;
@@ -404,7 +466,11 @@ DisplayOptions ReadDisplayOptions(const std::string& ini_path) {
         std::string key = line.substr(0, eq), value = line.substr(eq + 1);
         while (!key.empty() && key.back() == ' ') key.pop_back();
         while (!value.empty() && value.front() == ' ') value.erase(0, 1);
-        if (key == "Layout") d.mode = value == "stacked" ? DisplayOptions::Stacked : value == "side" ? DisplayOptions::Side : DisplayOptions::Overlay;
+        if (key == "Layout")
+            d.mode = value == "stacked" ? DisplayOptions::Stacked : value == "side" ? DisplayOptions::Side
+                     : value == "second" ? DisplayOptions::Second : DisplayOptions::Overlay;
+        else if (key == "LayoutBefore")
+            d.before = value == "stacked" ? DisplayOptions::Stacked : value == "side" ? DisplayOptions::Side : DisplayOptions::Overlay;
         else if (key == "Corner") d.corner = value == "bottom-left" ? 1 : value == "top-right" ? 2 : value == "top-left" ? 3 : 0;
         else if (key == "Size") d.size = std::clamp(std::atoi(value.c_str()), 20, 60) / 100.0f;
         else if (key == "Opacity") d.opacity = static_cast<u8>(std::clamp(std::atoi(value.c_str()), 30, 100) * 255 / 100);
@@ -437,11 +503,42 @@ float TopAspectFromIni(const std::string& ini_path, int win_w, int win_h) {
     return std::max(0.0f, std::strtof(value.c_str(), nullptr));
 }
 
+// (1.0.2) The window's display cutout at its left and right edges (GameActivity.cutoutSides, by JNI), in the window's
+// pixels: Side keeps both screens clear of it. Asked at the start and when the window changes size. Kingdomhero's 20:9
+// capture (#testing, 19-11): side by side, the touch screen ran to the window's right edge, where a punch hole or a curved
+// edge can be (the app draws under the cutout: GameActivity.drawUnderCutout), and its rightmost column looked cut.
+float g_cut_left = 0, g_cut_right = 0;
+void ReadCutoutSides(int win_w) {
+    float left = 0, right = 0;
+    auto* env = static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
+    auto act = env ? static_cast<jobject>(SDL_GetAndroidActivity()) : nullptr;
+    if (act) {
+        jclass cls = env->GetObjectClass(act);
+        jmethodID m = cls ? env->GetStaticMethodID(cls, "cutoutSides", "()[I") : nullptr;
+        jintArray sides = !env->ExceptionCheck() && m ? static_cast<jintArray>(env->CallStaticObjectMethod(cls, m)) : nullptr;
+        if (env->ExceptionCheck()) env->ExceptionClear(), sides = nullptr;
+        if (sides && env->GetArrayLength(sides) == 3) {
+            jint v[3] = {};
+            env->GetIntArrayRegion(sides, 0, 3, v);
+            const float k = v[2] > 0 && win_w > 0 ? static_cast<float>(win_w) / v[2] : 1.0f;  // (to SDL's pixels)
+            left = std::clamp(v[0] * k, 0.0f, win_w * .2f), right = std::clamp(v[1] * k, 0.0f, win_w * .2f);
+        }
+        if (sides) env->DeleteLocalRef(sides);
+        if (cls) env->DeleteLocalRef(cls);
+        env->DeleteLocalRef(act);
+    }
+    if (left != g_cut_left || right != g_cut_right)
+        Logf("screens: the display cutout at the window's left %.0f, right %.0f pixels (side by side keeps clear of it)", left, right);
+    g_cut_left = left, g_cut_right = right;
+}
+
 // The screens in the window. Overlay: the top screen as large as the window allows, the touch screen over it in a
-// corner. Stacked: one above the other, as on the 3DS (4:3 screens). Side: the touch screen beside the top one.
+// corner. Stacked: one above the other, as on the 3DS (4:3 screens). Side: the touch screen beside the top one. Second:
+// the top screen alone, as Overlay without the touch screen (that one is on the second display).
 Layout ComputeLayout(int w, int h, u32 top_w, u32 top_h, u32 bot_w, u32 bot_h, bool bottom_shown,
                      const DisplayOptions& d) {
     Layout l;
+    if (d.mode == DisplayOptions::Second) bottom_shown = false;
     l.bottom_shown = bottom_shown;
     l.bottom_alpha = d.mode == DisplayOptions::Overlay ? d.opacity : 255;
     const float th = top_h ? static_cast<float>(top_h) : 240.0f;
@@ -455,10 +552,12 @@ Layout ComputeLayout(int w, int h, u32 top_w, u32 top_h, u32 bot_w, u32 bot_h, b
         return l;
     }
     if (bottom_shown && d.mode == DisplayOptions::Side) {
-        // the top screen gets what the touch screen (at the top screen's height scale, up to half of it) leaves
-        const float scale = std::min(w / (tw + bw * 0.5f), h / th);
+        // the top screen gets what the touch screen (at the top screen's height scale, up to half of it) leaves, both
+        // clear of the display cutout at the window's sides (1.0.2: g_cut_left, g_cut_right; none, as before)
+        const float room = std::max(1.0f, w - g_cut_left - g_cut_right);
+        const float scale = std::min(room / (tw + bw * 0.5f), h / th);
         const float bs = scale * 0.5f;
-        const float x0 = (w - (tw * scale + bw * bs)) / 2;
+        const float x0 = g_cut_left + (room - (tw * scale + bw * bs)) / 2;
         l.top = {x0, (h - th * scale) / 2, tw * scale, th * scale};
         l.bottom = {x0 + tw * scale, (h - bh * bs) / 2, bw * bs, bh * bs};
         return l;
@@ -472,6 +571,16 @@ Layout ComputeLayout(int w, int h, u32 top_w, u32 top_h, u32 bot_w, u32 bot_h, b
         l.bottom = {right ? w - bwp - m : m, below ? h - bhp - m : m, bwp, bhp};
     }
     return l;
+}
+
+// (1.0.2, S6) FSR 1 on the top screen as mh4u-app.ini has it ([Graphics] Upscale, Fsr1Sharpness; fsr1.h), never with
+// PS1 style (the PS1 filter, Low-end mode's Brick): at the start and when the settings close (the panel sets its draft
+// while it is open)
+void ApplyFsr1() {
+    const bool ps1 = app_setting_bool("Graphics", "Ps1Filter", false) ||
+                     app_low_end_level(app_setting("Graphics", "LowEnd", "off")) == LOW_END_BRICK;
+    fsr1_set(!strcasecmp(app_setting("Graphics", "Upscale", "smooth").c_str(), "fsr1") && !ps1,
+             std::clamp(app_setting_int("Graphics", "Fsr1Sharpness", 80), 0, 100) / 100.0f);
 }
 
 }  // namespace
@@ -540,6 +649,14 @@ int main(int argc, char* argv[]) {
     app_settings_init(launch.count("settings") ? launch["settings"] : ext);
     diag_log_ini("mh4u-app.ini (the app's options; names and passwords hidden)", app_settings_path());
     cache_clear_start(user);  // (the menu's Clear shader cache: before the runtime reads any of it)
+    // (1.0.2) Sound in screen recordings ([Audio] ScreenRecording, off): SDL's AAudio stream without its low-latency mode.
+    // Low latency plays through the phone's MMAP path where it has one, which bypasses the mixer that a screen recorder
+    // listens to (Android's playback capture): the recordings had no sound (MHGU's report, the same SDL here). Before the
+    // runtime opens its sound
+    if (app_setting_bool("Audio", "ScreenRecording", false)) {
+        SDL_SetHint(SDL_HINT_ANDROID_LOW_LATENCY_AUDIO, "0");
+        std::fprintf(stderr, "[Info] App: sound in screen recordings: the sound without the low-latency mode\n");
+    }
     // HD texture packs (1.0's S26; mh4n gpu/native/hd_textures.h): the game folder's textures/, read in place, the
     // emulators' packs as they come (a folder of tex1_*.png with its pack.json, or Azahar's load/textures/<title id>/).
     // Never shipped: each player brings their own, and its memory is their call (the log says it)
@@ -549,6 +666,16 @@ int main(int argc, char* argv[]) {
         if (stat(packs.c_str(), &st) == 0 && S_ISDIR(st.st_mode)) {
             setenv("MH4N_TEXTURE_PACKS", packs.c_str(), 1);
             std::fprintf(stderr, "[Info] App: texture packs from %s\n", packs.c_str());
+        }
+    }
+    // (1.0.2) .nomedia in the game folder: the phone's gallery leaves out the pictures and videos in it and below it (a
+    // texture pack's thousands of PNGs, a mod's files; gu-native #256: MHGU's movies showed in the gallery). Made once,
+    // where the app can write; the files themselves are not touched.
+    if (const std::string folder = FirstLine(ext + "/game_folder.txt");
+        !folder.empty() && !FileExists(folder + "/.nomedia")) {
+        if (std::FILE* f = std::fopen((folder + "/.nomedia").c_str(), "w")) {
+            std::fclose(f);
+            std::fprintf(stderr, "[Info] App: a .nomedia in the game folder now: the gallery leaves its pictures and videos out\n");
         }
     }
     // Texture packs > Pack texture size: Half (1.0.1, 4u-native #56; launch.txt's env= can set MH4N_HD_SCALE itself)
@@ -679,6 +806,7 @@ int main(int argc, char* argv[]) {
     {
         const char* cpu = std::getenv("MH4U_PRESENT_CPU");
         g_want_shared = shared_screens_init(renderer) && !(cpu != nullptr && *cpu == '1');
+        second_screen_init(renderer);  // (1.0.2: the touch screen on a second display, when the player wants it)
         g_publish_event = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
         if (g_publish_event >= 0) SDL_AddEventWatch(WakeMainLoop, nullptr);
         Logf("screens: %s", g_want_shared ? "straight from the renderer's buffers" : "pixels read back and uploaded");
@@ -721,6 +849,8 @@ int main(int argc, char* argv[]) {
         shared_screens_set_colour(colour);
         shared_screens_set_ps1(app_setting_bool("Graphics", "Ps1Filter", false),  // (PS1 style, 1.0.1.1: off as it comes)
                                app_low_end_level(app_setting("Graphics", "LowEnd", "off")) == LOW_END_BRICK);
+        ApplyFsr1();  // (1.0.2: FSR 1 on the top screen, off as it comes)
+        shared_screens_set_fast_top(app_setting_bool("Graphics", "FastTopScreen", false));  // (1.0.2: off as it comes)
     }
 
     std::string problem;
@@ -855,6 +985,15 @@ int main(int argc, char* argv[]) {
             std::string a;
             while (extra >> a) args.push_back(a);
         }
+        // The link hold (mh4n's --link-hold, as on PC): in a Gathering Hall, when the host has sent nothing for half a
+        // second, the game clock waits for it, so that the game doesn't take a late host for gone and leave the hall. A
+        // room sends every frame reliably and in order, so one lost on a hub's slow link (or a PC host's stall) holds
+        // the rest back for about a second, which the game counts as a host that left. launch.txt's args may set another
+        // value (--link-hold 0: off).
+        if (std::find(args.begin(), args.end(), "--link-hold") == args.end()) {
+            args.push_back("--link-hold");
+            args.push_back("500");
+        }
         // The controls reach the game at its next HID update (about 4 ms), not at the next boundary of a game frame
         // (--input-latch frame, the runner's default, D59: a recorded session then replays exactly). That boundary (the
         // frame counter's change) falls in the middle of a frame's work, after the game read its pad, and the game reads
@@ -908,7 +1047,17 @@ int main(int argc, char* argv[]) {
     SDL_FingerID touch_finger = 0;
     bool touching = false;
     bool touching_items = false;  // (the finger came down on the quick items' piece: its part of the touch screen)
+    // (1.0.2) the touch screen on the second display (second_screen.h): asked of the Java side, shown there now (its
+    // window has a surface), a finger on it is the touch screen's, its picture changed since it was last drawn there
+    bool second_asked = false, second_active = false, touching_second = false, second_dirty = false;
+    int second_touches_logged = 0;
+    // MH4U_TEST_SECOND_SCREEN=1 (launch.txt's env=): a test card as the touch screen while the game gives none, a cross
+    // where the last finger on the second display was
+    static const bool second_test = [] { const char* v = std::getenv("MH4U_TEST_SECOND_SCREEN"); return v != nullptr && *v == '1'; }();
+    int second_test_x = -1, second_test_y = -1;
+    bool second_test_new = second_test;
     DisplayOptions display = ReadDisplayOptions(app_settings_path());
+    ReadCutoutSides(win_w);
     Layout layout = ComputeLayout(win_w, win_h, 400, 240, 320, 240, bottom_shown, display);
     mh4n::InputState last_sent;
 
@@ -1010,6 +1159,36 @@ int main(int argc, char* argv[]) {
             default:
                 break;
             }
+            if (e.type != 0 && e.type == second_screen_event_type()) {
+                // (1.0.2) the second display: a finger on the touch screen shown there (as one on the window's touch
+                // screen: one finger, the first), or its surface came or went (the loop looks again below)
+                int tx = 0, ty = 0;
+                bool inside = false;
+                const SecondScreenAction act = second_screen_event(e, &tx, &ty, &inside);
+                const auto give = [&](bool down) {
+                    auto* rt = g_runtime.load();
+                    auto live = rt ? mh4n::input_live::Find(*rt) : nullptr;
+                    if (!live) return;
+                    if (down) live->SetTouch(mh4n::input_live::TouchPoint{static_cast<u16>(tx), static_cast<u16>(ty)});
+                    else live->SetTouch(std::nullopt);
+                };
+                if (act == SECOND_TOUCH_DOWN && !touching && second_active && inside) {
+                    touching = true, touching_second = true, touching_items = false;
+                    give(true);
+                    if (second_test) second_test_x = tx, second_test_y = ty, second_test_new = true;
+                    if (second_touches_logged < 10 || second_test)  // (the first ten a session: where the fingers land)
+                        std::fprintf(stderr, "[app] %s: a finger on the second display at %d,%d of the touch screen%s\n", diag_clock(),
+                                     tx, ty, ++second_touches_logged == 10 && !second_test ? " (no more of these this session)" : "");
+                } else if (act == SECOND_TOUCH_MOVE && touching && touching_second) {
+                    give(true);
+                    if (second_test) second_test_x = tx, second_test_y = ty, second_test_new = true;
+                } else if (act == SECOND_TOUCH_UP && touching && touching_second) {
+                    touching = false, touching_second = false;
+                    give(false);
+                    if (second_test) std::fprintf(stderr, "[app] %s: the finger left the second display at %d,%d\n", diag_clock(), tx, ty);
+                }
+                continue;
+            }
             // (the controllers and the keyboard: controls.cpp keeps their state, and takes START with SELECT)
             if (controls_event(e) || ui_event(e, UiScreens{layout.top, layout.bottom, layout.bottom_shown})) {
                 continue;
@@ -1048,13 +1227,13 @@ int main(int argc, char* argv[]) {
                 break;
             }
             case SDL_EVENT_FINGER_MOTION:
-                if (touching && e.tfinger.fingerID == touch_finger) {
+                if (touching && !touching_second && e.tfinger.fingerID == touch_finger) {
                     touch_at(e.tfinger.x * win_w, e.tfinger.y * win_h, true);
                 }
                 break;
             case SDL_EVENT_FINGER_UP:
             case SDL_EVENT_FINGER_CANCELED:
-                if (touching && e.tfinger.fingerID == touch_finger) {
+                if (touching && !touching_second && e.tfinger.fingerID == touch_finger) {
                     touching = false;
                     if (touching_items) g_items_hot_until.store(SDL_GetTicks() + 1500, std::memory_order_relaxed);
                     touch_at(0, 0, false);
@@ -1064,11 +1243,14 @@ int main(int argc, char* argv[]) {
             case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
                 display_frame_rate_refresh();
                 SDL_GetRenderOutputSize(renderer, &win_w, &win_h);
+                ReadCutoutSides(win_w);
                 break;
             case SDL_EVENT_RENDER_DEVICE_RESET:
                 // the GL context was lost: every texture of the screens is made again from the next picture
                 shared_screens_reset(views, 2);
+                second_screen_reset();
                 frame_gen_reset();
+                fsr1_reset();
                 shown_sequence = 0;
                 Logf("the renderer's device was reset: the screens' textures are made again");
                 break;
@@ -1090,12 +1272,15 @@ int main(int argc, char* argv[]) {
                 read_version = app_settings_version();
                 pause_in_menu = app_setting_bool("Interface", "PauseInMenu", true);
             }
-            const bool want = (ui_settings_open() || touch_editor_holds()) && alone && pause_in_menu;  // (the layout editor too)
+            // (the layout editor too; the settings' HUD size just changed: a moment of every 100 ms runs, touch.cpp)
+            // (1.0.2: not the chat window afloat - the game goes on under it, settings_panel.h)
+            const bool want = ((ui_settings_open() && !settings_panel_chat_floating() && !touch_hud_size_runs()) || touch_editor_holds()) &&
+                              alone && pause_in_menu;
             static bool said_in_editor = false;  // (the editor's steps while a part is dragged: logged once)
             if (want && !paused_for_menu) {
                 rt->Clock().Pause();
                 paused_for_menu = true;
-                if (!touch_editing() || !said_in_editor) {
+                if ((!touch_editing() || !said_in_editor) && !touch_hud_size_recent()) {
                     Logf("the game waits while the menu is open");
                     std::fprintf(stderr, "[app] %s: the game waits while the menu is open\n", diag_clock());  // (1.0.1: in log.txt too)
                 }
@@ -1103,7 +1288,7 @@ int main(int argc, char* argv[]) {
             } else if (!want && paused_for_menu) {
                 paused_for_menu = false;
                 if (!paused_in_background) rt->Clock().Resume();
-                if (!touch_editing()) {
+                if (!touch_editing() && !touch_hud_size_recent()) {
                     Logf("the game goes on"), said_in_editor = false;
                     std::fprintf(stderr, "[app] %s: the game goes on\n", diag_clock());
                 }
@@ -1152,12 +1337,19 @@ int main(int argc, char* argv[]) {
             // The touch screen's new picture waits for the top screen's of the same game frame when that one is still on
             // the GPU (it is smaller and comes first): one present a game frame instead of two. On a Mali-G52 at 3x, with
             // the touch screen shown, the window presented twice a game frame and its GPU work slowed the game's frames.
-            if (bottom_shown || bottom_view.texture == nullptr || quick_items_needs_touch_screen()) {
+            if (bottom_shown || second_active || bottom_view.texture == nullptr || quick_items_needs_touch_screen()) {
                 const bool before = new_picture;
                 new_picture = false;
                 take(bottom_view, bottom);
                 bottom_dirty = bottom_dirty || new_picture;
+                second_dirty = second_dirty || new_picture;
                 new_picture = before;
+            }
+            // (MH4U_TEST_SECOND_SCREEN=1: the test card while the game gives no touch screen)
+            if (second_test && second_test_new && bottom.shared == nullptr && bottom.pixels == nullptr) {
+                shared_screens_show_pixels(bottom_view, second_screen_test_card(second_test_x, second_test_y), 320, 240);
+                second_test_new = false;
+                bottom_dirty = second_dirty = true;
             }
             if (bottom_dirty && (new_picture || top_view.pending_count == 0)) {
                 new_picture = true;
@@ -1175,11 +1367,44 @@ int main(int argc, char* argv[]) {
             shared_screens_set_colour(colour);
             shared_screens_set_ps1(app_setting_bool("Graphics", "Ps1Filter", false),  // (PS1 style's: the same)
                                    app_low_end_level(app_setting("Graphics", "LowEnd", "off")) == LOW_END_BRICK);
+            ApplyFsr1();
+            shared_screens_set_fast_top(app_setting_bool("Graphics", "FastTopScreen", false));
+        }
+        {  // (the cutout's sides again now and then: the window's insets come after its first frames)
+            static Uint64 cut_next = 0;
+            if (SDL_GetTicks() >= cut_next) cut_next = SDL_GetTicks() + 2000, ReadCutoutSides(win_w);
+        }
+        // (1.0.2) Layout: On the second screen: the Java side opens its window on the second display while one is there;
+        // the touch screen goes there once that window has a surface, and until then (and once it is gone) the window
+        // shows it with the layout the player had before
+        DisplayOptions shown_display = display;
+        {
+            const bool want = display.mode == DisplayOptions::Second && second_screen_display_present();
+            if (want != second_asked) {
+                second_asked = want;
+                CallActivity("setSecondScreen", "(Z)V", static_cast<int>(want));  // (a boolean goes as an int)
+            }
+            const bool active = want && second_screen_ready();
+            if (active != second_active) {
+                static const char* const kNames[] = {"in a corner", "stacked", "side by side", "?"};
+                const DisplayOptions::Mode back = display.mode == DisplayOptions::Second ? display.before : display.mode;
+                if (active) std::fprintf(stderr, "[app] %s: the touch screen on the second display\n", diag_clock());
+                else std::fprintf(stderr, "[app] %s: the touch screen back in the window (%s)\n", diag_clock(), kNames[back]);
+                second_active = active;
+                second_dirty = true;
+                if (!active && touching_second) {  // (a finger on it when it went: let go)
+                    touching = touching_second = false;
+                    if (auto* rt = g_runtime.load())
+                        if (auto live = mh4n::input_live::Find(*rt)) live->SetTouch(std::nullopt);
+                }
+            }
+            if (display.mode == DisplayOptions::Second && !active) shown_display.mode = display.before;
         }
         layout = ComputeLayout(win_w, win_h, static_cast<u32>(top_view.width), static_cast<u32>(top_view.height),
-                               static_cast<u32>(bottom_view.width), static_cast<u32>(bottom_view.height), bottom_shown, display);
+                               static_cast<u32>(bottom_view.width), static_cast<u32>(bottom_view.height), bottom_shown,
+                               shown_display);
         // (1.0.1.1) the quick items' piece: where it goes this frame; the renderer draws the touch screen for it too
-        quick_items_update(win_w, win_h, bottom_shown);
+        quick_items_update(win_w, win_h, bottom_shown && !second_active);
         {
             // ([Graphics] QuickItemsEveryFrame on: the touch screen drawn every frame for the piece, as in 1.0.1.1's first
             // build: a way back should a phone show the piece's picture wrong between its refreshes)
@@ -1187,7 +1412,7 @@ int main(int argc, char* argv[]) {
             static bool every_frame = false;
             if (every_read != app_settings_version())
                 every_read = app_settings_version(), every_frame = app_setting_bool("Graphics", "QuickItemsEveryFrame", false);
-            const int mode = bottom_shown ? 0 : quick_items_needs_touch_screen() ? (every_frame ? 0 : 2) : 1;
+            const int mode = bottom_shown || second_active ? 0 : quick_items_needs_touch_screen() ? (every_frame ? 0 : 2) : 1;
             if (mode == 2 && g_touch_mode.load(std::memory_order_relaxed) != 2) {  // (it shows: its picture at once,
                 g_items_hot_until.store(SDL_GetTicks() + 600, std::memory_order_relaxed);  // and not an old one before)
                 if (g_touch_mode.load(std::memory_order_relaxed) == 1) g_items_picture.store(false, std::memory_order_relaxed);
@@ -1250,6 +1475,8 @@ int main(int argc, char* argv[]) {
                 state.hud[k].seen = game.hud[k].seen;
                 state.hud[k].r = to_window(game.hud[k].rect);
                 state.hud[k].dx = game.hud[k].offset[0], state.hud[k].dy = game.hud[k].offset[1];
+                state.hud[k].scale = game.hud[k].scale, state.hud[k].hidden = game.hud[k].hidden;
+                state.hud[k].anchor = SDL_FPoint{t.x + game.hud[k].anchor[0] * t.w, t.y + game.hud[k].anchor[1] * t.h};
             }
             ui_set_game_state(state);
             town_set_game(game.place, game.menu, game.frame, game.town_panel);
@@ -1268,7 +1495,8 @@ int main(int argc, char* argv[]) {
             // controls' look goes with the next frame's present, within a frame, and their input is taken now
             // (ui_update). A window with all its buffers waiting made the present wait for one to come back, and the next
             // frame's present and the controls with it (a Moto g06 at 30 FPS: 28 ms, an Anbernic GPU-bound at 52: 16 ms).
-            const bool nothing_new = !new_picture && !ui_settings_open() && problem.empty();
+            const bool nothing_new = !new_picture && !ui_settings_open() && problem.empty() &&
+                                     !(second_active && second_screen_needs_draw());
             const bool frames_come = now - last_frame_present_ms < 40 || present_pacing_frame_pending();
             if (no_present || (nothing_new && ((!had_events && !due) || frames_come))) {
                 if (had_events && !no_present) {
@@ -1336,7 +1564,7 @@ int main(int argc, char* argv[]) {
                     made_view.top = true;
                     made_view.source = SDL_FRect{0, 0, fw, fh};
                     made_view.width = static_cast<int>(fw), made_view.height = static_cast<int>(fh);
-                    shared_screens_draw(made_view, top, win_w, win_h);
+                    if (!fsr1_draw(renderer, made_view, top, win_w, win_h)) shared_screens_draw(made_view, top, win_w, win_h);
                 }
                 if (layout.bottom_shown) {
                     if (town_large) {
@@ -1370,7 +1598,7 @@ int main(int argc, char* argv[]) {
                 top.y -= row;
                 top.h += row;
             }
-            shared_screens_draw(top_view, top, win_w, win_h);
+            if (!fsr1_draw(renderer, top_view, top, win_w, win_h)) shared_screens_draw(top_view, top, win_w, win_h);  // (FSR 1: fsr1.h)
         }
         shared_screens_check(top_view, layout.top, win_w, win_h, ext.c_str());
         if (layout.bottom_shown) {
@@ -1425,6 +1653,11 @@ int main(int argc, char* argv[]) {
             mh4n::pacing::Mark(mh4n::pacing::kAppPresentOut);
             shared_screens_note_present((SDL_GetTicksNS() - start) / 1000);
         }
+        // (1.0.2) the touch screen on the second display, after the window's present (the window's frame waits for
+        // nothing of it), when its picture changed or its surface is new
+        if (second_active && (second_dirty || second_screen_needs_draw())) {
+            if (second_screen_draw(bottom_view)) second_dirty = false;
+        }
         shared_screens_frame_done();
         perf_hint_frame();
         perfstats_poll();
@@ -1436,6 +1669,7 @@ int main(int argc, char* argv[]) {
         rt->RequestExit(0, "the app is closing");
     }
     // the screens' pictures go before the game does (the renderer's buffers are its own)
+    second_screen_shutdown();
     shared_screens_shutdown(views, 2);
     {
         std::lock_guard lock(g_screens.mutex);

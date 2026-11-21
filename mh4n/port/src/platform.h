@@ -144,6 +144,10 @@ public:
     /// together. `slack_ms`: how far ahead of a peer this console may get before it waits for it,
     /// in emulated ms. A host with no room for it does nothing. Lines for the log go to `log`.
     virtual void InstallNetSync(NetSyncMode mode, double slack_ms, std::vector<std::string>& log) = 0;
+    /// Each game frame, on the guest's thread, before the frame runs: a host whose net sync runs here (the native
+    /// runtime) reports and, when this console has run too far ahead of a peer, waits for it. The default does nothing
+    /// (the Azahar build's runs in its own RunLoop hook).
+    virtual void NetSyncFrame() {}
 
     /// Whether this console's player asks to end the wait after a quest (the skip, agreed by
     /// everyone), and whether every port console this one plays with, and this one, asks too

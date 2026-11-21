@@ -211,9 +211,8 @@ void gpu_driver_setup() {
     std::vector<std::string> selected = Lines(Path("selected"));
     if (selected.size() >= 2 && !selected[0].empty() && !selected[1].empty()) {
         g_try_name = NameOf(selected[0]);
-        if (!adreno) {
-            Log("%s is chosen, but this GPU is not an Adreno: the system's driver", g_try_name.c_str());
-        } else if (Exists(Path("trial"))) {
+        // (1.0.2, S12: any GPU, not only an Adreno, at the player's own risk; the way back to the system's is the same)
+        if (Exists(Path("trial"))) {
             GiveUp("the last start with it never showed the game");
         } else if (!Exists(Path(selected[0] + "/" + selected[1]))) {
             GiveUp("its library " + selected[1] + " is not in its folder");
@@ -222,7 +221,8 @@ void gpu_driver_setup() {
             g_try_library = selected[1];
             std::lock_guard lock(g_mutex);
             g_status.chosen = g_try_folder;
-            Log("%s (%s) chosen: trying it", g_try_name.c_str(), g_try_library.c_str());
+            Log("%s (%s) chosen: trying it%s", g_try_name.c_str(), g_try_library.c_str(),
+                adreno ? "" : " (this GPU is not an Adreno: at the player's own risk)");
         }
     } else {
         unlink(Path("trial").c_str());

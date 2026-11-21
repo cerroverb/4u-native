@@ -1,6 +1,10 @@
 // The app's options the runtime takes while the game runs (app_live.h).
 #include "app_live.h"
 
+#ifdef __ANDROID__  // (the PC: no Java side; the renderer watches the memory available itself)
+#include <jni.h>
+#endif
+
 #include <algorithm>
 #include <atomic>
 #include <cstdio>
@@ -29,11 +33,28 @@ MH4N_REGISTER(mh4n::BootStep, "zz.android.live", mh4n::BootStep{mh4n::Phase::Sta
 
 }  // namespace
 
+#ifdef __ANDROID__
+// (1.0.2, S9) GameActivity.onTrimMemory: memory short while running, or in the background from MODERATE on. The renderer
+// halves its texture budgets (never under 1.0.1's step) at its next screen picture and lets go of what it doesn't use.
+extern "C" JNIEXPORT void JNICALL Java_com_mh4u_port_GameActivity_nativeMemoryLow(JNIEnv*, jclass, jint level) {
+    std::fprintf(stderr, "[Info] App: the system asks for memory back (onTrimMemory %d): the texture budget is lowered\n",
+                 static_cast<int>(level));
+    mh4n::gpu::native::MemoryLow();
+}
+#endif
+
 void app_live_start() {
     app_live_reverb(app_setting_bool("Audio", "Reverb", true));
     app_live_shadows(app_setting_bool("Graphics", "Shadows", true));
     app_live_ps1(app_setting_bool("Graphics", "Ps1Filter", false),
                  app_low_end_level(app_setting("Graphics", "LowEnd", "off")) == LOW_END_BRICK);
+    app_live_text_outline(app_setting_bool("Graphics", "TextOutline", false));
+}
+
+// (1.0.2, GU#243) [Graphics] TextOutline: the renderer outlines the game's letters (mh4n gpu/native SetTextOutline)
+void app_live_text_outline(bool on) {
+    mh4n::gpu::native::SetTextOutline(on);
+    if (on) std::fprintf(stderr, "[Info] App: text outline on\n");
 }
 
 void app_live_volume(int percent) {

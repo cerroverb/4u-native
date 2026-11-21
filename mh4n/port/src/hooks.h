@@ -29,6 +29,11 @@ std::vector<std::string> Install(const RCodeInfo& info);
 /// Without it, match resolves to off and the log says so.
 void SetWindowSize(std::uint32_t width, std::uint32_t height);
 
+/// The part of the top screen's picture the frontend shows now, a fraction of its width centred (1 or 0: all of it):
+/// the PC app's window made narrower than the shape the game started with shows the middle of the wide picture, and the
+/// hunting HUD's sides (hud_edges) go to the edges of that part from the next frame on. Any thread.
+void SetShownWidth(float fraction);
+
 /// Changes one of the options above while the game runs (the runner's --set, for tests: one
 /// player of a session at another frame rate once everyone is in, say; the app's in-game
 /// menu). Only options that the hooks read as the game runs can change: fps, refresh_rate,
@@ -145,6 +150,8 @@ struct GameState {
                                 // while a quest's small panels are up, -1 none (no such panel in the player's layout,
                                 // the quest menu or a big panel on the touch screen, out of quests, the option off)
     int items_wide = 0;         // 1 the panel's wide form: that slot and the one beside it (slot + 3)
+    int touch_items_slot = -1;  // the same panel on the touch screen now whatever quick_items says (the PC's keys tap
+    int touch_items_wide = 0;   // its items): its slot while a quest's small panels are up, -1 none; its wide form
     std::uint32_t frame = 0;    // the game's frame counter when this was worked out
     struct HudPart {
         int shown = 0;          // 1 drawn in the last frames
@@ -152,10 +159,22 @@ struct GameState {
         float rect[4] = {};     // its art where it is drawn (or, not shown, would be): left, top, right, bottom,
                                 // fractions of the top screen's picture
         float offset[2] = {};   // the player's offset (hud_<key>) it is drawn with, top-screen pixels
+        // (1.0.2) the size it is drawn at (hud_size times its own), toward `anchor` (fractions of the top screen's
+        // picture, where it is now), and hidden (1: off the screen, shown 0; rect is where it would be)
+        float scale = 1.0f;
+        float anchor[2] = {};
+        int hidden = 0;
     };
     HudPart hud[HUD_PART_COUNT];  // HudPartKey's order
 };
 GameState CurrentGameState();
+
+#ifndef __ANDROID__
+/// (the PC app's Discord Rich Presence, presence.cpp) the area map's layout the top screen drew last: ui<n>, the map's
+/// stage + 280 for most (ui281 the Ancestral Steppe; presence.cpp StageOfLayout), -1 none since ClearMapLayout. Any thread.
+int MapLayoutSeen();
+void ClearMapLayout();
+#endif
 
 /// How many of the port's hook points the code library loaded last didn't have (it was built
 /// with an older config/hooks.txt, so the options behind them don't work until it is rebuilt).

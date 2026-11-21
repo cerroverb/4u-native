@@ -1,11 +1,13 @@
 // The chat over the game: chat_overlay.h. In the touch controls' look: a dark plate with a bronze edge and a gold rule;
-// each line on a wine-dark plate with its chat's colour at its left (Global gold, General green, Hub blue, a friend pink).
+// each line on a wine-dark plate with its chat's colour at its left (Global gold, General green, Hub blue, a friend pink),
+// and its sender's name in a colour of its own (name_ink, 1.0.2).
 #include "chat_overlay.h"
 
 #include <SDL3/SDL.h>
 
 #include <algorithm>
 #include <cfloat>
+#include <cstdint>
 #include <cmath>
 #include <cstdio>
 #include <string>
@@ -38,8 +40,17 @@ void load() {
     float x, y, s;
     if (bubble(&x, &y, &s)) g_bx = std::clamp(x, 0.f, 1.f), g_by = std::clamp(y, 0.f, 1.f), g_bs = std::clamp(s, .6f, 2.f);
 }
-float radius() { return g_h * .048f * g_bs; }
+bool g_placed;  // (1.0.2: the port placed it, the editor's place and size: placed())
+float g_pr;      // (and its radius, a fraction of the screen's height)
+bool placed() {
+    float x, y, r;
+    g_placed = g_port.place && g_port.place(&x, &y, &r);
+    if (g_placed) g_bx = std::clamp(x, 0.f, 1.f), g_by = std::clamp(y, 0.f, 1.f), g_pr = r;
+    return g_placed;
+}
+float radius() { return g_placed ? g_h * g_pr : g_h * .048f * g_bs; }
 bool menu_open() { return g_port.menu_open && g_port.menu_open(); }
+bool lines_hidden() { return menu_open() || (g_port.lines_hidden && g_port.lines_hidden()); }
 bool wanted() {  // (the online chat on, or the hub's chat on and a hub up)
 #ifdef __ANDROID__
     return bubble_shown() && g_port.controls_shown && g_port.controls_shown() && !menu_open() && (enabled() || (hub_chat() && hub_up()));
@@ -64,6 +75,19 @@ ImU32 faded(ImU32 c, float a) { return (c & 0x00ffffffu) | ((ImU32)(((c >> 24) &
 }  // namespace
 
 void overlay_setup(const OverlayPort &port) { g_port = port; }
+unsigned channel_ink(int channel) { return ink(channel); }
+
+unsigned name_ink(const std::string &name) {
+    // (warm and cool tones that read on the dark plates and strips, apart from the chats' gold, green, blue and pink)
+    static const unsigned inks[] = {
+        IM_COL32(255, 168, 92, 255),  IM_COL32(255, 124, 112, 255), IM_COL32(198, 156, 255, 255), IM_COL32(112, 228, 204, 255),
+        IM_COL32(240, 232, 128, 255), IM_COL32(178, 226, 96, 255),  IM_COL32(150, 176, 255, 255), IM_COL32(232, 184, 140, 255),
+        IM_COL32(118, 222, 146, 255), IM_COL32(255, 204, 156, 255), IM_COL32(222, 140, 232, 255), IM_COL32(160, 214, 236, 255),
+    };
+    uint32_t h = 2166136261u;  // (FNV-1a of the name, its letters' case aside: "Ana" and "ana" the same colour)
+    for (unsigned char c : name) h = (h ^ (unsigned)((c >= 'A' && c <= 'Z') ? c + 32 : c)) * 16777619u;
+    return inks[h % (sizeof inks / sizeof inks[0])];
+}
 
 bool overlay_frame() {
     if (!active()) {  // (both chats off, as they come: nothing over the game, and the button takes no finger)
@@ -73,7 +97,7 @@ bool overlay_frame() {
     unsigned last = last_serial();
     if (!g_serial_known) g_seen_serial = last, g_serial_known = true;
     double now = SDL_GetTicks() / 1000.0;
-    const bool menu = menu_open();
+    const bool menu = lines_hidden();  // (1.0.2: a menu of the game's too, and the chat window up: none, those up gone)
     if (last != g_seen_serial) {
         for (const Line &l : since(g_seen_serial))
             if (!l.mine && counts(l.channel) && !menu) g_shown.push_back({l, now});
@@ -90,6 +114,7 @@ bool overlay_frame() {
 void overlay_draw(float w, float h) {
     g_w = w, g_h = h;
     load();
+    placed();
     ImDrawList *dl = ImGui::GetForegroundDrawList();
     ImFont *font = ImGui::GetFont();
     const float scale = std::max(1.f, h / 720.f), line = 2 * scale;
@@ -135,7 +160,7 @@ void overlay_draw(float w, float h) {
         const ImVec2 ms = font->CalcTextSizeA(fs * .8f, FLT_MAX, 0, tag.c_str()), ws = font->CalcTextSizeA(fs, FLT_MAX, 0, who.c_str());
         const ImVec2 ts = font->CalcTextSizeA(fs, FLT_MAX, std::max(fs * 4, wrap - ws.x - ms.x), text.c_str());
         const float pw = ms.x + ws.x + ts.x + 2 * pad, ph = std::max(ts.y, fs) + 2 * pad;
-        dl->AddRectFilled(ImVec2(x, y), ImVec2(x + pw, y + ph), faded(IM_COL32(50, 25, 24, 215), a));
+        dl->AddRectFilled(ImVec2(x, y), ImVec2(x + pw, y + ph), faded(IM_COL32(24, 12, 11, 235), a));  // (1.0.2: darker, to read over grass and snow)
         {  // (the edge as four lines: AddRect's arguments changed order between the ports' Dear ImGui versions)
             const ImU32 e = faded(edge, a);
             const float t = line * .7f;
@@ -146,14 +171,16 @@ void overlay_draw(float w, float h) {
         float tx = x + pad;
         dl->AddText(font, fs * .8f, ImVec2(tx, y + pad + fs * .12f), faded(ink(s.line.channel), a), tag.c_str());
         tx += ms.x;
-        if (!who.empty()) dl->AddText(font, fs, ImVec2(tx, y + pad), faded(IM_COL32(255, 214, 92, 255), a), who.c_str());
-        dl->AddText(font, fs, ImVec2(tx + ws.x, y + pad), faded(cream, a), text.c_str(), nullptr, std::max(fs * 4, wrap - ws.x - ms.x));
+        if (!who.empty()) dl->AddText(font, fs, ImVec2(tx, y + pad), faded(name_ink(s.line.name), a), who.c_str());
+        const float tw = std::max(fs * 4, wrap - ws.x - ms.x);
+        dl->AddText(font, fs, ImVec2(tx + ws.x + scale, y + pad + scale), faded(IM_COL32(0, 0, 0, 255), a), text.c_str(), nullptr, tw);
+        dl->AddText(font, fs, ImVec2(tx + ws.x, y + pad), faded(cream, a), text.c_str(), nullptr, tw);
         y += ph + 3 * scale;
     }
 }
 
 bool bubble_down(float fx, float fy) {
-    if (!g_on_screen) return false;
+    if (!g_on_screen) return false;  // (its place: the last drawn's - the port's place is asked as it draws, placed())
     const float x = fx * g_w, y = fy * g_h;
     if (std::hypot(x - g_bx * g_w, y - g_by * g_h) > radius() * 1.15f) return false;
     g_drag = true, g_dragged = false;
@@ -164,7 +191,7 @@ void bubble_finger(bool up, float fx, float fy) {
     if (!g_drag) return;
     const float x = fx * g_w, y = fy * g_h;
     if (std::hypot(x - g_down_x, y - g_down_y) > g_h * .02f) g_dragged = true;
-    if (g_dragged) {
+    if (g_dragged && !g_placed) {
         const float r = radius();
         g_bx = std::clamp((x + g_drag_dx) / g_w, r / g_w, 1 - r / g_w);
         g_by = std::clamp((y + g_drag_dy) / g_h, r / g_h, 1 - r / g_h);
@@ -172,7 +199,7 @@ void bubble_finger(bool up, float fx, float fy) {
     if (!up) return;
     g_drag = false;
     if (g_dragged) {
-        set_bubble(g_bx, g_by, g_bs);
+        if (!g_placed) set_bubble(g_bx, g_by, g_bs);
         return;
     }
     if (g_port.log) g_port.log("[chat] the chat button: the menu's chat");

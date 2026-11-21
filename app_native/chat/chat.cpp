@@ -115,6 +115,9 @@ struct State {
     int overlay = OVERLAY_HUB_FRIENDS;
     std::set<std::string> flags;
     float bx = 0, by = 0, bsize = 1;
+    bool has_window = false;  // (1.0.2: the chat window's place and size, fractions of the screen)
+    float wx = 0, wy = 0, ww = 1, wh = 1;
+    int opacity[OPACITIES] = {60, 75, 90};  // (1.0.2: the chat window's background, lines and field, as they came)
     // people: friends, pending codes ("code:XXXX"), requests, mutes and blocks, by id
     std::map<std::string, Person> people;
     std::map<std::string, Online> online;
@@ -170,6 +173,8 @@ void save_locked() {
     fprintf(f, "relays\t%s\n", rl.c_str());
     if (g.has_bubble) fprintf(f, "bubble\t%.4f %.4f %.3f\n", g.bx, g.by, g.bsize);
     fprintf(f, "bubbleshown\t%d\n", (int)g.bubble_shown);
+    if (g.has_window) fprintf(f, "window\t%.4f %.4f %.4f %.4f\n", g.wx, g.wy, g.ww, g.wh);
+    fprintf(f, "opacity\t%d %d %d\n", g.opacity[OPACITY_WINDOW], g.opacity[OPACITY_LINES], g.opacity[OPACITY_FIELD]);
     for (auto &fl : g.flags) fprintf(f, "flag\t%s\n", fl.c_str());
     for (auto &kv : g.people) {
         const Person &p = kv.second;
@@ -238,6 +243,13 @@ void load_locked() {
             } else if (k == "bubble") {
                 if (sscanf(v.c_str(), "%f %f %f", &g.bx, &g.by, &g.bsize) == 3) g.has_bubble = true;
             } else if (k == "bubbleshown") g.bubble_shown = v != "0";
+            else if (k == "window") {
+                if (sscanf(v.c_str(), "%f %f %f %f", &g.wx, &g.wy, &g.ww, &g.wh) == 4 && g.ww > 0 && g.wh > 0) g.has_window = true;
+            } else if (k == "opacity") {
+                int o[OPACITIES];
+                if (sscanf(v.c_str(), "%d %d %d", &o[0], &o[1], &o[2]) == OPACITIES)
+                    for (int i = 0; i < OPACITIES; i++) g.opacity[i] = std::clamp(o[i] / 5 * 5, 0, 100);
+            }
             else if (k == "flag" && !v.empty()) g.flags.insert(v);
             else if (k == "friend" && v.size() == 64) {
                 Person &q = person_locked(lower(v));
@@ -783,6 +795,33 @@ void set_bubble(float x, float y, float size) {
     g.bx = x, g.by = y, g.bsize = size, g.has_bubble = true;
     save_locked();
 }
+bool window(float *x, float *y, float *w, float *h) {
+    std::lock_guard<std::mutex> l(g.mu);
+    *x = g.wx, *y = g.wy, *w = g.ww, *h = g.wh;
+    return g.has_window;
+}
+void set_window(float x, float y, float w, float h) {
+    std::lock_guard<std::mutex> l(g.mu);
+    g.wx = x, g.wy = y, g.ww = w, g.wh = h, g.has_window = true;
+    save_locked();
+}
+void reset_window() {
+    std::lock_guard<std::mutex> l(g.mu);
+    g.has_window = false;
+    save_locked();
+}
+int opacity(int which) {
+    std::lock_guard<std::mutex> l(g.mu);
+    return which >= 0 && which < OPACITIES ? g.opacity[which] : 100;
+}
+void set_opacity(int which, int percent) {
+    if (which < 0 || which >= OPACITIES) return;
+    const int v = std::clamp((percent + 2) / 5 * 5, 0, 100);
+    std::lock_guard<std::mutex> l(g.mu);
+    if (g.opacity[which] == v) return;
+    g.opacity[which] = v;
+    save_locked();  // (chat.txt.tmp, then put in its place: a cut-off write leaves the last one whole)
+}
 bool bubble_shown() { std::lock_guard<std::mutex> l(g.mu); return g.bubble_shown; }
 void set_bubble_shown(bool on) {
     std::lock_guard<std::mutex> l(g.mu);
@@ -1091,6 +1130,43 @@ void hub_line(const std::string &from, const std::string &n, const std::string &
 void hub_reset() {
     std::lock_guard<std::mutex> l(g.mu);
     g.chans[HUB].clear();
+}
+void test_line(int channel, const std::string &peer, const std::string &n, const std::string &typed) {
+    std::lock_guard<std::mutex> l(g.mu);
+    if (channel < 0 || channel >= CHANNELS || (channel == FRIEND && peer.empty())) return;
+    Line ln;
+    ln.channel = channel, ln.peer = channel == FRIEND ? peer : std::string(), ln.name = clean(n, MAX_NAME), ln.text = clean(typed, 500);
+    ln.from = channel == FRIEND ? peer : "test:" + ln.name;
+    if (channel == GLOBAL) ln.game = g.port.game;
+    push_locked(ln);
+}
+void test_lines() {
+    static const struct {
+        int channel;
+        const char *name, *text;
+    } said[] = {
+        {HUB, "Ana", "Hola, alguien para una mision facil?"},
+        {GENERAL, "Kai", "Anyone up for a low rank hunt?"},
+        {GLOBAL, "Rex", "Buenas desde el otro port"},
+        {FRIEND, "", "Jugamos despues?"},
+        {HUB, "Bo", "Voy a la tienda y vuelvo"},
+        {GENERAL, "Lia", "Thanks for the help!"},
+        {GLOBAL, "Tom", "Que tal el chat nuevo?"},
+        {FRIEND, "", "Te mando la clave en un rato"},
+    };
+    static uint64_t next;
+    static unsigned done;
+    const uint64_t now = (uint64_t)std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    if (done >= 40 || (done >= 4 && now < next)) return;
+    std::string peer, friend_name;
+    for (const Person &p : people())
+        if (p.is_friend && peer.empty()) peer = p.id, friend_name = p.name;
+    do {
+        const auto &x = said[done % (sizeof said / sizeof said[0])];
+        test_line(x.channel, peer, x.channel == FRIEND ? friend_name : x.name, x.text);
+        done++;
+    } while (done < 4);
+    next = now + 10000;
 }
 static void hub_digest(const std::string &hub_id, int64_t at, const std::string &n, const std::string &text, uint8_t out[32]) {
     chatc::Sha256 s;

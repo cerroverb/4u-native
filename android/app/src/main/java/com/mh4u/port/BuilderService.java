@@ -496,8 +496,10 @@ public class BuilderService extends Service {
     static final float BATTERY_HOT = 47f, BATTERY_COOLED = 42f;
     /** A thermal status of severe or worse with the battery below BATTERY_COOL and the thermal headroom, where the phone
      *  gives one, below HEADROOM_HOT, is taken as a wrong reading: some phones report a high status whatever their heat
-     *  (a player's in a freezer paused "too hot", 2026-11-15). It counts as warm then: two compilers, the build goes on. */
-    static final float BATTERY_COOL = 32f, HEADROOM_HOT = 0.85f;
+     *  (a player's in a freezer paused "too hot", 2026-11-15; an Oppo Reno 3's with its battery at 35 degrees, 1.0.2).
+     *  It counts as warm then: two compilers, the build goes on. A battery under 40 degrees isn't a hot phone; above, the
+     *  status stands, and BATTERY_HOT pauses it anyway. */
+    static final float BATTERY_COOL = 40f, HEADROOM_HOT = 0.85f;
     /** A build that has said nothing for this long gets a line in its log, and one more each time again (quiet). */
     static final long QUIET_MS = 60_000;
 

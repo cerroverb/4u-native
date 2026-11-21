@@ -12,11 +12,20 @@
 #include <string>
 #include <vector>
 
+namespace mh4n::fs {
+struct GameRomFsFile;
+}
+
 namespace mh4n::platform::monster_names {
 
 // The name of a monster of `kind` in the game's `language` (UTF-8); empty while they are being read, or with none.
 // Any thread.
 std::string Name(int language, int kind);
+
+// The name of the map of the game's stage `stage` (its files' m<nn>: 1 the Ancestral Steppe) in `language`, as the game
+// writes it on its quest lists (<language>\msg\common\mapName_<language>, in the same archive: one per stage, the first
+// stage's first); read with the monsters' names. Empty while they are being read, or with none. Any thread.
+std::string MapName(int language, int stage);
 
 // Starts reading the names of `language`, once (nothing for -1 or a language the game has no texts in). Any thread.
 void Prepare(int language);
@@ -27,6 +36,11 @@ const char* Folder(int language);
 
 // (tests) the names of `language` read now through the game's RomFS: false, and why, when they could not be.
 bool Read(int language, std::vector<std::string>* names, std::string* why);
+
+// A file of an MT Framework archive of the game's RomFS (ARC\0, version 0x13: 80-byte entries, a name of 64, its type,
+// sizes and place; the data a zlib stream, or stored) by its name ("eng\msg\emName_eng"), inflated (the weapon tree's
+// names read the same archive: platform/weapon_names.cpp).
+bool ArcFile(const fs::GameRomFsFile& arc, const std::string& name, std::vector<unsigned char>* out);
 
 // (tests) the texts of an lmd message file (UTF-8), in their order.
 bool LmdTexts(const std::vector<unsigned char>& lmd, std::vector<std::string>* texts);

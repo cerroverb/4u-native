@@ -3,7 +3,7 @@
 
 namespace mh4n_rhi_plume {
 inline constexpr const char* kPlumeCommit = "0ce184b19270e49236afbb74052a6b267494b86b";
-inline constexpr unsigned kPatchCount = 23;
+inline constexpr unsigned kPatchCount = 24;
 inline constexpr const char* kPatchFiles[] = {
     "01-p7-mutable-format-zero-attachment.diff",
     "02-p2-fragment-shader-interlock.diff",
@@ -27,6 +27,7 @@ inline constexpr const char* kPatchFiles[] = {
     "20-color-clear-load-op.diff",
     "21-implied-transfer-queue.diff",
     "22-pipeline-results.diff",
-    "23-submit-result.diff"
+    "23-submit-result.diff",
+    "24-win32-shared-memory.diff"
 };
 }  // namespace mh4n_rhi_plume

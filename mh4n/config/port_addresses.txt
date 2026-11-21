@@ -15,6 +15,7 @@
 0x01057298 SAREA_INSTANCE                       # hooks.cpp
 0x0105729c SCAMERA_INSTANCE                     # hooks.cpp
 0x0010d934 SVC_SLEEP_THREAD                     # hooks.cpp
+0x00bfa898 JOB_POLL_SLEEP_RET                   # hooks.cpp
 0x006442f8 CALL_GAME_RETURN                     # hooks.cpp
 0x0109a350 PANEL_MANAGER                        # hooks.cpp
 0x0108260c QUEST_HUD                            # hooks.cpp
@@ -152,3 +153,33 @@
 0x0109cdc8 PROMPT_OWNER                         # onescreen.cpp
 0x00ae6b78 FN_PANE_REDRAW                       # onescreen.cpp
 0x005deb68 FN_ROOM_MORE                         # onescreen.cpp
+0x00f51dfc WEAPON_RECIPES                       # weapon_tree.cpp (Heavenfall's table places, GPL-3.0)
+0x00f70850 GS_STATS                             # weapon_tree.cpp (Heavenfall's table places, GPL-3.0)
+0x00f61fea GS_UP                                # weapon_tree.cpp (Heavenfall's table places, GPL-3.0)
+0x00f71f60 SNS_STATS                            # weapon_tree.cpp (Heavenfall's table places, GPL-3.0)
+0x00f6354a SNS_UP                               # weapon_tree.cpp (Heavenfall's table places, GPL-3.0)
+0x00f73688 HAMMER_STATS                         # weapon_tree.cpp (Heavenfall's table places, GPL-3.0)
+0x00f64b52 HAMMER_UP                            # weapon_tree.cpp (Heavenfall's table places, GPL-3.0)
+0x00f74db0 LANCE_STATS                          # weapon_tree.cpp (Heavenfall's table places, GPL-3.0)
+0x00f660fa LANCE_UP                             # weapon_tree.cpp (Heavenfall's table places, GPL-3.0)
+0x00f7f894 LBG_STATS                            # weapon_tree.cpp (Heavenfall's table places, GPL-3.0)
+0x00f6e662 LBG_UP                               # weapon_tree.cpp (Heavenfall's table places, GPL-3.0)
+0x00f7e00c HBG_STATS                            # weapon_tree.cpp (Heavenfall's table places, GPL-3.0)
+0x00f6d912 HBG_UP                               # weapon_tree.cpp (Heavenfall's table places, GPL-3.0)
+0x00f761f0 LS_STATS                             # weapon_tree.cpp (Heavenfall's table places, GPL-3.0)
+0x00f6870a LS_UP                                # weapon_tree.cpp (Heavenfall's table places, GPL-3.0)
+0x00f77738 SA_STATS                             # weapon_tree.cpp (Heavenfall's table places, GPL-3.0)
+0x00f69a72 SA_UP                                # weapon_tree.cpp (Heavenfall's table places, GPL-3.0)
+0x00f789c8 GL_STATS                             # weapon_tree.cpp (Heavenfall's table places, GPL-3.0)
+0x00f673ba GL_UP                                # weapon_tree.cpp (Heavenfall's table places, GPL-3.0)
+0x00f8157c BOW_STATS                            # weapon_tree.cpp (Heavenfall's table places, GPL-3.0)
+0x00f6f682 BOW_UP                               # weapon_tree.cpp (Heavenfall's table places, GPL-3.0)
+0x00f79e80 DB_STATS                             # weapon_tree.cpp (Heavenfall's table places, GPL-3.0)
+0x00f6ab82 DB_UP                                # weapon_tree.cpp (Heavenfall's table places, GPL-3.0)
+0x00f7b3f8 HH_STATS                             # weapon_tree.cpp (Heavenfall's table places, GPL-3.0)
+0x00f6bf92 HH_UP                                # weapon_tree.cpp (Heavenfall's table places, GPL-3.0)
+0x00f7c550 IG_STATS                             # weapon_tree.cpp (Heavenfall's table places, GPL-3.0)
+0x00f569ac IG_UP                                # weapon_tree.cpp (Heavenfall's table places, GPL-3.0)
+0x00f7d450 CB_STATS                             # weapon_tree.cpp (Heavenfall's table places, GPL-3.0)
+0x00f6cf9a CB_UP                                # weapon_tree.cpp (Heavenfall's table places, GPL-3.0)
+0x00f581e4 WEAPON_SHARPNESS                     # weapon_tree.cpp (Heavenfall's table places, GPL-3.0)

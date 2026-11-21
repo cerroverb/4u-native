@@ -18,12 +18,15 @@
 
 #include <algorithm>
 #include <bit>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 
 #include "deterministic.h"
 #include "mh4n/assert.h"
+#include "mh4n/host_thread_name.h"
 #include "mh4n/log.h"
+#include "mh4n/pacing_trace.h"
 
 namespace mh4n {
 
@@ -95,13 +98,17 @@ GuestScheduler::GuestScheduler(Kernel& kernel, CodeHost& host, GameClock& clock,
       clock_(clock),
       time_(time),
       preemption_(preemption),
-      slice_us_(options.slice_us) {
+      slice_us_(options.slice_us),
+      stall_pause_ns_(static_cast<s64>(options.stall_pause_us) * 1000) {
     kernel_.SetScheduler(this);
     kernel_.SetClock(&clock_);
     host_.SetBudgetHandler([this](RCtx&) { Preempt(); });
     clock_.SetChangeCallback([this] { RaiseFlag(); });
     if (preemption_ != nullptr) {
         preemption_->Start([this] { RaiseFlag(); });
+    }
+    if (stall_pause_ns_ > 0 && kernel_detail::LockstepOf(time_) == nullptr) {
+        stall_thread_ = std::thread([this] { StallGuard(); });
     }
 #if defined(__aarch64__)
     if (dynamic_cast<SteadyTimeSource*>(&time_) != nullptr) {
@@ -115,6 +122,17 @@ GuestScheduler::GuestScheduler(Kernel& kernel, CodeHost& host, GameClock& clock,
 }
 
 GuestScheduler::~GuestScheduler() {
+    if (stall_thread_.joinable()) {
+        {
+            std::lock_guard lock(stall_mutex_);
+            stall_stop_ = true;
+        }
+        stall_cv_.notify_all();
+        stall_thread_.join();
+    }
+    if (stall_held_.load()) {
+        clock_.Unhalt(GameClock::kHaltStall);
+    }
     if (preemption_ != nullptr) {
         preemption_->Stop();
     }
@@ -305,6 +323,9 @@ void GuestScheduler::ChooseCore(s64 now_ns) {
 // returns the thread whose stretch starts next (its budget is set), or nullptr when only idle time has gone
 // by (the host loop gets a turn) or nothing can ever happen.
 Thread* GuestScheduler::Dispatch() {
+    if (stall_pause_ns_ > 0) {
+        MarkProgress();
+    }
     if (LockstepState* const lockstep = kernel_detail::LockstepOf(time_)) {
         LockstepState& ls = *lockstep;
         ls.scheduler_thread = std::this_thread::get_id();
@@ -744,7 +765,7 @@ void GuestScheduler::Post(std::function<void()> fn) {
         wake = idle_waiting_;
     }
     if (wake) {
-        cv_.notify_all();
+        time_.Notify(cv_);
     }
 }
 
@@ -758,7 +779,7 @@ void GuestScheduler::RaiseFlag() {
         wake = idle_waiting_;
     }
     if (wake) {
-        cv_.notify_all();
+        time_.Notify(cv_);
     }
 }
 
@@ -771,7 +792,7 @@ void GuestScheduler::RequestStop() {
         wake = idle_waiting_;
     }
     if (wake) {
-        cv_.notify_all();
+        time_.Notify(cv_);
     }
 }
 
@@ -1194,10 +1215,67 @@ void GuestScheduler::Sleep(s64 ns) {
     Park(*thread);
 }
 
+// ---- the stall guard ---------------------------------------------------------------------------------
+
+void GuestScheduler::MarkProgress() {
+    const s64 now = time_.NowNs();
+    progress_ns_.store(now, std::memory_order_release);
+    if (!stall_held_.load(std::memory_order_acquire)) {
+        return;
+    }
+    s64 since = 0, held_at = 0;
+    {
+        std::lock_guard lock(stall_mutex_);
+        if (!stall_held_.load(std::memory_order_acquire)) {
+            return;
+        }
+        clock_.Unhalt(GameClock::kHaltStall);
+        stall_held_.store(false, std::memory_order_release);
+        since = stall_since_ns_;
+        held_at = stall_held_at_ns_;
+    }
+    ++stall_count_;
+    // A line for a stall of a quarter of a second or more, at most one every 5 s (the count says how many there were).
+    const s64 stalled_ms = (now - since) / 1000000;
+    if (stalled_ms >= 250 && (stall_report_ns_ == 0 || now - stall_report_ns_ >= 5000000000)) {
+        stall_report_ns_ = now;
+        MH4N_LOG(Info, "Scheduler",
+                 "the console stood still for {} ms (a host stall): the game clock stopped after {} ms, so the game "
+                 "saw only that much of it ({} stalls held so far)",
+                 stalled_ms, (held_at - since) / 1000000, stall_count_);
+    }
+}
+
+void GuestScheduler::StallGuard() {
+    SetHostThreadName("mh4n-stall");
+    // (it looks every quarter of the threshold: the game sees at most 1.25 times it)
+    const auto period = std::chrono::nanoseconds(std::max<s64>(stall_pause_ns_ / 4, 1000000));
+    std::unique_lock lock(stall_mutex_);
+    while (!stall_stop_) {
+        stall_cv_.wait_for(lock, period, [this] { return stall_stop_; });
+        if (stall_stop_) {
+            break;
+        }
+        if (stall_held_.load(std::memory_order_acquire) || idle_now_.load(std::memory_order_acquire)) {
+            continue;
+        }
+        const s64 last = progress_ns_.load(std::memory_order_acquire);
+        const s64 now = time_.NowNs();
+        if (last == 0 || now - last < stall_pause_ns_) {
+            continue;
+        }
+        stall_since_ns_ = last;
+        stall_held_at_ns_ = now;
+        clock_.Halt(GameClock::kHaltStall);
+        stall_held_.store(true, std::memory_order_release);
+    }
+}
+
 // ---- the host loop -----------------------------------------------------------------------------------
 
 void GuestScheduler::IdleWait() {
     const s64 start = time_.NowNs();
+    pacing::Mark(pacing::kGuestIdle, 1);
     std::optional<s64> deadline;
     if (!timers_.empty()) {
         deadline = clock_.HostNsFor(timers_.begin()->first.first);
@@ -1205,13 +1283,19 @@ void GuestScheduler::IdleWait() {
     {
         std::unique_lock lock(mutex_);
         idle_waiting_ = true;
+        idle_now_.store(true, std::memory_order_release);
         time_.WaitUntil(cv_, lock, deadline, [this] {
             return !posted_.empty() || stop_requested_ ||
                    __atomic_load_n(&preempt_flag_, __ATOMIC_ACQUIRE) != 0;
         });
         idle_waiting_ = false;
+        idle_now_.store(false, std::memory_order_release);
+    }
+    if (stall_pause_ns_ > 0) {
+        MarkProgress();
     }
     const s64 end = time_.NowNs();
+    pacing::Mark(pacing::kGuestIdle, 0);
     if (end > start) {
         counters_.idle_ns += static_cast<u64>(end - start);
     }

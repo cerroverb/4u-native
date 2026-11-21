@@ -4,7 +4,11 @@
 #define VK_NO_PROTOTYPES
 #include <vulkan/vulkan.h>
 
+#ifdef _WIN32  // (the PC: Windows' Vulkan loader and its RAM)
+#include <windows.h>
+#else
 #include <dlfcn.h>
+#endif
 #include <strings.h>
 #include <unistd.h>
 
@@ -24,14 +28,30 @@ namespace {
 uint32_t g_gpu_api = 0;  // (the GPU's Vulkan version, VulkanGpuName fills it)
 uint32_t g_gpu_max_image = 0;  // (and the largest 2D image and framebuffer side it allows)
 
+// The first line of the mh4u.ini the app writes, and how it starts (first_run_fill fills only such a file)
+#ifdef _WIN32
+constexpr const char* kIniOwner = "# MH4U for PC";
+constexpr const char* kIniFirstLine = "# MH4U for PC: the port's options (the same as the Android app's mh4u.ini)";
+#else
+constexpr const char* kIniOwner = "# MH4U for Android";
+constexpr const char* kIniFirstLine = "# MH4U for Android: the port's options (the same as the PC port's mh4u.ini)";
+#endif
+
 void Log(const std::string& text) { std::fprintf(stderr, "[Info] App: first start: %s\n", text.c_str()); }
 
 // The first GPU's name, from an instance made for it alone (the system's loader; the game makes its own later)
 std::string VulkanGpuName() {
+#ifdef _WIN32
+    HMODULE lib = LoadLibraryA("vulkan-1.dll");
+    if (lib == nullptr) return "";
+    std::string name;
+    auto get = reinterpret_cast<PFN_vkGetInstanceProcAddr>(reinterpret_cast<void*>(GetProcAddress(lib, "vkGetInstanceProcAddr")));
+#else
     void* lib = dlopen("libvulkan.so", RTLD_NOW | RTLD_LOCAL);
     if (lib == nullptr) return "";
     std::string name;
     auto get = reinterpret_cast<PFN_vkGetInstanceProcAddr>(dlsym(lib, "vkGetInstanceProcAddr"));
+#endif
     auto create = get ? reinterpret_cast<PFN_vkCreateInstance>(get(nullptr, "vkCreateInstance")) : nullptr;
     VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO};
     app.pApplicationName = "MH4U first start";
@@ -126,8 +146,15 @@ FirstRunDevice first_run_probe() {
     const char* gpu = std::getenv("MH4U_FIRST_RUN_GPU");
     d.gpu = gpu != nullptr ? EnvGpuName(gpu) : VulkanGpuName();
     const char* ram = std::getenv("MH4U_FIRST_RUN_RAM_MB");
+#ifdef _WIN32
+    MEMORYSTATUSEX memory{};
+    memory.dwLength = sizeof memory;
+    d.ram_mb = ram != nullptr ? std::atoll(ram)
+                              : GlobalMemoryStatusEx(&memory) ? static_cast<long long>(memory.ullTotalPhys >> 20) : 0;
+#else
     d.ram_mb = ram != nullptr ? std::atoll(ram)
                               : static_cast<long long>(sysconf(_SC_PHYS_PAGES)) * sysconf(_SC_PAGE_SIZE) / (1024 * 1024);
+#endif
     // "4 GB" phones report a little less than 4096 MB (the kernel and the GPU keep some): up to 4.5 GB counts as 4 GB
     const bool small = d.ram_mb > 0 && d.ram_mb <= 4608;
     const bool weak_gpu = first_run_weak_gpu(d.gpu);
@@ -141,7 +168,7 @@ void first_run_write(const std::string& ini_path, const FirstRunDevice& device) 
     // the port's options (the hooks read <user>/mh4u.ini): the picture as wide as the screen; 60 FPS, or 30 and the screen
     // filters off on a weak phone (Low-end mode's, settings_panel.cpp low_end)
     std::ofstream ini(ini_path);
-    ini << "# MH4U for Android: the port's options (the same as the PC port's mh4u.ini)\n"
+    ini << kIniFirstLine << "\n"
            "# frame rate cap: 30 (the 3DS's) to 240\nfps = "
         << (device.weak ? low_end_fps() : 60)
         << "\n"
@@ -183,7 +210,7 @@ void first_run_fill(const std::string& ini_path) {
         std::string line;
         while (std::getline(in, line)) lines.push_back(line);
     }
-    if (lines.empty() || lines[0].rfind("# MH4U for Android", 0) != 0) return;
+    if (lines.empty() || lines[0].rfind(kIniOwner, 0) != 0) return;
     auto has = [&](const char* key) {
         for (const std::string& raw : lines) {
             const size_t a = raw.find_first_not_of(" \t");

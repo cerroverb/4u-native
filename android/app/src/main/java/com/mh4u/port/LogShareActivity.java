@@ -177,6 +177,16 @@ public class LogShareActivity extends Activity {
                     15, GOLD, false), gap);
         }
 
+        // (1.0.2, S12) a GPU driver of the player's own ran this session (gpu_driver.cpp's line): said, with the way back
+        String driver = crash ? logLine("GPU driver: device ") : null;
+        if (driver != null && driver.contains(": the player's, ")) {
+            box.addView(text(es ? "Esta sesión usó un driver de GPU propio (" + driver.substring(driver.indexOf("driver ")) + "). Si "
+                                  + "el juego se sigue cerrando, elige Sistema en Opciones › Gráficos y audio › Driver de GPU."
+                                : "This session ran a GPU driver of your own (" + driver.substring(driver.indexOf("driver ")) + "). If "
+                                  + "the game keeps closing, choose System in Settings › Graphics & Audio › GPU driver.",
+                    15, GOLD, false), gap);
+        }
+
         // the way back first, alone on its row; then Share log and Close, side by side: nothing wider than the box
         // (three in one row came out wider than it and were cut on both sides: 4u-native #23)
         LinearLayout.LayoutParams first = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(46));
@@ -250,6 +260,25 @@ public class LogShareActivity extends Activity {
         } catch (IOException ignored) {
         }
         return new File(user, "load/mods");
+    }
+
+    /** The last line of the end of this session's log that holds `what` (its text from there on), or null. */
+    private String logLine(String what) {
+        File log = new File(home(), "log.txt");
+        try (FileInputStream in = new FileInputStream(log)) {
+            long skip = log.length() - (256 << 10);
+            if (skip > 0) in.skip(skip);
+            byte[] all = new byte[256 << 10];
+            int n = 0;
+            for (int k; n < all.length && (k = in.read(all, n, all.length - n)) > 0; ) n += k;
+            String text = new String(all, 0, n, StandardCharsets.UTF_8);
+            int at = text.lastIndexOf(what);
+            if (at < 0) return null;
+            int end = text.indexOf('\n', at);
+            return text.substring(at + what.length(), end < 0 ? text.length() : end).trim();
+        } catch (IOException e) {
+            return null;
+        }
     }
 
     /** The end of this session's log mentions `what`. */

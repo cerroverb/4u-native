@@ -83,24 +83,68 @@ public class GameActivity extends SDLActivity {
         Diag.watch(this);      // (and what changes while the game runs: the network, the heat, power saving)
         watching = true;
         watchRefreshRate();
+        second = new SecondScreen(this);  // (1.0.2: the touch screen on a second display, when the player picks it)
+        second.watch();
     }
 
     private boolean watching;
+    private SecondScreen second;
 
     @Override
     protected void onDestroy() {
         if (watching) Diag.unwatch(this);
         if (rateListener != null) ((DisplayManager) getSystemService(DISPLAY_SERVICE)).unregisterDisplayListener(rateListener);
         rateListener = null;
+        if (second != null) second.stop();
+        second = null;
         super.onDestroy();
     }
 
-    // (1.0.1, diag) the system's memory warnings and the window's mode, as events in log.txt with the session's time
+    // (1.0.2) the second display's window closes while the app is away, and opens again when it is back
+    @Override
+    protected void onStart() {
+        super.onStart();
+        if (second != null) second.setStarted(true);
+    }
+
+    @Override
+    protected void onStop() {
+        if (second != null) second.setStarted(false);
+        super.onStop();
+    }
+
+    /**
+     * Settings > Graphics & Audio > Screen and HUD > Layout > On the second screen (app_native/android_main.cpp, by JNI from
+     * the SDL thread): the native main loop wants the touch screen on the second display (true) or not any more (false).
+     */
+    public static void setSecondScreen(boolean on) {
+        SDLActivity activity = mSingleton;
+        if (activity instanceof GameActivity) {
+            activity.runOnUiThread(() -> {
+                SecondScreen s = ((GameActivity) activity).second;
+                if (s != null) s.setWanted(on);
+            });
+        }
+    }
+
+    // (1.0.1, diag) the system's memory warnings and the window's mode, as events in log.txt with the session's time.
+    // (1.0.2, S9) Memory short while the game runs (RUNNING_LOW, RUNNING_CRITICAL) or the app in the background from
+    // MODERATE on: the renderer lowers the HD packs' texture budget and lets go of what it doesn't use (mh4n MemoryLow);
+    // never for UI_HIDDEN or BACKGROUND alone, which every trip to the home screen gives.
     @Override
     public void onTrimMemory(int level) {
         if (watching) Diag.event("the system trims memory: " + Diag.trimLevel(level));
+        if (level == TRIM_MEMORY_RUNNING_LOW || level == TRIM_MEMORY_RUNNING_CRITICAL || level >= TRIM_MEMORY_MODERATE) {
+            try {
+                nativeMemoryLow(level);
+            } catch (UnsatisfiedLinkError e) {
+                // (libmain.so not loaded: nothing to trim)
+            }
+        }
         super.onTrimMemory(level);
     }
+
+    private static native void nativeMemoryLow(int level);
 
     @Override
     public void onLowMemory() {
@@ -267,6 +311,48 @@ public class GameActivity extends SDLActivity {
         return org.libsdl.app.SDLControllerManager.keyboardMouse();
     }
 
+    /** (1.0.2) The window's display cutout, for the screens' layout (app_native/android_main.cpp, by JNI from SDL's thread):
+     *  {its safe inset at the left, at the right, the window's width}, in the window's pixels; null when there is none or
+     *  it isn't known (before Android 9, no window yet). Only the cutout: not the system bars nor the gestures' edges, which
+     *  SDL's safe area counts too. */
+    public static int[] cutoutSides() {
+        SDLActivity activity = mSingleton;
+        if (activity == null || Build.VERSION.SDK_INT < 28) return null;
+        try {
+            View decor = activity.getWindow().getDecorView();
+            android.view.WindowInsets insets = decor.getRootWindowInsets();
+            android.view.DisplayCutout cut = insets != null ? insets.getDisplayCutout() : null;
+            if (cut == null) return null;
+            return new int[] {cut.getSafeInsetLeft(), cut.getSafeInsetRight(), decor.getWidth()};
+        } catch (Exception e) {
+            Log.w(TAG, "cutout sides: " + e);
+            return null;
+        }
+    }
+
+    /** (1.0.2) The phone's keyboard over the window, for the chat window while Say something is typed (app_native/settings_panel.cpp keyboard_top, by JNI from
+     *  the SDL thread): {its height over the window's bottom, the window's width, its height}, in the window's pixels; null when it
+     *  isn't known. */
+    public static int[] imeInsets() {
+        SDLActivity activity = mSingleton;
+        if (activity == null) return null;
+        try {
+            View decor = activity.getWindow().getDecorView();
+            int ime = 0;
+            if (Build.VERSION.SDK_INT >= 30) {
+                android.view.WindowInsets insets = decor.getRootWindowInsets();
+                if (insets != null) ime = insets.getInsets(android.view.WindowInsets.Type.ime()).bottom;
+            } else {
+                android.graphics.Rect r = new android.graphics.Rect();
+                decor.getWindowVisibleDisplayFrame(r);
+                ime = Math.max(0, decor.getHeight() - r.bottom);
+            }
+            return new int[] {ime, decor.getWidth(), decor.getHeight()};
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
     /** Ajustes -> Licencias (runtime/ui.c show_licenses, por JNI desde el hilo de SDL). */
     public static void showLicenses() {
         SDLActivity activity = mSingleton;
@@ -316,6 +402,14 @@ public class GameActivity extends SDLActivity {
     public static void importPictures() {
         SDLActivity activity = mSingleton;
         if (activity != null) activity.startActivity(new Intent(activity, PicturesActivity.class));
+    }
+
+    /** Ajustes -> Perfiles de controles -> un perfil -> Exportar / Importar (app_native/touch.cpp, 1.0.2): su .zip, afuera o adentro. */
+    public static void exportProfile() { startProfileZip(false); }
+    public static void importProfile() { startProfileZip(true); }
+    private static void startProfileZip(boolean in) {
+        SDLActivity activity = mSingleton;
+        if (activity != null) activity.startActivity(new Intent(activity, ProfileZipActivity.class).putExtra("import", in));
     }
 
     /** Settings -> Mods -> Add a mod (.zip / folder) (app_native/content.cpp): ImportActivity, over the game. */
