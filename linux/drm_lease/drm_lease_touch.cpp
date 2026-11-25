@@ -34,7 +34,7 @@ namespace {
 // (mh4u-linux) An input node opened with the openat system call itself. Steam's overlay library, which Steam preloads
 // into a game it starts with Steam Input on (LD_PRELOAD .../steamrtarm64/gameoverlayrenderer.so), makes the C
 // library's open() of the physical input nodes fail with ENODEV so that the game sees only Steam's virtual
-// controller; it hides the touchscreens with them. Seen on the Thor in Game Mode: event5, event6 and event7 opened in
+// controller. It hides the touchscreens with them. Seen on the Thor in Game Mode: event5, event6 and event7 opened in
 // the start script and failed in mh4u-linux, and opened once Steam Input was off for the shortcut.
 int OpenInputNode(const std::string& path) {
     return static_cast<int>(syscall(SYS_openat, AT_FDCWD, path.c_str(), O_RDONLY | O_NONBLOCK | O_CLOEXEC));
@@ -55,7 +55,7 @@ bool IsDirectTouchDevice(int fd) {
 }
 
 // name set: return the direct-touch device with that evdev name. name
-// empty: return the only direct-touch device; with several, a unique
+// empty: return the only direct-touch device. With several, a unique
 // device named like the bottom screen wins, otherwise refuse to guess.
 std::optional<std::string> FindDirectTouchDevice(const std::string& name) {
     std::vector<std::pair<std::string, std::string>> candidates; // path, evdev name
@@ -70,7 +70,7 @@ std::optional<std::string> FindDirectTouchDevice(const std::string& name) {
         const std::string path = std::string("/dev/input/") + entry->d_name;
         const int fd = OpenInputNode(path);
         if (fd < 0) {
-            // (mh4u-linux: say why, once per node; Azahar skips it silently)
+            // (mh4u-linux: say why, once per node, Azahar skips it silently)
             static std::vector<std::string> reported;
             if (std::find(reported.begin(), reported.end(), path) == reported.end()) {
                 reported.push_back(path);
@@ -170,7 +170,7 @@ void DrmLeaseTouch::Run(std::stop_token token) {
     while (!token.stop_requested()) {
         const int fd = OpenDevice();
         if (fd < 0) {
-            // Device missing or not yet powered (e.g. across suspend); retry.
+            // Device missing or not yet powered (e.g. across suspend). Retry.
             std::this_thread::sleep_for(std::chrono::seconds(2));
             continue;
         }

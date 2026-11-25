@@ -51,7 +51,7 @@ if (WAYLAND_CLIENT_FOUND AND LIBDRM_FOUND AND WAYLAND_SCANNER)
         "${DRM_LEASE_GEN_DIR}/drm-lease-v1-protocol.c"
     )
     target_include_directories(mh4u-linux PRIVATE "${DRM_LEASE_GEN_DIR}")
-    # (the tree's one copy of the Vulkan headers; the entry points come from SDL's loader)
+    # (the tree's one copy of the Vulkan headers. The entry points come from SDL's loader)
     target_include_directories(mh4u-linux SYSTEM PRIVATE "${MH4N_DIR}/native/third_party/vulkan/include")
     target_link_libraries(mh4u-linux PRIVATE PkgConfig::WAYLAND_CLIENT PkgConfig::LIBDRM)
     target_compile_definitions(mh4u-linux PRIVATE MH4U_DRM_LEASE)

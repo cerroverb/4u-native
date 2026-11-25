@@ -102,7 +102,7 @@ MH4N_REGISTER(mh4n::BootStep, "zz.linux.window", mh4n::BootStep{mh4n::Phase::Sta
 
 // The pacing trace's mark for the buttons this host read and gave the live input source (value: the buttons), so that
 // a press can be followed to the game's sample of it (pacing::kInputSample, the same value). Outside the runtime's
-// own kinds; linux/tools/pacing_report.py reads it.
+// own kinds. linux/tools/pacing_report.py reads it.
 constexpr auto kHostButtons = static_cast<mh4n::pacing::Kind>(100);
 
 // ---- the windows -------------------------------------------------------------------------------------------
@@ -461,7 +461,7 @@ int main(int argc, char* argv[]) {
     bool bottom_leased = false;
 #ifdef MH4U_DRM_LEASE
     // a compositor that shows one output (gamescope) and offers the other panel for lease: the touch screen there, as
-    // Azahar's GMainWindow::LoadROM (virtudude's drm-leasing branch) routes its bottom screen; MH4U_DRM_LEASE=0 turns it
+    // Azahar's GMainWindow::LoadROM (virtudude's drm-leasing branch) routes its bottom screen. MH4U_DRM_LEASE=0 turns it
     // off, MH4U_DRM_LEASE_CONNECTOR, _ROTATION and _TOUCH choose the connector, rotation and touch device
     std::unique_ptr<drm_lease::DrmLeaseOutput> lease;
     if (!settings.stacked && !EnvIs("MH4U_DRM_LEASE", "0")) {

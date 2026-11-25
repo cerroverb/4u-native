@@ -34,7 +34,7 @@ public:
     bool Initialize(const std::string& connector_name, int rotation, const std::string& touch_device,
                     bool internal_only, TouchSink touch);
 
-    // The compositor's events (a lease it ends); call regularly.
+    // The compositor's events (a lease it ends). Call regularly.
     void PumpEvents();
 
     SDL_Window* Window() const {

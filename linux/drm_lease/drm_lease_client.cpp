@@ -26,7 +26,7 @@ struct DrmLeaseClientCallbacks {
                                uint32_t version) {
         auto* client = static_cast<DrmLeaseClient*>(data);
         if (std::strcmp(interface, wp_drm_lease_device_v1_interface.name) == 0) {
-            // One global per DRM node; only the first is used.
+            // One global per DRM node. Only the first is used.
             if (client->device) {
                 std::fprintf(stderr, "[Info] drm-lease: ignoring additional lease device global\n");
                 return;
@@ -40,7 +40,7 @@ struct DrmLeaseClientCallbacks {
 
     static void DeviceDrmFd(void* data, wp_drm_lease_device_v1* device, int32_t fd) {
         auto* client = static_cast<DrmLeaseClient*>(data);
-        // Only needed for enumeration; the mode is read from the lease fd.
+        // Only needed for enumeration. The mode is read from the lease fd.
         client->enum_fd = fd;
     }
 
@@ -301,7 +301,7 @@ bool DrmLeaseClient::Acquire(const std::string& connector_name, bool internal_on
 
     wp_drm_lease_device_v1_add_listener(device, &DrmLeaseClientCallbacks::device_listener, this);
     // Initial enumeration may arrive well after binding (e.g. while the
-    // compositor regains DRM master); wait for the device done event.
+    // compositor regains DRM master). Wait for the device done event.
     if (!DispatchUntil([this] { return device_done; }, 5000)) {
         std::fprintf(stderr, "[Info] drm-lease: lease device never finished enumeration\n");
         return false;

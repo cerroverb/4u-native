@@ -31,7 +31,7 @@ public:
     DrmLeaseClient& operator=(const DrmLeaseClient&) = delete;
 
     /// Leases a connector from the compositor. connector_name selects a
-    /// specific offer; when empty, the first eligible offer is used, where
+    /// specific offer. When empty, the first eligible offer is used, where
     /// internal_only restricts eligibility to internal panel types
     /// (DSI/eDP/LVDS/DPI) so auto-detection cannot grab an external display
     /// or VR headset. Blocks until the compositor answers.
@@ -43,7 +43,7 @@ public:
 
 private:
     /// Dispatches until condition() holds or timeout_ms elapses. Returns the
-    /// final condition state; false also on connection failure.
+    /// final condition state, false also on connection failure.
     bool DispatchUntil(const std::function<bool()>& condition, int timeout_ms);
 
 public:

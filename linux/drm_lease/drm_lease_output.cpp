@@ -5,7 +5,7 @@
 // drm_lease_output.h says where each part comes from. ReadConnectorMode, FindPropertyId, LinkConnectorToLeasedCrtc
 // and ReadPanelOrientation are Azahar's (src/citra_qt/drm_lease/drm_lease_window.cpp at cerroverb/azahar 71a132b3b,
 // on virtudude's drm-leasing d16299140), with fprintf for its log calls and uint32_t for u32. CreateDrmDisplaySurface
-// is Azahar's (src/video_core/renderer_vulkan/vk_platform.cpp, d16299140) in Vulkan's C API; it takes the first
+// is Azahar's (src/video_core/renderer_vulkan/vk_platform.cpp, d16299140) in Vulkan's C API. It takes the first
 // device that knows the leased connector instead of Azahar's configured device index.
 
 #include <cstdio>
@@ -28,7 +28,7 @@ namespace drm_lease {
 
 namespace {
 
-// The preferred (or first) mode of the leased connector; VK_KHR_display picks
+// The preferred (or first) mode of the leased connector. VK_KHR_display picks
 // its mode independently, this sizes the framebuffer layout and links the CRTC.
 bool ReadConnectorMode(int lease_fd, uint32_t connector_id, drmModeModeInfo& out_mode) {
     drmModeConnector* connector = drmModeGetConnector(lease_fd, connector_id);
@@ -272,7 +272,7 @@ VkInstance CreateDisplayInstance(VulkanCalls& vk) {
 }
 
 // Creates a VK_KHR_display surface on a leased DRM connector. The lease fd
-// comes from the frontend (drm-lease-v1); the display is acquired through
+// comes from the frontend (drm-lease-v1). The display is acquired through
 // VK_EXT_acquire_drm_display and driven directly, bypassing the window system.
 VkSurfaceKHR CreateDrmDisplaySurface(const VulkanCalls& vk, VkInstance instance, int drm_lease_fd,
                                      uint32_t drm_connector_id, uint32_t drm_mode_width, uint32_t drm_mode_height,
@@ -304,7 +304,7 @@ VkSurfaceKHR CreateDrmDisplaySurface(const VulkanCalls& vk, VkInstance instance,
         return VK_NULL_HANDLE;
     }
 
-    // The frontend sized its framebuffer from the DRM preferred mode;
+    // The frontend sized its framebuffer from the DRM preferred mode.
     // Vulkan does not order this list, so match it explicitly.
     uint32_t mode_count = 0;
     vk.GetDisplayModePropertiesKHR(physical_device, display, &mode_count, nullptr);
@@ -486,7 +486,7 @@ bool DrmLeaseOutput::Initialize(const std::string& connector_name, int rotation_
         }
     }
     // Azahar's rotation turns the picture counter-clockwise (the Thor's bottom panel, "Right Side Up", is 270 there and
-    // stood upside down when drawn 270 degrees clockwise); SDL_RenderTextureRotated turns it clockwise
+    // stood upside down when drawn 270 degrees clockwise). SDL_RenderTextureRotated turns it clockwise
     rotation = (360 - rotation_ % 360) % 360;
 
     // the surface on it, drawn with SDL's Vulkan renderer through a window that is never shown

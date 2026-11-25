@@ -4,7 +4,7 @@
 //
 // From virtudude's Azahar, branch drm-leasing, commit d16299140 (src/citra_qt/drm_lease/drm_lease_touch.h): the
 // same class, giving the touch to a callback (0..1 in the panel's axes) instead of an EmuWindow, which mh4u-linux
-// has not; the environment variables are named MH4U_ instead of AZAHAR_.
+// has not. The environment variables are named MH4U_ instead of AZAHAR_.
 
 #pragma once
 
@@ -18,7 +18,7 @@
 namespace drm_lease {
 
 /// A touch point, 0..1 along the panel's own x and y (its scanout axes), or nullopt when the finger is lifted.
-/// Returns whether a new touch landed on the screen (as EmuWindow::TouchPressed does); ignored for moves and lifts.
+/// Returns whether a new touch landed on the screen (as EmuWindow::TouchPressed does). Ignored for moves and lifts.
 using TouchSink = std::function<bool(std::optional<std::pair<float, float>>)>;
 
 /// Reads a touchscreen evdev device directly and feeds it to a TouchSink as
